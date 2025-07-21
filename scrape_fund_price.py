@@ -30,6 +30,10 @@ with sync_playwright() as p:
         page.wait_for_selector(".mod-ui-data-list__value")
         price = page.locator(".mod-ui-data-list__value").first.text_content().strip()
         results.append([fund_id, today, price])
+        # Write latest_<identifier>.price file
+        latest_price_file = os.path.join(DATA_DIR, f"latest_{fund_id}.price")
+        with open(latest_price_file, "w") as f:
+            f.write(price + "\n")
     browser.close()
 
 # Write latest prices (overwrite)
