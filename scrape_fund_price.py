@@ -1,9 +1,12 @@
 from playwright.sync_api import sync_playwright
 import datetime
 import csv
+import os
 
 URL = "https://markets.ft.com/data/funds/tearsheet/summary?s=IE0008368742" 
 CSV_FILE = "data/latest_price.csv"
+
+os.makedirs(os.path.dirname(CSV_FILE), exist_ok=True)
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
