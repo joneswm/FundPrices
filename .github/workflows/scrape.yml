@@ -26,10 +26,17 @@ jobs:
       - name: Run scraper
         run: python scrape_fund_price.py
 
-      - name: Commit and push results
+      - name: Set up Git user
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@users.noreply.github.com"
+
+      - name: Set up authentication for pushing
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+      - name: Commit and push results
+        run: |
           git add data/latest_price.csv
           git commit -m "Update fund price" || echo "No changes to commit"
           git push
