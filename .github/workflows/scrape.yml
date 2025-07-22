@@ -2,7 +2,7 @@ name: Daily Fund Price Scraper
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # Runs daily at 22:00 UTC (5pm EST, 6pm EDT)
+    - cron: '1 21 * * *'  # Runs daily at 22:00 UTC (5pm EST, 6pm EDT)
   workflow_dispatch:     # Allows manual trigger
 
 jobs:
