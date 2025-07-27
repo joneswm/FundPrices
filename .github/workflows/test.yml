@@ -1,0 +1,44 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        playwright install chromium
+        
+    - name: Run unit tests
+      run: |
+        python -m unittest test_scrape_fund_price.TestFundPriceScraper -v
+        
+    - name: Run functional tests
+      run: |
+        python -m unittest test_scrape_fund_price.TestFunctionalScraping -v
+        
+    - name: Run all tests with coverage
+      run: |
+        coverage run -m unittest test_scrape_fund_price.py
+        coverage report -m
+        
+    - name: Check test coverage threshold
+      run: |
+        coverage run -m unittest test_scrape_fund_price.py
+        coverage report --fail-under=90 
