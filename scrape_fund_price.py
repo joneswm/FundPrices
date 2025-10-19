@@ -16,22 +16,38 @@ def read_fund_ids(filename):
         return [tuple(line.strip().split(",", 1)) for line in f if line.strip()]
 
 def get_source_config(source, fund_id):
-    """Get URL and selector for a given source and fund_id."""
-    if source.upper() == "FT":
-        url = f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}"
-        selector = ".mod-ui-data-list__value"
-    elif source.upper() == "YH":
-        url = f"https://sg.finance.yahoo.com/quote/{fund_id}/"
-        selector = 'span[data-testid="qsp-price"]'
-    elif source.upper() == "MS":
-        url = f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}"
-        selector = '#mainContent_quicktakeContent_fvOverview_lblNAV'
-    elif source.upper() == "GF":
-        url = f"https://www.google.com/finance/quote/{fund_id}"
-        selector = '.YMlKec.fxKbKc'
-    else:
-        return None, None
-    return url, selector
+    """Get URL and CSS selector configuration for a given source and fund ID.
+    
+    Args:
+        source: Two-character source code (FT, YH, MS, GF)
+        fund_id: Fund identifier specific to the source
+        
+    Returns:
+        Tuple of (url, selector) or (None, None) if source is invalid
+    """
+    source_configs = {
+        "FT": {
+            "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
+            "selector": ".mod-ui-data-list__value"
+        },
+        "YH": {
+            "url": f"https://sg.finance.yahoo.com/quote/{fund_id}/",
+            "selector": 'span[data-testid="qsp-price"]'
+        },
+        "MS": {
+            "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
+            "selector": '#mainContent_quicktakeContent_fvOverview_lblNAV'
+        },
+        "GF": {
+            "url": f"https://www.google.com/finance/quote/{fund_id}",
+            "selector": '.YMlKec.fxKbKc'
+        }
+    }
+    
+    config = source_configs.get(source.upper())
+    if config:
+        return config["url"], config["selector"]
+    return None, None
 
 def scrape_price_with_common_settings(page, url, selector):
     """Scrape price using common settings for all sources."""
