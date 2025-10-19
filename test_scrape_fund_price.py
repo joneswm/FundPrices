@@ -212,6 +212,59 @@ class TestFundPriceScraper(unittest.TestCase):
         ]
         self.assertEqual(rows, expected_history)
     
+    def test_write_results_no_duplicates_same_day(self):
+        """Test that running twice on same day updates price instead of duplicating."""
+        # Write initial results
+        initial_results = [["IE0008368742", "2025-01-20", "123.45"]]
+        write_results(initial_results, self.test_dir)
+        
+        # Write same fund, same date, different price (simulating second run)
+        updated_results = [["IE0008368742", "2025-01-20", "125.67"]]
+        write_results(updated_results, self.test_dir)
+        
+        # Check history content - should have only one entry with updated price
+        history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history_csv, 'r') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        
+        expected_history = [
+            ["Fund", "Date", "Price"],
+            ["IE0008368742", "2025-01-20", "125.67"]  # Updated price, not duplicate
+        ]
+        self.assertEqual(rows, expected_history)
+    
+    def test_write_results_mixed_updates_and_new_entries(self):
+        """Test that system handles both updates and new entries correctly."""
+        # Write initial results for two funds
+        initial_results = [
+            ["IE0008368742", "2025-01-20", "123.45"],
+            ["IDTG.L", "2025-01-20", "2.92"]
+        ]
+        write_results(initial_results, self.test_dir)
+        
+        # Second run: update one fund, add new fund, keep one unchanged
+        updated_results = [
+            ["IE0008368742", "2025-01-20", "125.67"],  # Updated
+            ["IDTG.L", "2025-01-20", "2.92"],          # Same (should not duplicate)
+            ["AAPL", "2025-01-20", "150.25"]           # New
+        ]
+        write_results(updated_results, self.test_dir)
+        
+        # Check history content
+        history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history_csv, 'r') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        
+        expected_history = [
+            ["Fund", "Date", "Price"],
+            ["IE0008368742", "2025-01-20", "125.67"],  # Updated
+            ["IDTG.L", "2025-01-20", "2.92"],          # Not duplicated
+            ["AAPL", "2025-01-20", "150.25"]           # New entry
+        ]
+        self.assertEqual(rows, expected_history)
+    
     def test_scrape_funds_error_handling(self):
         """Test error handling in scraping."""
         # This test would require more complex mocking to simulate errors
