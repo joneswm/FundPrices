@@ -10,7 +10,8 @@ from scrape_fund_price import (
     read_fund_ids, 
     get_source_config, 
     scrape_funds, 
-    write_results
+    write_results,
+    fetch_price_api
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -94,6 +95,35 @@ class TestFundPriceScraper(unittest.TestCase):
         url2, selector2 = get_source_config("FT", "IE0008368742")
         self.assertEqual(url1, url2)
         self.assertEqual(selector1, selector2)
+    
+    def test_fetch_price_api_valid_symbol(self):
+        """Test fetching price via API with valid symbol."""
+        price = fetch_price_api("AAPL")
+        self.assertIsNotNone(price)
+        self.assertNotEqual(price, "N/A")
+        # Price should be a valid number
+        try:
+            float(price)
+        except ValueError:
+            self.fail(f"Price should be a valid number, got: {price}")
+    
+    def test_fetch_price_api_invalid_symbol(self):
+        """Test fetching price via API with invalid symbol."""
+        price = fetch_price_api("INVALID_SYMBOL_XYZ123")
+        # Should return error message or N/A
+        self.assertTrue(price.startswith("Error:") or price == "N/A")
+    
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_price_api_mock(self, mock_ticker):
+        """Test fetching price via API with mocked yfinance."""
+        # Mock the yfinance Ticker object
+        mock_ticker_instance = MagicMock()
+        mock_ticker_instance.info = {'currentPrice': 150.25}
+        mock_ticker.return_value = mock_ticker_instance
+        
+        price = fetch_price_api("AAPL")
+        self.assertEqual(price, "150.25")
+        mock_ticker.assert_called_once_with("AAPL")
     
     @patch('scrape_fund_price.sync_playwright')
     def test_scrape_funds_mock(self, mock_playwright):

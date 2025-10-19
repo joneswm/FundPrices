@@ -128,44 +128,49 @@
 
 ---
 
-## US-025: Google Finance Price Scraping
+## US-025: Yahoo Finance API Integration (Alternative to Google Finance)
 
 **As** a financial analyst  
-**I want** to scrape fund prices from Google Finance  
-**So that** I can access an additional reliable data source for fund pricing information
+**I want** to retrieve fund prices using Yahoo Finance API instead of screen scraping  
+**So that** I can access reliable, structured data without the fragility of web scraping
 
 ### Acceptance Criteria:
-- [x] System can scrape prices from Google Finance using fund symbols
-- [x] Google Finance source uses appropriate URL patterns and selectors
-- [x] System handles Google Finance-specific error cases gracefully
-- [x] Google Finance returns price data in consistent format with other sources
-- [x] Source code "GF" is supported in configuration file
-- [x] System validates Google Finance fund symbols before scraping
-- [x] Network timeouts and rate limiting are handled appropriately
+- [ ] System can fetch prices using Yahoo Finance API (yfinance library)
+- [ ] API-based approach replaces screen scraping for Google Finance source
+- [ ] System handles API-specific error cases gracefully (rate limits, invalid symbols)
+- [ ] API returns price data in consistent format with other sources
+- [ ] Source code "GF" continues to work but uses API instead of scraping
+- [ ] System validates fund symbols before API calls
+- [ ] API timeouts and rate limiting are handled appropriately
+- [ ] yfinance library added to requirements.txt
 
 ### Definition of Done:
-- [x] Google Finance scraping implemented and tested
-- [x] Error handling for Google Finance source implemented
-- [x] Unit tests for Google Finance scraping pass
-- [x] Functional tests against real Google Finance website pass
-- [x] Documentation updated with Google Finance examples
-- [x] Configuration file format updated to include GF source code
-- [x] Data source table in README updated with Google Finance details
+- [ ] yfinance library integrated and tested
+- [ ] Error handling for API failures implemented
+- [ ] Unit tests for API integration pass
+- [ ] Functional tests against real Yahoo Finance API pass
+- [ ] Documentation updated with API approach
+- [ ] Configuration file format remains compatible
+- [ ] Data source table in README updated with API details
+- [ ] Screen scraping code removed/replaced with API calls
 
 ### Technical Requirements:
-- URL pattern: `https://www.google.com/finance/quote/<symbol>`
-- CSS selector for price element (to be determined during implementation)
-- Support for various symbol formats (e.g., NASDAQ:AAPL, LON:IDTG)
-- Handle Google Finance's dynamic content loading
-- Implement appropriate wait conditions for price element visibility
+- Use `yfinance` library for API access
+- Symbol format: Standard ticker symbols (e.g., AAPL, MSFT, GOOGL)
+- API method: `yf.Ticker(symbol).info['currentPrice']` or `regularMarketPrice`
+- Handle API exceptions: HTTPError, JSONDecodeError, KeyError
+- Implement retry logic for transient API failures
+- No authentication required (public API)
 
 ### Dependencies:
-- Requires Playwright for web scraping (already available)
+- Requires yfinance library (to be added to requirements.txt)
 - Depends on US-001 (Multi-Source Fund Price Scraping) architecture
 - Depends on US-002 (Configuration-Based Fund Management) for source code support
 
 ### Notes:
-- Google Finance may have different rate limiting policies than other sources
-- Symbol format may vary by exchange (e.g., NASDAQ:AAPL vs LON:IDTG)
-- Consider implementing retry logic for transient failures
-- May need to handle cookie consent dialogs or regional variations
+- Yahoo Finance API is more reliable than screen scraping
+- API provides structured JSON data
+- No need for Playwright/browser automation for this source
+- Symbol format is simpler (no exchange prefix needed for US stocks)
+- API may have rate limits (typically generous for free tier)
+- Consider caching to reduce API calls if needed
