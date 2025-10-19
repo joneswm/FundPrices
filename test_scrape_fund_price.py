@@ -278,17 +278,17 @@ class TestFunctionalScraping(unittest.TestCase):
             self.fail("Price should be a valid number")
     
     def test_functional_google_finance_scraping(self):
-        """Functional test for Google Finance scraping (requires internet connection)."""
-        test_funds = [("GF", "NASDAQ:AAPL")]
+        """Functional test for Google Finance API (requires internet connection)."""
+        test_funds = [("GF", "AAPL")]
         results = scrape_funds(test_funds)
         
         self.assertEqual(len(results), 1)
         self.assertNotEqual(results[0][2], "N/A")
         self.assertNotEqual(results[0][2], "")
-        # Price should be a number (may have $ prefix)
-        price_str = results[0][2].replace("$", "").replace(",", "")
+        self.assertFalse(results[0][2].startswith("Error:"))
+        # Price should be a number
         try:
-            float(price_str)
+            float(results[0][2])
         except ValueError:
             self.fail(f"Price should be a valid number, got: {results[0][2]}")
 

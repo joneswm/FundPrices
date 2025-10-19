@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 import datetime
 import csv
 import os
+import yfinance as yf
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
@@ -49,6 +50,25 @@ def get_source_config(source, fund_id):
         return config["url"], config["selector"]
     return None, None
 
+def fetch_price_api(symbol):
+    """Fetch price using Yahoo Finance API.
+    
+    Args:
+        symbol: Stock/fund ticker symbol (e.g., AAPL, MSFT)
+        
+    Returns:
+        Price as string or error message
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        if price is None:
+            return "Error: Price not available"
+        return str(price)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 def scrape_price_with_common_settings(page, url, selector):
     """Scrape price using common settings for all sources."""
     user_agent = (
@@ -75,14 +95,18 @@ def scrape_funds(funds, data_dir=None):
         context = browser.new_context()
         page = context.new_page()
         for source, fund_id in funds:
-            url, selector = get_source_config(source, fund_id)
-            if url and selector:
-                try:
-                    price = scrape_price_with_common_settings(page, url, selector)
-                except Exception as e:
-                    price = f"Error: {e}"
+            # Use API for GF source, scraping for others
+            if source.upper() == "GF":
+                price = fetch_price_api(fund_id)
             else:
-                price = "N/A"
+                url, selector = get_source_config(source, fund_id)
+                if url and selector:
+                    try:
+                        price = scrape_price_with_common_settings(page, url, selector)
+                    except Exception as e:
+                        price = f"Error: {e}"
+                else:
+                    price = "N/A"
             results.append([fund_id, today, price])
             # Write latest_<identifier>.price file
             latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
