@@ -115,11 +115,69 @@ def scrape_funds(funds, data_dir=None):
     
     return results
 
+def _read_price_history(history_csv):
+    """Read existing price history and return rows with index map.
+    
+    Args:
+        history_csv: Path to history CSV file
+        
+    Returns:
+        Tuple of (history_rows, existing_history_map) where:
+        - history_rows: List of [fund_id, date, price] rows
+        - existing_history_map: Dict mapping (fund_id, date) -> row_index
+    """
+    existing_history = {}
+    history_rows = []
+    
+    if os.path.isfile(history_csv):
+        with open(history_csv, mode="r", newline="") as file:
+            reader = csv.reader(file)
+            next(reader, None)  # Skip header
+            for row in reader:
+                if len(row) >= 3:
+                    fund_id, date, price = row[0], row[1], row[2]
+                    key = (fund_id, date)
+                    existing_history[key] = len(history_rows)
+                    history_rows.append([fund_id, date, price])
+    
+    return history_rows, existing_history
+
+def _merge_price_results(results, history_rows, existing_history):
+    """Merge new results with existing history, updating duplicates.
+    
+    Args:
+        results: New price results to add/update
+        history_rows: Existing history rows
+        existing_history: Map of (fund_id, date) -> row_index
+        
+    Returns:
+        Updated history_rows list
+    """
+    for result in results:
+        fund_id, date, price = result[0], result[1], result[2]
+        key = (fund_id, date)
+        
+        if key in existing_history:
+            # Update existing entry with latest price
+            idx = existing_history[key]
+            history_rows[idx] = [fund_id, date, price]
+        else:
+            # Add new entry
+            history_rows.append([fund_id, date, price])
+            existing_history[key] = len(history_rows) - 1
+    
+    return history_rows
+
 def write_results(results, data_dir=None):
     """Write results to CSV files.
     
-    For history file, prevents duplicates by updating existing entries
+    Latest prices file is overwritten on each run.
+    History file prevents duplicates by updating existing entries
     for the same fund and date combination.
+    
+    Args:
+        results: List of [fund_id, date, price] results
+        data_dir: Directory for output files (default: DATA_DIR)
     """
     if data_dir is None:
         data_dir = DATA_DIR
@@ -133,34 +191,9 @@ def write_results(results, data_dir=None):
         writer.writerow(["Fund", "Date", "Price"])
         writer.writerows(results)
 
-    # Read existing history to prevent duplicates
-    existing_history = {}
-    history_rows = []
-    file_exists = os.path.isfile(history_csv)
-    
-    if file_exists:
-        with open(history_csv, mode="r", newline="") as file:
-            reader = csv.reader(file)
-            header = next(reader, None)
-            for row in reader:
-                if len(row) >= 3:
-                    fund_id, date, price = row[0], row[1], row[2]
-                    key = (fund_id, date)
-                    existing_history[key] = len(history_rows)
-                    history_rows.append([fund_id, date, price])
-    
-    # Update existing entries or add new ones
-    for result in results:
-        fund_id, date, price = result[0], result[1], result[2]
-        key = (fund_id, date)
-        if key in existing_history:
-            # Update existing entry
-            idx = existing_history[key]
-            history_rows[idx] = [fund_id, date, price]
-        else:
-            # Add new entry
-            history_rows.append([fund_id, date, price])
-            existing_history[key] = len(history_rows) - 1
+    # Read existing history and merge with new results
+    history_rows, existing_history = _read_price_history(history_csv)
+    history_rows = _merge_price_results(results, history_rows, existing_history)
     
     # Write complete history back to file
     with open(history_csv, mode="w", newline="") as file:
