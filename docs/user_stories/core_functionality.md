@@ -135,22 +135,22 @@
 **So that** I can access an additional reliable data source for fund pricing information
 
 ### Acceptance Criteria:
-- [ ] System can scrape prices from Google Finance using fund symbols
-- [ ] Google Finance source uses appropriate URL patterns and selectors
-- [ ] System handles Google Finance-specific error cases gracefully
-- [ ] Google Finance returns price data in consistent format with other sources
-- [ ] Source code "GF" is supported in configuration file
-- [ ] System validates Google Finance fund symbols before scraping
-- [ ] Network timeouts and rate limiting are handled appropriately
+- [x] System can scrape prices from Google Finance using fund symbols
+- [x] Google Finance source uses appropriate URL patterns and selectors
+- [x] System handles Google Finance-specific error cases gracefully
+- [x] Google Finance returns price data in consistent format with other sources
+- [x] Source code "GF" is supported in configuration file
+- [x] System validates Google Finance fund symbols before scraping
+- [x] Network timeouts and rate limiting are handled appropriately
 
 ### Definition of Done:
-- [ ] Google Finance scraping implemented and tested
-- [ ] Error handling for Google Finance source implemented
-- [ ] Unit tests for Google Finance scraping pass
-- [ ] Functional tests against real Google Finance website pass
-- [ ] Documentation updated with Google Finance examples
-- [ ] Configuration file format updated to include GF source code
-- [ ] Data source table in README updated with Google Finance details
+- [x] Google Finance scraping implemented and tested
+- [x] Error handling for Google Finance source implemented
+- [x] Unit tests for Google Finance scraping pass
+- [x] Functional tests against real Google Finance website pass
+- [x] Documentation updated with Google Finance examples
+- [x] Configuration file format updated to include GF source code
+- [x] Data source table in README updated with Google Finance details
 
 ### Technical Requirements:
 - URL pattern: `https://www.google.com/finance/quote/<symbol>`
