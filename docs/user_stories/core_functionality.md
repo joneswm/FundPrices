@@ -203,11 +203,12 @@
 
 ### Technical Requirements:
 - Read existing history file before writing
-- Build in-memory map of (fund_id, date) -> row_index
-- Update existing rows or append new rows as appropriate
+- Filter out entries with today's date
+- Append new results for today
 - Write complete history back to file
 - Handle edge cases: empty file, missing file, corrupted data
 - Maintain CSV format compatibility
+- Simple implementation without complex data structures
 
 ### Dependencies:
 - Depends on US-004 (CSV Data Export) for history file structure

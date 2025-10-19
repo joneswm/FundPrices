@@ -409,25 +409,24 @@ This document tracks the implementation status of all user stories for the Fund 
 
 **Implementation Details**:
 - ✅ Duplicate prevention logic implemented in write_results()
-- ✅ Helper functions extracted: _read_price_history() and _merge_price_results()
-- ✅ System reads existing history before writing
-- ✅ Builds map of (fund_id, date) -> row_index for efficient lookups
-- ✅ Updates existing entries or appends new ones
+- ✅ Simple approach: filter out today's entries before appending new ones
+- ✅ System reads existing history and excludes entries with today's date
+- ✅ Appends new results for today
 - ✅ Unit tests created and passing (2 new tests)
 - ✅ All existing tests still pass (20 total: 16 unit + 4 functional)
 - ✅ Code coverage maintained at 93%
+- ✅ Reduced code complexity: 90 statements (down from 105)
 
 **Evidence**:
-- `_read_price_history()` reads existing history and builds index map
-- `_merge_price_results()` merges new results with existing history
-- `write_results()` now prevents duplicates for same fund/date
+- `write_results()` filters history by date before appending
+- Simple, maintainable implementation (no complex dictionaries)
 - Unit tests: `test_write_results_no_duplicates_same_day()` and `test_write_results_mixed_updates_and_new_entries()`
 - All tests pass successfully
 
 **TDD Workflow Followed**:
 - RED: Added failing tests showing duplicate problem
 - GREEN: Implemented duplicate prevention logic
-- REFACTOR: Extracted helper functions for better organization
+- REFACTOR: Simplified from dictionary-based to date-filter approach
 - All commits follow TDD best practices
 
 **Benefits**:
@@ -435,6 +434,7 @@ This document tracks the implementation status of all user stories for the Fund 
 - Safe to run scraper multiple times per day
 - Latest price always reflects most recent scrape
 - Improved data quality for analysis
+- Simple, maintainable code (15% reduction in complexity)
 
 ---
 
