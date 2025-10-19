@@ -26,6 +26,9 @@ def get_source_config(source, fund_id):
     elif source.upper() == "MS":
         url = f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}"
         selector = '#mainContent_quicktakeContent_fvOverview_lblNAV'
+    elif source.upper() == "GF":
+        url = f"https://www.google.com/finance/quote/{fund_id}"
+        selector = '.YMlKec.fxKbKc'
     else:
         return None, None
     return url, selector
