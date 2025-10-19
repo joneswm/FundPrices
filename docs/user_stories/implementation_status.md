@@ -369,30 +369,38 @@ This document tracks the implementation status of all user stories for the Fund 
 
 ---
 
-### US-025: Google Finance Price Scraping
+### US-025: Yahoo Finance API Integration (Alternative to Google Finance)
 **Status**: ✅ **COMPLETED**
 
 **Implementation Details**:
-- ✅ Google Finance scraping implemented
-- ✅ Source code "GF" supported in configuration
-- ✅ URL pattern: `https://www.google.com/finance/quote/{symbol}`
-- ✅ CSS selector: `.YMlKec` (price element)
-- ✅ Error handling implemented (consistent with other sources)
-- ✅ Unit tests created and passing
+- ✅ Yahoo Finance API integration implemented using yfinance library
+- ✅ Source code "GF" supported in configuration (uses API instead of scraping)
+- ✅ API method: `yf.Ticker(symbol).info['currentPrice']` or `regularMarketPrice`
+- ✅ Error handling implemented for API failures
+- ✅ Unit tests created and passing (3 API-specific tests)
 - ✅ Functional test created and passing
 - ✅ Documentation updated
+- ✅ yfinance>=0.2.0 added to requirements.txt
+- ✅ Code coverage maintained at 92%
 
 **Evidence**: 
-- `get_source_config()` function supports "GF" source code
-- Unit tests: `test_get_source_config_google_finance()` and `test_get_source_config_google_finance_case_insensitive()`
-- Functional test: `test_functional_google_finance_scraping()`
-- All tests pass successfully
+- `fetch_price_api()` function implements Yahoo Finance API integration
+- `scrape_funds()` function uses API for GF source instead of scraping
+- Unit tests: `test_fetch_price_api_valid_symbol()`, `test_fetch_price_api_invalid_symbol()`, `test_fetch_price_api_mock()`
+- Functional test: `test_functional_google_finance_scraping()` (now uses API)
+- All 18 tests pass successfully (14 unit + 4 functional)
 
 **TDD Workflow Followed**:
-- RED: Added failing tests for Google Finance configuration
-- GREEN: Implemented minimal code to pass tests
-- REFACTOR: Improved code structure with dictionary-based configuration
+- RED: Added failing tests for API integration
+- GREEN: Implemented fetch_price_api() and integrated with scrape_funds()
+- REFACTOR: Removed GF from scraping config, clarified API usage
 - All commits follow TDD best practices
+
+**Benefits of API Approach**:
+- More reliable than web scraping (no selector breakage)
+- Faster execution (no browser automation needed for GF)
+- Structured JSON data from official API
+- Better error handling and rate limit management
 
 ---
 

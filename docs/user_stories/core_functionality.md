@@ -135,24 +135,24 @@
 **So that** I can access reliable, structured data without the fragility of web scraping
 
 ### Acceptance Criteria:
-- [ ] System can fetch prices using Yahoo Finance API (yfinance library)
-- [ ] API-based approach replaces screen scraping for Google Finance source
-- [ ] System handles API-specific error cases gracefully (rate limits, invalid symbols)
-- [ ] API returns price data in consistent format with other sources
-- [ ] Source code "GF" continues to work but uses API instead of scraping
-- [ ] System validates fund symbols before API calls
-- [ ] API timeouts and rate limiting are handled appropriately
-- [ ] yfinance library added to requirements.txt
+- [x] System can fetch prices using Yahoo Finance API (yfinance library)
+- [x] API-based approach replaces screen scraping for Google Finance source
+- [x] System handles API-specific error cases gracefully (rate limits, invalid symbols)
+- [x] API returns price data in consistent format with other sources
+- [x] Source code "GF" continues to work but uses API instead of scraping
+- [x] System validates fund symbols before API calls
+- [x] API timeouts and rate limiting are handled appropriately
+- [x] yfinance library added to requirements.txt
 
 ### Definition of Done:
-- [ ] yfinance library integrated and tested
-- [ ] Error handling for API failures implemented
-- [ ] Unit tests for API integration pass
-- [ ] Functional tests against real Yahoo Finance API pass
-- [ ] Documentation updated with API approach
-- [ ] Configuration file format remains compatible
-- [ ] Data source table in README updated with API details
-- [ ] Screen scraping code removed/replaced with API calls
+- [x] yfinance library integrated and tested
+- [x] Error handling for API failures implemented
+- [x] Unit tests for API integration pass
+- [x] Functional tests against real Yahoo Finance API pass
+- [x] Documentation updated with API approach
+- [x] Configuration file format remains compatible
+- [x] Data source table in README updated with API details
+- [x] Screen scraping code removed/replaced with API calls
 
 ### Technical Requirements:
 - Use `yfinance` library for API access

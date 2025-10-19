@@ -4,11 +4,12 @@ A Python application for scraping fund prices from multiple financial data sourc
 
 ## Features
 
-- **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance, Morningstar, and Google Finance
+- **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance (web + API), Morningstar, and uses Yahoo Finance API for stock quotes
+- **Hybrid approach**: Web scraping for funds, API for stocks (faster and more reliable)
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Full test suite with 16 test cases
+- **Testing**: Full test suite with 18 test cases (92% code coverage)
 
 ## Quick Start
 
@@ -35,8 +36,10 @@ Create or edit `funds.txt` with your fund identifiers:
 FT,GB00B1FXTF86
 YH,IDTG.L
 MS,LU0196696453
-GF,NASDAQ:AAPL
+GF,AAPL
 ```
+
+**Note**: GF (Google Finance) source uses Yahoo Finance API and requires standard ticker symbols (e.g., AAPL, MSFT, GOOGL) without exchange prefixes.
 
 ### Usage
 ```bash
@@ -49,12 +52,12 @@ python test_scrape_fund_price.py
 
 ## Data Sources
 
-| Source | Code | Example URL | Selector | Status |
-|--------|------|-------------|----------|--------|
-| Financial Times | FT | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | `.mod-ui-data-list__value` | ✅ Implemented |
-| Yahoo Finance | YH | `https://sg.finance.yahoo.com/quote/IDTG.L/` | `span[data-testid="qsp-price"]` | ✅ Implemented |
-| Morningstar | MS | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | `#mainContent_quicktakeContent_fvOverview_lblNAV` | ✅ Implemented |
-| Google Finance | GF | `https://www.google.com/finance/quote/NASDAQ:AAPL` | `.YMlKec` | ✅ Implemented |
+| Source | Code | Method | Example | Status |
+|--------|------|--------|---------|--------|
+| Financial Times | FT | Web Scraping | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | ✅ Implemented |
+| Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | ✅ Implemented |
+| Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | ✅ Implemented |
+| Yahoo Finance API | GF | API (yfinance) | `yf.Ticker("AAPL").info['currentPrice']` | ✅ Implemented |
 
 ## Output Files
 
@@ -103,7 +106,7 @@ The project includes automated execution via GitHub Actions:
 
 **Current Implementation**: 96% Complete (24/25 user stories)
 
-- ✅ **Core Functionality**: Multi-source scraping (FT, Yahoo, Morningstar, Google Finance), configuration management, data export
+- ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
 - ✅ **Automation**: GitHub Actions workflows, automated data persistence
 - ✅ **Testing**: Comprehensive unit and functional tests with 90%+ coverage
 - ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
@@ -132,6 +135,7 @@ The test suite includes:
 
 - `playwright>=1.35.0`: Web scraping and browser automation
 - `coverage>=7.2.7`: Code coverage measurement
+- `yfinance>=0.2.0`: Yahoo Finance API for stock/fund prices
 
 ## Contributing
 
