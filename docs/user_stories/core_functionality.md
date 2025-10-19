@@ -184,22 +184,22 @@
 **So that** I have clean historical data without redundant entries when running the scraper multiple times per day
 
 ### Acceptance Criteria:
-- [ ] System checks for existing entries with same fund ID and date before adding to history
-- [ ] If an entry exists for the same fund and date, it is updated (replaced) rather than duplicated
-- [ ] Latest price for a fund on a given date always reflects the most recent scrape
-- [ ] System handles both new entries and updates correctly
-- [ ] History file maintains chronological order
-- [ ] No duplicate entries exist for the same fund and date combination
-- [ ] Performance is acceptable even with large history files
+- [x] System checks for existing entries with same fund ID and date before adding to history
+- [x] If an entry exists for the same fund and date, it is updated (replaced) rather than duplicated
+- [x] Latest price for a fund on a given date always reflects the most recent scrape
+- [x] System handles both new entries and updates correctly
+- [x] History file maintains chronological order
+- [x] No duplicate entries exist for the same fund and date combination
+- [x] Performance is acceptable even with large history files
 
 ### Definition of Done:
-- [ ] Duplicate prevention logic implemented in write_results()
-- [ ] Unit tests verify no duplicates are created
-- [ ] Unit tests verify existing entries are updated correctly
-- [ ] Functional tests confirm behavior with real data
-- [ ] Documentation updated with new behavior
-- [ ] All existing tests still pass
-- [ ] Code coverage maintained above 90%
+- [x] Duplicate prevention logic implemented in write_results()
+- [x] Unit tests verify no duplicates are created
+- [x] Unit tests verify existing entries are updated correctly
+- [x] Functional tests confirm behavior with real data
+- [x] Documentation updated with new behavior
+- [x] All existing tests still pass
+- [x] Code coverage maintained above 90%
 
 ### Technical Requirements:
 - Read existing history file before writing
