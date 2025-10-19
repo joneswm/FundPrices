@@ -11,7 +11,8 @@ from scrape_fund_price import (
     get_source_config, 
     scrape_funds, 
     write_results,
-    fetch_price_api
+    fetch_price_api,
+    main
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -115,6 +116,27 @@ class TestFundPriceScraper(unittest.TestCase):
         price = fetch_price_api("AAPL")
         self.assertEqual(price, "150.25")
         mock_ticker.assert_called_once_with("AAPL")
+    
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_price_api_exception(self, mock_ticker):
+        """Test fetching price via API when exception occurs."""
+        # Mock the yfinance Ticker to raise an exception
+        mock_ticker.side_effect = Exception("Network error")
+        
+        price = fetch_price_api("AAPL")
+        self.assertTrue(price.startswith("Error:"))
+        self.assertIn("Network error", price)
+    
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_price_api_no_price_available(self, mock_ticker):
+        """Test fetching price via API when price is not available."""
+        # Mock the yfinance Ticker with no price data
+        mock_ticker_instance = MagicMock()
+        mock_ticker_instance.info = {}
+        mock_ticker.return_value = mock_ticker_instance
+        
+        price = fetch_price_api("AAPL")
+        self.assertEqual(price, "Error: Price not available")
     
     @patch('scrape_fund_price.sync_playwright')
     def test_scrape_funds_mock(self, mock_playwright):
@@ -275,6 +297,82 @@ class TestFundPriceScraper(unittest.TestCase):
             results = scrape_funds(test_funds, self.test_dir)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0][2], "N/A")  # Should return N/A for invalid source
+    
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_with_gf_source(self, mock_playwright):
+        """Test scraping with GF source (uses API instead of scraping)."""
+        # Mock the Playwright context
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+        
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+        
+        # Test with GF source
+        test_funds = [("GF", "AAPL")]
+        
+        with patch('scrape_fund_price.fetch_price_api', return_value="150.25"):
+            results = scrape_funds(test_funds, self.test_dir)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0][2], "150.25")
+    
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_scraping_exception(self, mock_playwright):
+        """Test error handling when scraping raises exception."""
+        # Mock the Playwright context
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+        
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+        
+        # Make scraping raise an exception
+        mock_page.goto.side_effect = Exception("Timeout")
+        
+        test_funds = [("FT", "TEST123")]
+        results = scrape_funds(test_funds, self.test_dir)
+        
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0][2].startswith("Error:"))
+    
+    def test_write_results_default_data_dir(self):
+        """Test write_results with default data directory."""
+        # Create a temporary funds file
+        test_results = [["TEST123", "2025-01-20", "100.00"]]
+        
+        # Call without data_dir parameter (uses default)
+        import scrape_fund_price
+        original_data_dir = scrape_fund_price.DATA_DIR
+        try:
+            scrape_fund_price.DATA_DIR = self.test_dir
+            write_results(test_results)
+            
+            # Verify files were created in default location
+            latest_csv = os.path.join(self.test_dir, "latest_prices.csv")
+            self.assertTrue(os.path.exists(latest_csv))
+        finally:
+            scrape_fund_price.DATA_DIR = original_data_dir
+    
+    @patch('scrape_fund_price.read_fund_ids')
+    @patch('scrape_fund_price.scrape_funds')
+    @patch('scrape_fund_price.write_results')
+    def test_main_function(self, mock_write, mock_scrape, mock_read):
+        """Test main function orchestration."""
+        # Mock the functions
+        mock_read.return_value = [("FT", "TEST123")]
+        mock_scrape.return_value = [["TEST123", "2025-01-20", "100.00"]]
+        
+        # Call main
+        main()
+        
+        # Verify all functions were called
+        mock_read.assert_called_once()
+        mock_scrape.assert_called_once()
+        mock_write.assert_called_once()
 
 class TestFunctionalScraping(unittest.TestCase):
     """Functional tests that can run against real websites (optional)."""
