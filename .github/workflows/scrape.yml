@@ -37,6 +37,6 @@ jobs:
 
       - name: Commit and push results
         run: |
-          git add data/
+          git add -f data/*.csv
           git commit -m "Update fund prices" || echo "No changes to commit"
           git push

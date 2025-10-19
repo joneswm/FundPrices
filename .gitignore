@@ -73,6 +73,6 @@ ehthumbs.db
 Thumbs.db
 
 # Project-specific
+# Ignore data directory (CSV files will be force-added by GitHub Actions)
 data/
-*.price
-*.csv 
+*.price 
