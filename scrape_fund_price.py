@@ -17,14 +17,17 @@ def read_fund_ids(filename):
         return [tuple(line.strip().split(",", 1)) for line in f if line.strip()]
 
 def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for a given source and fund ID.
+    """Get URL and CSS selector configuration for web scraping sources.
+    
+    Note: GF (Google Finance) source uses API instead of scraping,
+    so it's not included in this configuration.
     
     Args:
-        source: Two-character source code (FT, YH, MS, GF)
+        source: Two-character source code (FT, YH, MS)
         fund_id: Fund identifier specific to the source
         
     Returns:
-        Tuple of (url, selector) or (None, None) if source is invalid
+        Tuple of (url, selector) or (None, None) if source is invalid or uses API
     """
     source_configs = {
         "FT": {
@@ -38,10 +41,6 @@ def get_source_config(source, fund_id):
         "MS": {
             "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
             "selector": '#mainContent_quicktakeContent_fvOverview_lblNAV'
-        },
-        "GF": {
-            "url": f"https://www.google.com/finance/quote/{fund_id}",
-            "selector": '.YMlKec'
         }
     }
     

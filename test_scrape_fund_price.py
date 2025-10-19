@@ -68,20 +68,11 @@ class TestFundPriceScraper(unittest.TestCase):
         self.assertEqual(url, expected_url)
         self.assertEqual(selector, expected_selector)
     
-    def test_get_source_config_google_finance(self):
-        """Test Google Finance source configuration."""
-        url, selector = get_source_config("GF", "NASDAQ:AAPL")
-        expected_url = "https://www.google.com/finance/quote/NASDAQ:AAPL"
-        expected_selector = '.YMlKec'
-        self.assertEqual(url, expected_url)
-        self.assertEqual(selector, expected_selector)
-    
-    def test_get_source_config_google_finance_case_insensitive(self):
-        """Test that Google Finance source configuration is case insensitive."""
-        url1, selector1 = get_source_config("gf", "NASDAQ:AAPL")
-        url2, selector2 = get_source_config("GF", "NASDAQ:AAPL")
-        self.assertEqual(url1, url2)
-        self.assertEqual(selector1, selector2)
+    def test_get_source_config_google_finance_returns_none(self):
+        """Test that Google Finance source returns None (uses API instead)."""
+        url, selector = get_source_config("GF", "AAPL")
+        self.assertIsNone(url)
+        self.assertIsNone(selector)
     
     def test_get_source_config_invalid(self):
         """Test invalid source configuration."""
