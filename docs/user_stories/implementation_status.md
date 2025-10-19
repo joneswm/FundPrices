@@ -413,8 +413,8 @@ This document tracks the implementation status of all user stories for the Fund 
 - ✅ System reads existing history and excludes entries with today's date
 - ✅ Appends new results for today
 - ✅ Unit tests created and passing (2 new tests)
-- ✅ All existing tests still pass (20 total: 16 unit + 4 functional)
-- ✅ Code coverage maintained at 93%
+- ✅ All existing tests still pass (26 total: 22 unit + 4 functional)
+- ✅ Code coverage improved to 97% overall (99% for scrape_fund_price.py)
 - ✅ Reduced code complexity: 90 statements (down from 105)
 
 **Evidence**:

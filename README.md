@@ -9,7 +9,7 @@ A Python application for scraping fund prices from multiple financial data sourc
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Full test suite with 20 test cases (93% code coverage)
+- **Testing**: Full test suite with 26 test cases (97% code coverage)
 
 ## Quick Start
 
@@ -109,7 +109,7 @@ The project includes automated execution via GitHub Actions:
 - ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
 - ✅ **Data Quality**: Duplicate prevention in price history
 - ✅ **Automation**: GitHub Actions workflows, automated data persistence
-- ✅ **Testing**: Comprehensive unit and functional tests with 93% coverage
+- ✅ **Testing**: Comprehensive unit and functional tests with 97% coverage (99% for main code)
 - ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
 - ✅ **TDD Enforcement**: Mandatory Test-Driven Development workflow
 - ✅ **Code Quality**: Standards, tools, and quality gates implemented
