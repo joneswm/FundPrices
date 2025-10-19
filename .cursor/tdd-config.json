@@ -1,0 +1,91 @@
+{
+    "name": "FundPrices TDD Configuration",
+    "version": "1.0.0",
+    "description": "Test-Driven Development configuration for Fund Price Scraping project",
+    "rules": [
+        {
+            "name": "TDD Mandatory",
+            "description": "All development MUST follow Test-Driven Development practices",
+            "severity": "error",
+            "enabled": true
+        },
+        {
+            "name": "RED-GREEN-REFACTOR Cycle",
+            "description": "Every feature MUST follow RED-GREEN-REFACTOR cycle",
+            "severity": "error",
+            "enabled": true
+        },
+        {
+            "name": "Test First",
+            "description": "Tests MUST be written before implementation",
+            "severity": "error",
+            "enabled": true
+        },
+        {
+            "name": "No Code Without Tests",
+            "description": "Never write production code without corresponding tests",
+            "severity": "error",
+            "enabled": true
+        },
+        {
+            "name": "Failing Tests Required",
+            "description": "Tests MUST fail initially (RED phase)",
+            "severity": "warning",
+            "enabled": true
+        },
+        {
+            "name": "Minimal Implementation",
+            "description": "Write only code needed to make tests pass (GREEN phase)",
+            "severity": "warning",
+            "enabled": true
+        },
+        {
+            "name": "Continuous Refactoring",
+            "description": "Refactor code while keeping tests green (REFACTOR phase)",
+            "severity": "info",
+            "enabled": true
+        }
+    ],
+    "workflows": [
+        {
+            "name": "TDD Development Workflow",
+            "steps": [
+                {
+                    "phase": "RED",
+                    "description": "Write failing test",
+                    "shortcut": "Ctrl+Alt+R",
+                    "task": "🔴 TDD: RED Phase - Verify Tests Fail"
+                },
+                {
+                    "phase": "GREEN",
+                    "description": "Write minimal implementation",
+                    "shortcut": "Ctrl+Alt+G",
+                    "task": "🟢 TDD: GREEN Phase - Verify Tests Pass"
+                },
+                {
+                    "phase": "REFACTOR",
+                    "description": "Improve code while keeping tests green",
+                    "shortcut": "Ctrl+Alt+F",
+                    "task": "🔵 TDD: REFACTOR Phase - Verify Refactoring"
+                }
+            ]
+        }
+    ],
+    "shortcuts": {
+        "run_all_tests": "Ctrl+Shift+T",
+        "run_current_test": "Ctrl+Shift+R",
+        "debug_tests": "Ctrl+Shift+D",
+        "tdd_red_phase": "Ctrl+Alt+R",
+        "tdd_green_phase": "Ctrl+Alt+G",
+        "tdd_refactor_phase": "Ctrl+Alt+F"
+    },
+    "templates": {
+        "test_method": "docs/technical_documentation/tdd_templates.md",
+        "implementation": "docs/technical_documentation/tdd_templates.md"
+    },
+    "documentation": {
+        "tdd_workflow": "docs/technical_documentation/tdd_workflow.md",
+        "development_guide": "docs/technical_documentation/development_guide.md",
+        "templates": "docs/technical_documentation/tdd_templates.md"
+    }
+}
