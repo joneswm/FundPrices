@@ -116,7 +116,11 @@ def scrape_funds(funds, data_dir=None):
     return results
 
 def write_results(results, data_dir=None):
-    """Write results to CSV files."""
+    """Write results to CSV files.
+    
+    For history file, prevents duplicates by updating existing entries
+    for the same fund and date combination.
+    """
     if data_dir is None:
         data_dir = DATA_DIR
     
@@ -129,13 +133,40 @@ def write_results(results, data_dir=None):
         writer.writerow(["Fund", "Date", "Price"])
         writer.writerows(results)
 
-    # Append to price history
+    # Read existing history to prevent duplicates
+    existing_history = {}
+    history_rows = []
     file_exists = os.path.isfile(history_csv)
-    with open(history_csv, mode="a", newline="") as file:
+    
+    if file_exists:
+        with open(history_csv, mode="r", newline="") as file:
+            reader = csv.reader(file)
+            header = next(reader, None)
+            for row in reader:
+                if len(row) >= 3:
+                    fund_id, date, price = row[0], row[1], row[2]
+                    key = (fund_id, date)
+                    existing_history[key] = len(history_rows)
+                    history_rows.append([fund_id, date, price])
+    
+    # Update existing entries or add new ones
+    for result in results:
+        fund_id, date, price = result[0], result[1], result[2]
+        key = (fund_id, date)
+        if key in existing_history:
+            # Update existing entry
+            idx = existing_history[key]
+            history_rows[idx] = [fund_id, date, price]
+        else:
+            # Add new entry
+            history_rows.append([fund_id, date, price])
+            existing_history[key] = len(history_rows) - 1
+    
+    # Write complete history back to file
+    with open(history_csv, mode="w", newline="") as file:
         writer = csv.writer(file)
-        if not file_exists:
-            writer.writerow(["Fund", "Date", "Price"])
-        writer.writerows(results)
+        writer.writerow(["Fund", "Date", "Price"])
+        writer.writerows(history_rows)
 
 def main():
     """Main function to run the fund price scraper."""
