@@ -125,3 +125,47 @@
 - [ ] Directory creation tested in various environments
 - [ ] Error handling for directory operations implemented
 - [ ] Unit tests for directory management pass 
+
+---
+
+## US-025: Google Finance Price Scraping
+
+**As** a financial analyst  
+**I want** to scrape fund prices from Google Finance  
+**So that** I can access an additional reliable data source for fund pricing information
+
+### Acceptance Criteria:
+- [ ] System can scrape prices from Google Finance using fund symbols
+- [ ] Google Finance source uses appropriate URL patterns and selectors
+- [ ] System handles Google Finance-specific error cases gracefully
+- [ ] Google Finance returns price data in consistent format with other sources
+- [ ] Source code "GF" is supported in configuration file
+- [ ] System validates Google Finance fund symbols before scraping
+- [ ] Network timeouts and rate limiting are handled appropriately
+
+### Definition of Done:
+- [ ] Google Finance scraping implemented and tested
+- [ ] Error handling for Google Finance source implemented
+- [ ] Unit tests for Google Finance scraping pass
+- [ ] Functional tests against real Google Finance website pass
+- [ ] Documentation updated with Google Finance examples
+- [ ] Configuration file format updated to include GF source code
+- [ ] Data source table in README updated with Google Finance details
+
+### Technical Requirements:
+- URL pattern: `https://www.google.com/finance/quote/<symbol>`
+- CSS selector for price element (to be determined during implementation)
+- Support for various symbol formats (e.g., NASDAQ:AAPL, LON:IDTG)
+- Handle Google Finance's dynamic content loading
+- Implement appropriate wait conditions for price element visibility
+
+### Dependencies:
+- Requires Playwright for web scraping (already available)
+- Depends on US-001 (Multi-Source Fund Price Scraping) architecture
+- Depends on US-002 (Configuration-Based Fund Management) for source code support
+
+### Notes:
+- Google Finance may have different rate limiting policies than other sources
+- Symbol format may vary by exchange (e.g., NASDAQ:AAPL vs LON:IDTG)
+- Consider implementing retry logic for transient failures
+- May need to handle cookie consent dialogs or regional variations

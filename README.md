@@ -4,7 +4,7 @@ A Python application for scraping fund prices from multiple financial data sourc
 
 ## Features
 
-- **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance, and Morningstar
+- **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance, and Morningstar (Google Finance support planned)
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
@@ -35,6 +35,7 @@ Create or edit `funds.txt` with your fund identifiers:
 FT,GB00B1FXTF86
 YH,IDTG.L
 MS,LU0196696453
+# GF,NASDAQ:AAPL  (Google Finance - coming soon)
 ```
 
 ### Usage
@@ -48,11 +49,12 @@ python test_scrape_fund_price.py
 
 ## Data Sources
 
-| Source | Code | Example URL | Selector |
-|--------|------|-------------|----------|
-| Financial Times | FT | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | `.mod-ui-data-list__value` |
-| Yahoo Finance | YH | `https://sg.finance.yahoo.com/quote/IDTG.L/` | `span[data-testid="qsp-price"]` |
-| Morningstar | MS | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | `#mainContent_quicktakeContent_fvOverview_lblNAV` |
+| Source | Code | Example URL | Selector | Status |
+|--------|------|-------------|----------|--------|
+| Financial Times | FT | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | `.mod-ui-data-list__value` | ✅ Implemented |
+| Yahoo Finance | YH | `https://sg.finance.yahoo.com/quote/IDTG.L/` | `span[data-testid="qsp-price"]` | ✅ Implemented |
+| Morningstar | MS | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | `#mainContent_quicktakeContent_fvOverview_lblNAV` | ✅ Implemented |
+| Google Finance | GF | `https://www.google.com/finance/quote/<symbol>` | TBD | ❌ Planned |
 
 ## Output Files
 
@@ -99,17 +101,18 @@ The project includes automated execution via GitHub Actions:
 
 ## Development Status
 
-**Current Implementation**: 96% Complete (23/24 user stories)
+**Current Implementation**: 92% Complete (23/25 user stories)
 
-- ✅ **Core Functionality**: Multi-source scraping, configuration management, data export
+- ✅ **Core Functionality**: Multi-source scraping (FT, Yahoo, Morningstar), configuration management, data export
 - ✅ **Automation**: GitHub Actions workflows, automated data persistence
 - ✅ **Testing**: Comprehensive unit and functional tests with 90%+ coverage
 - ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
 - ✅ **TDD Enforcement**: Mandatory Test-Driven Development workflow
 - ✅ **Code Quality**: Standards, tools, and quality gates implemented
 - ✅ **Development Environment**: Complete setup scripts and validation tools
+- 🔄 **Planned**: Google Finance integration (US-025)
 
-**🎉 Project Ready for Production Use!**
+**🎉 Project Ready for Production Use with Current Sources!**
 
 See [Implementation Status](docs/user_stories/implementation_status.md) for detailed progress tracking.
 

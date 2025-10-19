@@ -369,15 +369,37 @@ This document tracks the implementation status of all user stories for the Fund 
 
 ---
 
+### US-025: Google Finance Price Scraping
+**Status**: ❌ **NOT IMPLEMENTED**
+
+**Implementation Details**:
+- ❌ Google Finance scraping not yet implemented
+- ❌ Source code "GF" not yet supported
+- ❌ URL patterns and selectors not yet defined
+- ❌ Error handling not yet implemented
+- ❌ Tests not yet created
+
+**Next Steps**:
+1. Research Google Finance URL patterns and CSS selectors
+2. Implement `get_source_config()` support for "GF" source code
+3. Add Google Finance scraping logic with appropriate wait conditions
+4. Implement error handling for Google Finance-specific issues
+5. Create unit and functional tests
+6. Update configuration examples and documentation
+
+---
+
 ## Summary
 
 ### Overall Status
-- **Completed**: 23 user stories (96%)
+- **Completed**: 23 user stories (92%)
 - **Partial**: 0 user stories (0%)
-- **Not Implemented**: 1 user story (4%)
+- **Not Implemented**: 2 user stories (8%)
 
 ### Priority Items for Next Development
-All major user stories have been completed! The project is ready for production use.
+1. **US-025**: Google Finance Price Scraping - Add Google Finance as a new data source
+
+All other major user stories have been completed! The project is ready for production use with current sources.
 
 ### Completed Major Features
 - ✅ Multi-source fund price scraping
