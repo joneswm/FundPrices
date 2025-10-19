@@ -13,11 +13,25 @@ A Python application for scraping fund prices from multiple financial data sourc
 
 ## Quick Start
 
-### Prerequisites
+### Using Ona (Recommended)
+
+Open this project in Ona for instant setup:
+
+[![Open in Ona](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/joneswm/FundPrices)
+
+The Dev Container will automatically:
+- Set up Python 3.12 environment
+- Install all dependencies from requirements.txt
+- Install Playwright with Chromium browser
+- Configure VS Code with Python extensions
+
+### Manual Setup
+
+#### Prerequisites
 - Python 3.7 or higher
 - Internet connection
 
-### Installation
+#### Installation
 ```bash
 # Clone repository
 git clone https://github.com/joneswm/FundPrices.git
@@ -137,6 +151,23 @@ The test suite includes:
 - `playwright>=1.35.0`: Web scraping and browser automation
 - `coverage>=7.2.7`: Code coverage measurement
 - `yfinance>=0.2.0`: Yahoo Finance API for stock/fund prices
+
+## Development with Ona
+
+This project is optimized for [Ona](https://www.gitpod.io/ona) (formerly Gitpod):
+
+- **AGENTS.md**: Project-specific guidelines automatically loaded by Ona Agent
+- **Dev Container**: Python 3.12 environment with automatic dependency installation
+- **VS Code Tasks**: Quick access to common commands (Run Tests, Format Code, etc.)
+- **TDD Workflow**: Enforced test-driven development process
+
+### Ona Agent Guidelines
+
+Ona Agent automatically reads `AGENTS.md` for project-specific instructions including:
+- Common commands and testing procedures
+- Project structure and key files
+- Code style and TDD requirements
+- Configuration formats and data sources
 
 ## Contributing
 
