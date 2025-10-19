@@ -71,7 +71,7 @@ class TestFundPriceScraper(unittest.TestCase):
         """Test Google Finance source configuration."""
         url, selector = get_source_config("GF", "NASDAQ:AAPL")
         expected_url = "https://www.google.com/finance/quote/NASDAQ:AAPL"
-        expected_selector = '.YMlKec.fxKbKc'
+        expected_selector = '.YMlKec'
         self.assertEqual(url, expected_url)
         self.assertEqual(selector, expected_selector)
     
@@ -246,6 +246,21 @@ class TestFunctionalScraping(unittest.TestCase):
             float(results[0][2])
         except ValueError:
             self.fail("Price should be a valid number")
+    
+    def test_functional_google_finance_scraping(self):
+        """Functional test for Google Finance scraping (requires internet connection)."""
+        test_funds = [("GF", "NASDAQ:AAPL")]
+        results = scrape_funds(test_funds)
+        
+        self.assertEqual(len(results), 1)
+        self.assertNotEqual(results[0][2], "N/A")
+        self.assertNotEqual(results[0][2], "")
+        # Price should be a number (may have $ prefix)
+        price_str = results[0][2].replace("$", "").replace(",", "")
+        try:
+            float(price_str)
+        except ValueError:
+            self.fail(f"Price should be a valid number, got: {results[0][2]}")
 
 if __name__ == '__main__':
     unittest.main() 

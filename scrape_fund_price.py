@@ -40,7 +40,7 @@ def get_source_config(source, fund_id):
         },
         "GF": {
             "url": f"https://www.google.com/finance/quote/{fund_id}",
-            "selector": '.YMlKec.fxKbKc'
+            "selector": '.YMlKec'
         }
     }
     
