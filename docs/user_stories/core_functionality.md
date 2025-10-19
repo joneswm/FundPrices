@@ -174,3 +174,48 @@
 - Symbol format is simpler (no exchange prefix needed for US stocks)
 - API may have rate limits (typically generous for free tier)
 - Consider caching to reduce API calls if needed
+
+---
+
+## US-026: Prevent Duplicate Price History Entries
+
+**As** a data analyst  
+**I want** the system to prevent duplicate price entries for the same fund on the same date  
+**So that** I have clean historical data without redundant entries when running the scraper multiple times per day
+
+### Acceptance Criteria:
+- [ ] System checks for existing entries with same fund ID and date before adding to history
+- [ ] If an entry exists for the same fund and date, it is updated (replaced) rather than duplicated
+- [ ] Latest price for a fund on a given date always reflects the most recent scrape
+- [ ] System handles both new entries and updates correctly
+- [ ] History file maintains chronological order
+- [ ] No duplicate entries exist for the same fund and date combination
+- [ ] Performance is acceptable even with large history files
+
+### Definition of Done:
+- [ ] Duplicate prevention logic implemented in write_results()
+- [ ] Unit tests verify no duplicates are created
+- [ ] Unit tests verify existing entries are updated correctly
+- [ ] Functional tests confirm behavior with real data
+- [ ] Documentation updated with new behavior
+- [ ] All existing tests still pass
+- [ ] Code coverage maintained above 90%
+
+### Technical Requirements:
+- Read existing history file before writing
+- Build in-memory map of (fund_id, date) -> row_index
+- Update existing rows or append new rows as appropriate
+- Write complete history back to file
+- Handle edge cases: empty file, missing file, corrupted data
+- Maintain CSV format compatibility
+
+### Dependencies:
+- Depends on US-004 (CSV Data Export) for history file structure
+- No breaking changes to existing functionality
+
+### Notes:
+- This is a data quality improvement
+- Prevents issues when running scraper multiple times per day
+- Useful for testing and manual runs
+- Does not affect latest_prices.csv (already overwrites)
+- Consider performance with very large history files (thousands of entries)
