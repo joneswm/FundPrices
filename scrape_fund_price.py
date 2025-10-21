@@ -3,6 +3,8 @@ import datetime
 import csv
 import os
 import yfinance as yf
+import argparse
+import re
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
@@ -162,11 +164,94 @@ def write_results(results, data_dir=None):
         writer.writerow(["Fund", "Date", "Price"])
         writer.writerows(history_rows)
 
+def parse_arguments(args=None):
+    """Parse command-line arguments.
+    
+    Args:
+        args: List of arguments to parse (for testing). If None, uses sys.argv.
+        
+    Returns:
+        Parsed arguments namespace
+    """
+    parser = argparse.ArgumentParser(description='Fund Price Scraper with Historical Data Support')
+    parser.add_argument('--history', type=str, help='Symbol to fetch historical data for')
+    parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
+    
+    return parser.parse_args(args)
+
+
+def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
+    """Fetch historical price data for a symbol.
+    
+    Args:
+        symbol: Stock/fund symbol
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format (can be None)
+        data_dir: Directory to save the CSV file
+        
+    Returns:
+        Filename of saved CSV or error message starting with "Error:"
+    """
+    # Validate date format
+    date_pattern = r'^\d{4}-\d{2}-\d{2}$'
+    if not re.match(date_pattern, start_date):
+        return "Error: Invalid start date format. Use YYYY-MM-DD"
+    
+    if end_date and not re.match(date_pattern, end_date):
+        return "Error: Invalid end date format. Use YYYY-MM-DD"
+    
+    # Validate start date is before end date
+    if end_date and start_date > end_date:
+        return "Error: Start date must be before end date"
+    
+    try:
+        # Fetch historical data using yfinance
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(start=start_date, end=end_date)
+        
+        # Check if data was returned
+        if hist.empty:
+            return f"Error: No data found for symbol {symbol}"
+        
+        # Create filename
+        end_str = end_date if end_date else datetime.date.today().isoformat()
+        filename = f"history_{symbol}_{start_date}_{end_str}.csv"
+        filepath = os.path.join(data_dir, filename)
+        
+        # Ensure data directory exists
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # Save to CSV
+        hist.to_csv(filepath)
+        
+        return filepath
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 def main():
     """Main function to run the fund price scraper."""
-    funds = read_fund_ids(FUNDS_FILE)
-    results = scrape_funds(funds)
-    write_results(results)
+    args = parse_arguments()
+    
+    # Check if historical data mode
+    if args.history:
+        if not args.start:
+            print("Error: --start date is required when using --history")
+            return
+        
+        result = fetch_historical_data(args.history, args.start, args.end)
+        
+        if result.startswith("Error:"):
+            print(result)
+        else:
+            print(f"Historical data saved to: {result}")
+    else:
+        # Normal scraping mode
+        funds = read_fund_ids(FUNDS_FILE)
+        results = scrape_funds(funds)
+        write_results(results)
 
 if __name__ == "__main__":
     main()

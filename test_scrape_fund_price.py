@@ -359,11 +359,17 @@ class TestFundPriceScraper(unittest.TestCase):
         finally:
             scrape_fund_price.DATA_DIR = original_data_dir
     
+    @patch('scrape_fund_price.parse_arguments')
     @patch('scrape_fund_price.read_fund_ids')
     @patch('scrape_fund_price.scrape_funds')
     @patch('scrape_fund_price.write_results')
-    def test_main_function(self, mock_write, mock_scrape, mock_read):
+    def test_main_function(self, mock_write, mock_scrape, mock_read, mock_parse):
         """Test main function orchestration."""
+        # Mock the arguments to return normal mode (no history)
+        mock_args = MagicMock()
+        mock_args.history = None
+        mock_parse.return_value = mock_args
+        
         # Mock the functions
         mock_read.return_value = [("FT", "TEST123")]
         mock_scrape.return_value = [["TEST123", "2025-01-20", "100.00"]]
@@ -372,6 +378,7 @@ class TestFundPriceScraper(unittest.TestCase):
         main()
         
         # Verify all functions were called
+        mock_parse.assert_called_once()
         mock_read.assert_called_once()
         mock_scrape.assert_called_once()
         mock_write.assert_called_once()
@@ -474,6 +481,7 @@ class TestHistoricalData(unittest.TestCase):
         """Test fetching historical data for a valid symbol."""
         # Mock the yfinance Ticker object
         mock_hist = MagicMock()
+        mock_hist.empty = False  # Indicate data was returned
         mock_hist.to_csv = MagicMock()
         mock_ticker.return_value.history.return_value = mock_hist
         
