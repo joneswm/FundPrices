@@ -5,11 +5,12 @@ A Python application for scraping fund prices from multiple financial data sourc
 ## Features
 
 - **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance (web + API), Morningstar, and uses Yahoo Finance API for stock quotes
+- **Historical data retrieval**: Fetch historical price data for any stock/fund over a specified date range
 - **Hybrid approach**: Web scraping for funds, API for stocks (faster and more reliable)
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Full test suite with 26 test cases (97% code coverage)
+- **Testing**: Full test suite with 34 test cases (92% code coverage)
 
 ## Quick Start
 
@@ -56,12 +57,26 @@ GF,AAPL
 **Note**: GF (Google Finance) source uses Yahoo Finance API and requires standard ticker symbols (e.g., AAPL, MSFT, GOOGL) without exchange prefixes.
 
 ### Usage
+
+#### Normal Mode (Scrape Current Prices)
 ```bash
-# Run once
+# Run once to scrape current prices from configured funds
 python scrape_fund_price.py
 
 # Run tests
 python test_scrape_fund_price.py
+```
+
+#### Historical Data Mode
+```bash
+# Get historical data for a specific date range
+python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31
+
+# Get historical data from start date to today
+python scrape_fund_price.py --history MSFT --start 2024-11-01
+
+# View help for all options
+python scrape_fund_price.py --help
 ```
 
 ## Data Sources
@@ -77,14 +92,28 @@ python test_scrape_fund_price.py
 
 The application creates the following files in the `data/` directory:
 
+### Normal Mode
 - `latest_prices.csv`: Most recent prices for each fund
 - `prices_history.csv`: Historical price data with timestamps
+- `latest_<identifier>.price`: Individual price files for each fund
 
-### CSV Format
+### Historical Data Mode
+- `history_<SYMBOL>_<START>_<END>.csv`: Historical OHLCV data for the specified date range
+
+### CSV Formats
+
+**Normal Mode (latest_prices.csv)**:
 ```csv
-source,fund_id,price,timestamp,status
-FT,GB00B1FXTF86,1.2345,2024-01-15 10:30:00,success
-YH,IDTG.L,2.5678,2024-01-15 10:30:01,success
+Fund,Date,Price
+GB00B1FXTF86,2024-01-15,1.2345
+IDTG.L,2024-01-15,2.5678
+```
+
+**Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
+```csv
+Date,Open,High,Low,Close,Volume,Dividends,Stock Splits
+2024-01-02,185.58,186.86,182.35,184.08,82488700,0.0,0.0
+2024-01-03,182.67,184.32,181.89,182.70,58414500,0.0,0.0
 ```
 
 ## Automation
@@ -118,12 +147,13 @@ The project includes automated execution via GitHub Actions:
 
 ## Development Status
 
-**Current Implementation**: 100% Complete (26/26 user stories)
+**Current Implementation**: 100% Complete (27/27 user stories)
 
 - ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
+- ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges
 - ✅ **Data Quality**: Duplicate prevention in price history
 - ✅ **Automation**: GitHub Actions workflows, automated data persistence
-- ✅ **Testing**: Comprehensive unit and functional tests with 97% coverage (99% for main code)
+- ✅ **Testing**: Comprehensive unit and functional tests with 92% coverage
 - ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
 - ✅ **TDD Enforcement**: Mandatory Test-Driven Development workflow
 - ✅ **Code Quality**: Standards, tools, and quality gates implemented

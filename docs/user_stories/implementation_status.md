@@ -438,18 +438,66 @@ This document tracks the implementation status of all user stories for the Fund 
 
 ---
 
+### US-027: Historical Price Data Retrieval
+**Status**: ✅ **COMPLETED**
+
+**Implementation Details**:
+- ✅ Command-line interface with --history, --start, --end options
+- ✅ Historical data retrieval using yfinance library
+- ✅ Date format validation (YYYY-MM-DD)
+- ✅ Start/end date logic validation
+- ✅ CSV export with Date, Open, High, Low, Close, Volume, Dividends, Stock Splits
+- ✅ Error handling for invalid symbols and date ranges
+- ✅ Unit tests created and passing (7 new tests)
+- ✅ Functional test created and passing
+- ✅ Code coverage maintained at 92%
+- ✅ Enhanced help text with examples
+
+**Evidence**:
+- `parse_arguments()` function implements command-line parsing
+- `fetch_historical_data()` function retrieves and saves historical data
+- `main()` function supports both normal and historical modes
+- Unit tests: 7 tests covering all functionality and error cases
+- Functional test: `test_functional_historical_data()` validates real API calls
+- All 30 tests pass successfully (29 unit + 1 functional for historical)
+
+**TDD Workflow Followed**:
+- RED: Added failing tests for parse_arguments() and fetch_historical_data()
+- GREEN: Implemented functions to pass all tests
+- REFACTOR: Enhanced help text and added functional test
+- All commits follow TDD best practices
+
+**Usage Examples**:
+```bash
+# Get AAPL history for specific date range
+python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31
+
+# Get MSFT history from start date to today
+python scrape_fund_price.py --history MSFT --start 2024-11-01
+```
+
+**Benefits**:
+- Historical analysis capability for stocks and funds
+- Flexible date range selection
+- Comprehensive error handling and validation
+- Clean CSV output format for analysis tools
+- Maintains backward compatibility with normal scraping mode
+
+---
+
 ## Summary
 
 ### Overall Status
-- **Completed**: 26 user stories (100%)
+- **Completed**: 27 user stories (100%)
 - **Partial**: 0 user stories (0%)
 - **Not Implemented**: 0 user stories (0%)
 
 ### Priority Items for Next Development
-🎉 **All 26 user stories have been completed!** The project is production-ready with complete feature set and data quality improvements.
+🎉 **All 27 user stories have been completed!** The project is production-ready with complete feature set including historical data retrieval.
 
 ### Completed Major Features
 - ✅ Multi-source fund price scraping (FT, Yahoo Finance, Morningstar, Google Finance)
+- ✅ Historical price data retrieval for any stock/fund
 - ✅ Automated daily collection via GitHub Actions
 - ✅ Comprehensive testing suite with 90%+ coverage
 - ✅ IDE Integration with VS Code/Cursor test support
@@ -458,4 +506,4 @@ This document tracks the implementation status of all user stories for the Fund 
 - ✅ **Complete development environment setup**
 - ✅ Complete documentation and templates
 
-The project has achieved 100% implementation with all core functionality, automation, testing, IDE integration, TDD practices, and development environment fully implemented. All four data sources are now operational.
+The project has achieved 100% implementation with all core functionality, automation, testing, IDE integration, TDD practices, and development environment fully implemented. All four data sources are operational plus historical data retrieval capability.

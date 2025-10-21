@@ -7,26 +7,26 @@
 **So that** I can analyze price trends and perform historical analysis
 
 ### Acceptance Criteria:
-- [ ] Command-line option to specify symbol/ticker
-- [ ] Command-line option to specify start date
-- [ ] Command-line option to specify end date
-- [ ] System retrieves historical data from Yahoo Finance API
-- [ ] Data includes Date, Open, High, Low, Close, Volume
-- [ ] Results saved to CSV file in data/ directory
-- [ ] Error handling for invalid symbols
-- [ ] Error handling for invalid date ranges
-- [ ] Date format validation (YYYY-MM-DD)
-- [ ] Clear error messages for user
+- [x] Command-line option to specify symbol/ticker
+- [x] Command-line option to specify start date
+- [x] Command-line option to specify end date
+- [x] System retrieves historical data from Yahoo Finance API
+- [x] Data includes Date, Open, High, Low, Close, Volume
+- [x] Results saved to CSV file in data/ directory
+- [x] Error handling for invalid symbols
+- [x] Error handling for invalid date ranges
+- [x] Date format validation (YYYY-MM-DD)
+- [x] Clear error messages for user
 
 ### Definition of Done:
-- [ ] Command-line interface implemented
-- [ ] Historical data retrieval function implemented
-- [ ] CSV export functionality implemented
-- [ ] Unit tests written and passing (TDD)
-- [ ] Functional tests written and passing
-- [ ] Error handling tested
-- [ ] Documentation updated
-- [ ] Code coverage maintained above 90%
+- [x] Command-line interface implemented
+- [x] Historical data retrieval function implemented
+- [x] CSV export functionality implemented
+- [x] Unit tests written and passing (TDD)
+- [x] Functional tests written and passing
+- [x] Error handling tested
+- [x] Documentation updated
+- [x] Code coverage maintained above 90%
 
 ### Technical Notes:
 - Use yfinance library's `history()` method
