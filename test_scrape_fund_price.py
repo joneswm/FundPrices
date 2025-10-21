@@ -442,6 +442,42 @@ class TestFunctionalScraping(unittest.TestCase):
             float(results[0][2])
         except ValueError:
             self.fail(f"Price should be a valid number, got: {results[0][2]}")
+    
+    def test_functional_historical_data(self):
+        """Functional test for historical data retrieval (requires internet connection)."""
+        # Test with a well-known stock
+        test_symbol = "AAPL"
+        start_date = "2024-01-02"
+        end_date = "2024-01-05"
+        
+        # Create temporary directory for test
+        test_dir = tempfile.mkdtemp()
+        
+        try:
+            result = fetch_historical_data(test_symbol, start_date, end_date, test_dir)
+            
+            # Should not be an error
+            self.assertFalse(result.startswith("Error:"), f"Got error: {result}")
+            
+            # File should exist
+            self.assertTrue(os.path.exists(result), f"File not found: {result}")
+            
+            # File should contain data
+            with open(result, 'r') as f:
+                lines = f.readlines()
+                self.assertGreater(len(lines), 1, "CSV should have header and data")
+                
+                # Check header
+                header = lines[0].strip()
+                self.assertIn('Date', header)
+                self.assertIn('Open', header)
+                self.assertIn('High', header)
+                self.assertIn('Low', header)
+                self.assertIn('Close', header)
+                
+        finally:
+            # Clean up
+            shutil.rmtree(test_dir)
 
 
 class TestHistoricalData(unittest.TestCase):

@@ -173,10 +173,19 @@ def parse_arguments(args=None):
     Returns:
         Parsed arguments namespace
     """
-    parser = argparse.ArgumentParser(description='Fund Price Scraper with Historical Data Support')
-    parser.add_argument('--history', type=str, help='Symbol to fetch historical data for')
-    parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
-    parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
+    parser = argparse.ArgumentParser(
+        description='Fund Price Scraper with Historical Data Support',
+        epilog='Examples:\n'
+               '  Normal mode: python scrape_fund_price.py\n'
+               '  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('--history', type=str, metavar='SYMBOL',
+                        help='Symbol to fetch historical data for (e.g., AAPL, MSFT)')
+    parser.add_argument('--start', type=str, metavar='YYYY-MM-DD',
+                        help='Start date in YYYY-MM-DD format (required with --history)')
+    parser.add_argument('--end', type=str, metavar='YYYY-MM-DD',
+                        help='End date in YYYY-MM-DD format (optional, defaults to today)')
     
     return parser.parse_args(args)
 
