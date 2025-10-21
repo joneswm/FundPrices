@@ -12,6 +12,8 @@ from scrape_fund_price import (
     scrape_funds, 
     write_results,
     fetch_price_api,
+    fetch_historical_data,
+    parse_arguments,
     main
 )
 
@@ -433,6 +435,85 @@ class TestFunctionalScraping(unittest.TestCase):
             float(results[0][2])
         except ValueError:
             self.fail(f"Price should be a valid number, got: {results[0][2]}")
+
+
+class TestHistoricalData(unittest.TestCase):
+    """Test historical data retrieval functionality."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_dir = tempfile.mkdtemp()
+        
+    def tearDown(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.test_dir)
+    
+    def test_parse_arguments_history_with_dates(self):
+        """Test parsing command-line arguments for historical data with start and end dates."""
+        args = parse_arguments(['--history', 'AAPL', '--start', '2024-01-01', '--end', '2024-12-31'])
+        self.assertEqual(args.history, 'AAPL')
+        self.assertEqual(args.start, '2024-01-01')
+        self.assertEqual(args.end, '2024-12-31')
+    
+    def test_parse_arguments_history_start_only(self):
+        """Test parsing command-line arguments with only start date."""
+        args = parse_arguments(['--history', 'MSFT', '--start', '2024-11-01'])
+        self.assertEqual(args.history, 'MSFT')
+        self.assertEqual(args.start, '2024-11-01')
+        self.assertIsNone(args.end)
+    
+    def test_parse_arguments_no_history(self):
+        """Test parsing command-line arguments without history flag."""
+        args = parse_arguments([])
+        self.assertIsNone(args.history)
+        self.assertIsNone(args.start)
+        self.assertIsNone(args.end)
+    
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_historical_data_valid_symbol(self, mock_ticker):
+        """Test fetching historical data for a valid symbol."""
+        # Mock the yfinance Ticker object
+        mock_hist = MagicMock()
+        mock_hist.to_csv = MagicMock()
+        mock_ticker.return_value.history.return_value = mock_hist
+        
+        result = fetch_historical_data('AAPL', '2024-01-01', '2024-12-31', self.test_dir)
+        
+        # Verify the function was called correctly
+        mock_ticker.assert_called_once_with('AAPL')
+        mock_ticker.return_value.history.assert_called_once_with(start='2024-01-01', end='2024-12-31')
+        
+        # Verify result contains expected filename
+        self.assertIn('history_AAPL', result)
+        self.assertTrue(result.endswith('.csv'))
+    
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_historical_data_invalid_symbol(self, mock_ticker):
+        """Test fetching historical data for an invalid symbol."""
+        # Mock the yfinance Ticker to raise an exception
+        mock_ticker.return_value.history.side_effect = Exception("Invalid symbol")
+        
+        result = fetch_historical_data('INVALID_XYZ', '2024-01-01', '2024-12-31', self.test_dir)
+        
+        # Should return error message
+        self.assertTrue(result.startswith("Error:"))
+    
+    def test_fetch_historical_data_invalid_date_format(self):
+        """Test fetching historical data with invalid date format."""
+        result = fetch_historical_data('AAPL', '01-01-2024', '2024-12-31', self.test_dir)
+        
+        # Should return error message about date format
+        self.assertTrue(result.startswith("Error:"))
+        self.assertIn("date", result.lower())
+    
+    def test_fetch_historical_data_start_after_end(self):
+        """Test fetching historical data with start date after end date."""
+        result = fetch_historical_data('AAPL', '2024-12-31', '2024-01-01', self.test_dir)
+        
+        # Should return error message
+        self.assertTrue(result.startswith("Error:"))
+        self.assertIn("start", result.lower())
+
 
 if __name__ == '__main__':
     unittest.main() 
