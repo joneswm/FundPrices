@@ -133,21 +133,33 @@ The project includes automated execution via GitHub Actions:
 
 ## Documentation
 
-- [Technical Documentation](docs/technical_documentation/README.md)
-- [User Stories](docs/user_stories/README.md)
+### Core Documentation
+- [Constitution](constitution.md) - **Project principles and standards**
+- [Specifications](specs/README.md) - **Spec Kit specifications for features**
 - [Implementation Status](docs/user_stories/implementation_status.md) - **Track development progress**
+
+### Technical Documentation
+- [Technical Documentation](docs/technical_documentation/README.md)
 - [API Reference](docs/technical_documentation/api_reference.md)
+- [Architecture](docs/technical_documentation/architecture.md)
 - [Deployment Guide](docs/technical_documentation/deployment.md)
 - [Troubleshooting](docs/technical_documentation/troubleshooting.md)
+
+### Development Guides
 - [Development Guide](docs/technical_documentation/development_guide.md)
 - [TDD Workflow](docs/technical_documentation/tdd_workflow.md) - **🚨 MANDATORY**
-- [TDD Templates](docs/technical_documentation/tdd_templates.md)
+- [Spec Kit Assessment](docs/technical_documentation/spec_kit_assessment.md) - **Migration guide**
 - [IDE Setup Guide](docs/technical_documentation/ide_setup.md)
 - [Development Tools Config](docs/technical_documentation/dev_tools_config.md)
 
+### Historical Reference
+- [Archived User Stories](docs/archive/user_stories/README.md) - **Legacy user stories (100% complete)**
+
 ## Development Status
 
-**Current Implementation**: 100% Complete (27/27 user stories)
+**Current Implementation**: 100% Complete (27/27 legacy user stories)  
+**Spec Kit Migration**: Phase 1 Complete (2024-11-20)  
+**New Features**: Use Spec Kit format in `specs/` directory
 
 - ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
 - ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges

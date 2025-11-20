@@ -1,57 +1,95 @@
 # User Stories
 
-This directory contains user stories for the Fund Price Scraping project. Each user story follows the standard format:
+**Status**: Migrated to Spec Kit (2024-11-20)
 
-**As** [user role]  
-**I want** [feature/functionality]  
-**So that** [benefit/value]
+---
 
-## Structure
+## Current Status
 
-- `core_functionality.md` - Core scraping and data management features
-- `automation.md` - GitHub Actions automation features
-- `testing.md` - Testing and quality assurance features
-- `configuration.md` - Configuration and setup features
-- `implementation_status.md` - **Implementation status tracking for all user stories**
+This directory now contains only the **implementation status tracking** document. The original user story files have been archived.
 
-## Implementation Status Tracking
+### Active File
 
-We maintain a comprehensive status tracking system to monitor development progress:
+- **implementation_status.md** - Tracks both legacy user stories (US-XXX) and new Spec Kit specifications (SPEC-XXX)
 
-### Status Legend
-- ✅ **COMPLETED**: Fully implemented and tested
-- 🟡 **PARTIAL**: Partially implemented, some acceptance criteria missing
-- ❌ **NOT IMPLEMENTED**: Not yet implemented
-- 🔄 **IN PROGRESS**: Currently being worked on
+---
 
-### Current Status Overview
-- **Completed**: 26 user stories (100%)
-- **Partial**: 0 user stories (0%)
-- **Not Implemented**: 0 user stories (0%)
+## What Happened to User Stories?
 
-### Status Tracking Benefits
-- **Progress Visibility**: Clear view of what's been implemented
-- **Development Planning**: Identify remaining work and priorities
-- **Quality Assurance**: Ensure all acceptance criteria are met
-- **Documentation**: Maintain up-to-date implementation records
+As of 2024-11-20, the project migrated to **Spec Kit** for spec-driven development. The original user story files have been moved to:
 
-## Acceptance Criteria
+```
+docs/archive/user_stories/
+├── README.md              # Archive overview
+├── automation.md          # 6 automation user stories
+├── configuration.md       # 6 configuration user stories
+├── core_functionality.md  # 6 core functionality user stories
+├── historical_data.md     # 3 historical data user stories
+└── testing.md             # 6 testing user stories
+```
 
-Each user story includes:
-- Clear acceptance criteria
-- Definition of Done
-- Related technical requirements
-- Dependencies (if any)
+**All 27 user stories were completed (100%) before archiving.**
 
-## Development Workflow
+---
 
-1. **Review Status**: Check `implementation_status.md` for current state
-2. **Select User Story**: Choose next user story to implement
-3. **Implement**: Develop feature according to acceptance criteria
-4. **Test**: Ensure all tests pass and criteria are met
-5. **Update Status**: Mark user story as completed in status document
-6. **Document**: Update relevant documentation
+## New Feature Development
 
-## Priority Items
+For new features, use the **Spec Kit** approach:
 
-🎉 **All 26 user stories have been completed!** The project is production-ready with complete feature set including data quality improvements.
+### Spec Kit Workflow
+
+1. **SPECIFY**: Create `specs/XXX-feature-name/spec.md`
+   - Define what to build and why
+   - User needs and success criteria
+
+2. **CLARIFY**: Resolve ambiguities (optional)
+   - Document questions and answers
+
+3. **PLAN**: Create `plan.md`
+   - Technical approach and architecture
+   - Dependencies and constraints
+
+4. **TASKS**: Create `tasks.md`
+   - Break into small, manageable tasks
+   - Each task = one TDD cycle
+
+5. **IMPLEMENT**: Execute with TDD
+   - RED: Write failing test
+   - GREEN: Implement minimal code
+   - REFACTOR: Improve code
+
+### Resources
+
+- **Templates**: `.specify/templates/`
+- **Example**: `specs/001-yahoo-finance-api/`
+- **Guidelines**: `specs/README.md`
+- **Principles**: `constitution.md`
+
+---
+
+## Why Spec Kit?
+
+The Spec Kit approach provides:
+- ✅ **Better structure**: Clear SPECIFY → PLAN → TASKS → IMPLEMENT workflow
+- ✅ **AI collaboration**: Constitution guides AI behavior
+- ✅ **Traceability**: Every change traces to spec → plan → task
+- ✅ **Scalability**: Better for complex features and team growth
+- ✅ **TDD integration**: Preserves mandatory RED-GREEN-REFACTOR cycle
+
+---
+
+## Historical Reference
+
+To view the original user stories:
+- See `docs/archive/user_stories/`
+- All 27 stories documented with acceptance criteria
+- Complete implementation history preserved
+
+---
+
+## Questions?
+
+- **Current status**: See `implementation_status.md` in this directory
+- **New features**: See `specs/README.md`
+- **Archived stories**: See `docs/archive/user_stories/README.md`
+- **Spec Kit guide**: See `docs/technical_documentation/spec_kit_assessment.md`
