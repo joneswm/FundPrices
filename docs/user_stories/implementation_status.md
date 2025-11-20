@@ -1,12 +1,45 @@
-# User Stories Implementation Status
+# Implementation Status
 
-This document tracks the implementation status of all user stories for the Fund Price Scraping project.
+This document tracks the implementation status of all features for the Fund Price Scraping project.
+
+**Note**: As of 2024-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory.
 
 ## Status Legend
 - ✅ **COMPLETED**: Fully implemented and tested
 - 🟡 **PARTIAL**: Partially implemented, some acceptance criteria missing
 - ❌ **NOT IMPLEMENTED**: Not yet implemented
 - 🔄 **IN PROGRESS**: Currently being worked on
+- 📋 **PLANNED**: Spec created, not started
+
+## Tracking Legend
+- **US-XXX**: Legacy user story (pre-Spec Kit migration)
+- **SPEC-XXX**: Spec Kit specification (post-migration)
+
+---
+
+## Active Specifications (Spec Kit)
+
+### SPEC-001: Yahoo Finance API Integration
+**Status**: ✅ **COMPLETED**  
+**Format**: Spec Kit (Retrospective)  
+**Location**: `specs/001-yahoo-finance-api/`
+
+**Implementation Details**:
+- ✅ Replaced Google Finance web scraping with Yahoo Finance API
+- ✅ Uses yfinance library for reliable data access
+- ✅ Maintains backwards compatibility with funds.txt format
+- ✅ Comprehensive unit and functional tests
+- ✅ 100% coverage for new code
+
+**Evidence**: See `specs/001-yahoo-finance-api/` for complete specification, plan, tasks, and implementation notes.
+
+**Related**: Originally implemented as US-025
+
+---
+
+## Legacy User Stories (Pre-Spec Kit Migration)
+
+**Note**: All 27 user stories below were completed before the Spec Kit migration. They are preserved for historical reference and project context.
 
 ---
 
@@ -488,22 +521,51 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ## Summary
 
 ### Overall Status
+
+#### Spec Kit Specifications
+- **Active Specs**: 1
+- **Completed**: 1 (SPEC-001)
+- **In Progress**: 0
+- **Planned**: 0
+
+#### Legacy User Stories
 - **Completed**: 27 user stories (100%)
 - **Partial**: 0 user stories (0%)
 - **Not Implemented**: 0 user stories (0%)
 
-### Priority Items for Next Development
-🎉 **All 27 user stories have been completed!** The project is production-ready with complete feature set including historical data retrieval.
+### Migration Status
+
+**Spec Kit Migration**: ✅ Phase 1 Complete (2024-11-20)
+
+- ✅ Constitution created
+- ✅ Spec Kit structure established
+- ✅ Templates created
+- ✅ Example spec documented (SPEC-001)
+- ✅ Documentation updated
+- 📋 Phase 2: Parallel operation (next new feature)
+- 📋 Phase 3: Full migration (archive user stories)
 
 ### Completed Major Features
-- ✅ Multi-source fund price scraping (FT, Yahoo Finance, Morningstar, Google Finance)
+- ✅ Multi-source fund price scraping (FT, Yahoo Finance, Morningstar, Yahoo Finance API)
 - ✅ Historical price data retrieval for any stock/fund
 - ✅ Automated daily collection via GitHub Actions
-- ✅ Comprehensive testing suite with 90%+ coverage
+- ✅ Comprehensive testing suite with 97% coverage
 - ✅ IDE Integration with VS Code/Cursor test support
 - ✅ **Test-Driven Development (TDD) enforcement**
+- ✅ **Spec-Driven Development (SDD) with Spec Kit**
 - ✅ Code quality standards and tools
-- ✅ **Complete development environment setup**
+- ✅ Complete development environment setup
 - ✅ Complete documentation and templates
+- ✅ Project constitution codifying principles
 
-The project has achieved 100% implementation with all core functionality, automation, testing, IDE integration, TDD practices, and development environment fully implemented. All four data sources are operational plus historical data retrieval capability.
+### Next Development
+
+For new features:
+1. Create specification in `specs/XXX-feature-name/`
+2. Follow SPECIFY → PLAN → TASKS → IMPLEMENT workflow
+3. Use TDD (RED-GREEN-REFACTOR) for implementation
+4. Update this file with spec status
+
+See `specs/README.md` for specification guidelines.
+
+The project has achieved 100% implementation of legacy user stories and successfully migrated to Spec Kit for future development. All four data sources are operational plus historical data retrieval capability.

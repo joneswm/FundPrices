@@ -1,0 +1,33 @@
+# Spec Kit Configuration for FundPrices
+# Generated: 2024-11-20
+
+project:
+  name: FundPrices
+  description: Python application for scraping fund prices from multiple financial data sources
+  ai_assistant: ona  # Using Ona AI agent
+
+paths:
+  specs: specs/
+  templates: .specify/templates/
+  prompts: .github/prompts/
+
+workflow:
+  phases:
+    - specify
+    - clarify
+    - plan
+    - tasks
+    - implement
+  
+  require_constitution: true
+  require_tdd: true  # Custom: Mandatory TDD workflow
+
+standards:
+  test_coverage_minimum: 90
+  code_formatter: black
+  line_length: 88
+  commit_format: conventional
+  tdd_prefixes:
+    - RED
+    - GREEN
+    - REFACTOR

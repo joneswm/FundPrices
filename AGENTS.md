@@ -125,15 +125,55 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 
 See `docs/technical_documentation/tdd_workflow.md` for detailed guidelines.
 
-## User Stories
+## Spec Kit Integration
 
-**Current Status**: 26/26 user stories complete (100%)
+**Status**: Active for new features (Phase 1 complete)
 
-When implementing new features:
-1. Create user story in `docs/user_stories/`
-2. Update `docs/user_stories/implementation_status.md`
-3. Follow TDD workflow
-4. Update documentation when complete
+### When to Use Spec Kit
+- **New features** or major enhancements
+- **Complex features** needing decomposition
+- **AI-assisted development** requiring clear guidance
+- **Features with multiple stakeholders**
+
+### When to Use Traditional Approach
+- **Bug fixes** and minor patches
+- **Quick iterations** and small tweaks
+- **Maintenance tasks**
+- **Emergency hotfixes**
+
+### Spec Kit Workflow
+1. **SPECIFY**: Create `specs/XXX-feature-name/spec.md` defining what and why
+2. **CLARIFY**: Resolve ambiguities (optional, document in spec)
+3. **PLAN**: Create `plan.md` defining technical approach
+4. **TASKS**: Create `tasks.md` breaking into small units
+5. **IMPLEMENT**: Execute each task with TDD (RED-GREEN-REFACTOR)
+
+### Commit Message Format
+Reference spec ID in commits:
+```
+RED: Add test for Bloomberg scraper (SPEC-002)
+GREEN: Implement Bloomberg scraper (SPEC-002)
+REFACTOR: Extract common logic (SPEC-002)
+
+Co-authored-by: Ona <no-reply@ona.com>
+```
+
+### Key Files
+- `constitution.md` - Non-negotiable project principles
+- `specs/README.md` - Specification index and guidelines
+- `.specify/config.yaml` - Spec Kit configuration
+- `.specify/templates/` - Spec, plan, and task templates
+
+## User Stories (Legacy)
+
+**Status**: 27/27 user stories complete (100%) - Archived after Spec Kit migration
+
+**Historical Reference**: See `docs/user_stories/` for original requirements
+
+When referencing legacy features:
+1. Check `docs/user_stories/implementation_status.md` for completion status
+2. Original user stories preserved for historical context
+3. New features use Spec Kit format in `specs/` directory
 
 ## Dependencies
 
@@ -151,6 +191,10 @@ When implementing new features:
 
 - This project has excellent test coverage (97%) - maintain it!
 - Always run tests after making changes
-- Use TDD workflow for all new features
-- Check `docs/user_stories/implementation_status.md` for project status
+- **Use Spec Kit workflow for new features** (SPECIFY → PLAN → TASKS → IMPLEMENT)
+- **Follow TDD for all implementation** (RED-GREEN-REFACTOR mandatory)
+- **Consult constitution.md** for non-negotiable principles
+- Check `docs/user_stories/implementation_status.md` for historical project status
+- Check `specs/README.md` for active specifications
 - The codebase is well-documented - read existing code before making changes
+- When creating specs, use templates in `.specify/templates/`
