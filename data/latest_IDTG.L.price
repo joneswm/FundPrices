@@ -1,4 +1,1 @@
-Error: Page.wait_for_selector: Timeout 60000ms exceeded.
-Call log:
-  - waiting for locator("span[data-testid=\"qsp-price\"]") to be visible
-
+2.9399
