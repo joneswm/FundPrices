@@ -4658,10 +4658,7 @@ LU0196696453,2026-06-16,19.66
 MU0129U00005,2026-06-16,305.80
 LU0164881194,2026-06-16,290.99
 IDTG.L,2026-06-16,2.9735
-JFM0003373,2026-06-16,"Error: Page.wait_for_selector: Timeout 60000ms exceeded.
-Call log:
-  - waiting for locator(""#mainContent_quicktakeContent_fvOverview_lblNAV"") to be visible
-"
+JFM0003373,2026-06-16,186.79
 QQQ,2026-06-16,729.86
 BCHS.L,2026-06-16,14682.0
 GRAB,2026-06-16,3.49
