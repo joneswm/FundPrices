@@ -148,7 +148,9 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_context = MagicMock()
         mock_page = MagicMock()
         
-        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = mock_browser
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = (
+            mock_browser
+        )
         mock_browser.new_context.return_value = mock_context
         mock_context.new_page.return_value = mock_page
         
@@ -339,7 +341,146 @@ class TestFundPriceScraper(unittest.TestCase):
         results = scrape_funds(test_funds, self.test_dir)
         
         self.assertEqual(len(results), 1)
-        self.assertTrue(results[0][2].startswith("Error:"))
+        self.assertEqual(results[0][2], "N/A")
+        self.assertEqual(len(results.failures), 1)
+        self.assertEqual(mock_page.goto.call_count, 3)
+
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_retries_timeout_and_succeeds(self, mock_playwright):
+        """Test transient timeout errors are retried before writing a price."""
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+
+        timeout_error = (
+            "Failed to perform, curl: (28) Operation timed out after "
+            "30002 milliseconds with 0 bytes received."
+        )
+        mock_page.goto.side_effect = [Exception(timeout_error), None]
+        mock_page.locator.return_value.first.text_content.return_value = "123.45"
+
+        results = scrape_funds([("FT", "TEST123")], self.test_dir)
+
+        self.assertEqual(results, [["TEST123", date.today().isoformat(), "123.45"]])
+        self.assertEqual(results.failures, [])
+        self.assertEqual(mock_page.goto.call_count, 2)
+
+        latest_price_file = os.path.join(self.test_dir, "latest_TEST123.price")
+        with open(latest_price_file, "r") as f:
+            self.assertEqual(f.read().strip(), "123.45")
+
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_uses_last_good_price_after_retry_failure(
+        self, mock_playwright
+    ):
+        """Test persistent timeout errors keep the last good stored price."""
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = (
+            mock_browser
+        )
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+
+        timeout_error = (
+            "Failed to perform, curl: (28) Operation timed out after "
+            "30002 milliseconds with 0 bytes received."
+        )
+        mock_page.goto.side_effect = Exception(timeout_error)
+
+        history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history_csv, mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Fund", "Date", "Price"])
+            writer.writerow(["TEST123", "2025-01-19", "111.11"])
+            writer.writerow(
+                ["TEST123", date.today().isoformat(), f"Error: {timeout_error}"]
+            )
+
+        latest_price_file = os.path.join(self.test_dir, "latest_TEST123.price")
+        with open(latest_price_file, "w") as f:
+            f.write(f"Error: {timeout_error}\n")
+
+        results = scrape_funds([("FT", "TEST123")], self.test_dir)
+
+        self.assertEqual(results, [["TEST123", date.today().isoformat(), "111.11"]])
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("TEST123", results.failures[0])
+        self.assertEqual(mock_page.goto.call_count, 3)
+
+        with open(latest_price_file, "r") as f:
+            self.assertEqual(f.read().strip(), "111.11")
+
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_retries_api_error_and_succeeds(self, mock_playwright):
+        """Test transient API errors are retried before writing a price."""
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = (
+            mock_browser
+        )
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+
+        timeout_error = (
+            "Error: Failed to perform, curl: (28) Operation timed out after "
+            "30002 milliseconds with 0 bytes received."
+        )
+
+        with patch(
+            'scrape_fund_price.fetch_price_api',
+            side_effect=[timeout_error, "220.50"],
+        ) as mock_api:
+            results = scrape_funds([("GF", "IWDG.L")], self.test_dir)
+
+        self.assertEqual(results, [["IWDG.L", date.today().isoformat(), "220.50"]])
+        self.assertEqual(results.failures, [])
+        self.assertEqual(mock_api.call_count, 2)
+
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_keeps_last_good_price_after_api_retry_failure(
+        self, mock_playwright
+    ):
+        """Test persistent API errors keep the last good stored price."""
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = (
+            mock_browser
+        )
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+
+        timeout_error = (
+            "Error: Failed to perform, curl: (28) Operation timed out after "
+            "30002 milliseconds with 0 bytes received."
+        )
+
+        history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history_csv, mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Fund", "Date", "Price"])
+            writer.writerow(["IWDG.L", "2025-01-19", "210.75"])
+
+        with patch(
+            'scrape_fund_price.fetch_price_api',
+            return_value=timeout_error,
+        ) as mock_api:
+            results = scrape_funds([("GF", "IWDG.L")], self.test_dir)
+
+        self.assertEqual(results, [["IWDG.L", date.today().isoformat(), "210.75"]])
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("IWDG.L", results.failures[0])
+        self.assertEqual(mock_api.call_count, 3)
     
     def test_write_results_default_data_dir(self):
         """Test write_results with default data directory."""
@@ -382,6 +523,32 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_read.assert_called_once()
         mock_scrape.assert_called_once()
         mock_write.assert_called_once()
+
+    @patch('scrape_fund_price.parse_arguments')
+    @patch('scrape_fund_price.read_fund_ids')
+    @patch('scrape_fund_price.scrape_funds')
+    @patch('scrape_fund_price.write_results')
+    def test_main_fails_job_when_scrape_failures_remain(
+        self, mock_write, mock_scrape, mock_read, mock_parse
+    ):
+        """Test main exits non-zero when fallback prices were used after failures."""
+        mock_args = MagicMock()
+        mock_args.history = None
+        mock_parse.return_value = mock_args
+        mock_read.return_value = [("FT", "TEST123")]
+
+        class FailedResults(list):
+            failures = ["TEST123: timeout"]
+
+        mock_scrape.return_value = FailedResults(
+            [["TEST123", "2025-01-20", "111.11"]]
+        )
+
+        with self.assertRaises(SystemExit) as error:
+            main()
+
+        self.assertEqual(error.exception.code, 1)
+        mock_write.assert_called_once_with(mock_scrape.return_value)
 
 class TestFunctionalScraping(unittest.TestCase):
     """Functional tests that can run against real websites (optional)."""

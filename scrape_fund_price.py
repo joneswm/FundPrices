@@ -5,12 +5,23 @@ import os
 import yfinance as yf
 import argparse
 import re
+from contextlib import nullcontext
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
 LATEST_CSV = os.path.join(DATA_DIR, "latest_prices.csv")
 HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
+MAX_PRICE_ATTEMPTS = 3
+
+
+class ScrapeResults(list):
+    """Scrape results with non-price failure metadata."""
+
+    def __init__(self, rows=None, failures=None):
+        super().__init__(rows or [])
+        self.failures = failures or []
+
 
 def read_fund_ids(filename):
     """Read fund identifiers from a file."""
@@ -82,38 +93,143 @@ def scrape_price_with_common_settings(page, url, selector):
     page.wait_for_selector(selector, timeout=60000)
     return page.locator(selector).first.text_content().strip()
 
+
+def is_error_price(price):
+    """Return True when a value is an error marker, not a price."""
+    return isinstance(price, str) and price.startswith("Error:")
+
+
+def is_usable_price(price):
+    """Return True when a stored value can be reused as a prior price."""
+    return bool(price) and price != "N/A" and not is_error_price(price)
+
+
+def read_latest_price_file(fund_id, data_dir):
+    """Read the per-fund latest price file if it contains a usable value."""
+    latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
+    if not os.path.isfile(latest_price_file):
+        return None
+
+    with open(latest_price_file, "r") as f:
+        price = f.read().strip()
+
+    return price if is_usable_price(price) else None
+
+
+def read_latest_csv_price(fund_id, data_dir):
+    """Read the latest CSV price for a fund if it contains a usable value."""
+    latest_csv = os.path.join(data_dir, "latest_prices.csv")
+    if not os.path.isfile(latest_csv):
+        return None
+
+    with open(latest_csv, mode="r", newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
+                return row["Price"]
+
+    return None
+
+
+def read_history_price(fund_id, data_dir):
+    """Read the most recent usable historical price for a fund."""
+    history_csv = os.path.join(data_dir, "prices_history.csv")
+    if not os.path.isfile(history_csv):
+        return None
+
+    with open(history_csv, mode="r", newline="") as file:
+        reader = csv.DictReader(file)
+        rows = list(reader)
+
+    for row in reversed(rows):
+        if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
+            return row["Price"]
+
+    return None
+
+
+def get_last_known_price(fund_id, data_dir):
+    """Return the last non-error price available for a fund."""
+    return (
+        read_latest_price_file(fund_id, data_dir)
+        or read_latest_csv_price(fund_id, data_dir)
+        or read_history_price(fund_id, data_dir)
+    )
+
+
+def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
+    """Fetch a price, retrying exceptions and returned Error values."""
+    last_error = None
+
+    for _ in range(attempts):
+        try:
+            price = fetch_price()
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+        if not is_error_price(price):
+            return price, None
+
+        last_error = price
+
+    return None, last_error
+
+
+def source_requires_browser(source, fund_id):
+    """Return True when a fund source needs Playwright scraping."""
+    if source.upper() == "GF":
+        return False
+
+    url, selector = get_source_config(source, fund_id)
+    return bool(url and selector)
+
+
 def scrape_funds(funds, data_dir=None):
     """Scrape prices for a list of funds and return results."""
     if data_dir is None:
         data_dir = DATA_DIR
     
     os.makedirs(data_dir, exist_ok=True)
-    results = []
+    results = ScrapeResults()
     today = datetime.date.today().isoformat()
+    needs_browser = any(
+        source_requires_browser(source, fund_id) for source, fund_id in funds
+    )
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    with sync_playwright() if needs_browser else nullcontext(None) as p:
+        browser = None
+        page = None
+        if needs_browser:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
         for source, fund_id in funds:
             # Use API for GF source, scraping for others
             if source.upper() == "GF":
-                price = fetch_price_api(fund_id)
+                price, error = fetch_with_retries(lambda: fetch_price_api(fund_id))
             else:
                 url, selector = get_source_config(source, fund_id)
                 if url and selector:
-                    try:
-                        price = scrape_price_with_common_settings(page, url, selector)
-                    except Exception as e:
-                        price = f"Error: {e}"
+                    price, error = fetch_with_retries(
+                        lambda: scrape_price_with_common_settings(page, url, selector)
+                    )
                 else:
                     price = "N/A"
+                    error = None
+
+            if error:
+                fallback_price = get_last_known_price(fund_id, data_dir)
+                price = fallback_price if fallback_price is not None else "N/A"
+                results.failures.append(f"{fund_id}: {error}")
+
             results.append([fund_id, today, price])
             # Write latest_<identifier>.price file
             latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
             with open(latest_price_file, "w") as f:
                 f.write(price + "\n")
-        browser.close()
+        if browser:
+            browser.close()
     
     return results
 
@@ -261,7 +377,10 @@ def main():
         funds = read_fund_ids(FUNDS_FILE)
         results = scrape_funds(funds)
         write_results(results)
+        if getattr(results, "failures", []):
+            for failure in results.failures:
+                print(f"Error: {failure}")
+            raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
-
