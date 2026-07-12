@@ -5210,7 +5210,7 @@ BCHS.L,2026-07-12,13540.0
 GRAB,2026-07-12,3.93
 KNSL,2026-07-12,340.57
 CNX1.L,2026-07-12,127390.0
-IWDG.L,2026-07-12,"Error: Failed to perform, curl: (28) Operation timed out after 30002 milliseconds with 0 bytes received. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+IWDG.L,2026-07-12,1243.5
 QNTG.L,2026-07-12,21.74
 ISPE.L,2026-07-12,7.481
 GHYS.L,2026-07-12,89.72
