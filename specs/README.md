@@ -4,6 +4,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-002: Rolling 90-Day Price History
+**Status**: ✅ Complete
+**Location**: [002-rolling-price-history/](002-rolling-price-history/)
+**Description**: Preserve complete price history while producing a derived CSV for the latest 90 calendar days.
+
 ### SPEC-001: Yahoo Finance API Integration
 **Status**: ✅ Complete  
 **Location**: [001-yahoo-finance-api/](001-yahoo-finance-api/)  
