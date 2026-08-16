@@ -187,9 +187,13 @@ class TestFundPriceScraper(unittest.TestCase):
         # Check that files were created
         latest_csv = os.path.join(self.test_dir, "latest_prices.csv")
         history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        rolling_history_csv = os.path.join(
+            self.test_dir, "prices_history_90_days.csv"
+        )
         
         self.assertTrue(os.path.exists(latest_csv))
         self.assertTrue(os.path.exists(history_csv))
+        self.assertTrue(os.path.exists(rolling_history_csv))
         
         # Check latest prices content
         with open(latest_csv, 'r') as f:
@@ -214,6 +218,71 @@ class TestFundPriceScraper(unittest.TestCase):
             ["IDTG.L", "2025-01-20", "2.92"]
         ]
         self.assertEqual(rows, expected_history)
+
+        with open(rolling_history_csv, "r") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        self.assertEqual(rows, expected_history)
+
+    def test_write_results_limits_rolling_history_to_90_calendar_days(self):
+        """Test rolling history uses an inclusive 90-calendar-day window."""
+        history_csv = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history_csv, "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Fund", "Date", "Price"])
+            writer.writerows(
+                [
+                    ["TOO_OLD", "2025-01-01", "1.00"],
+                    ["AT_CUTOFF", "2025-01-02", "2.00"],
+                    ["FUTURE", "2025-04-02", "3.00"],
+                    ["INVALID", "not-a-date", "4.00"],
+                ]
+            )
+
+        write_results([["TODAY", "2025-04-01", "5.00"]], self.test_dir)
+
+        with open(history_csv, "r") as file:
+            full_history_rows = list(csv.reader(file))
+
+        self.assertEqual(
+            full_history_rows,
+            [
+                ["Fund", "Date", "Price"],
+                ["TOO_OLD", "2025-01-01", "1.00"],
+                ["AT_CUTOFF", "2025-01-02", "2.00"],
+                ["FUTURE", "2025-04-02", "3.00"],
+                ["INVALID", "not-a-date", "4.00"],
+                ["TODAY", "2025-04-01", "5.00"],
+            ],
+        )
+
+        rolling_history_csv = os.path.join(
+            self.test_dir, "prices_history_90_days.csv"
+        )
+        with open(rolling_history_csv, "r") as file:
+            rolling_history_rows = list(csv.reader(file))
+
+        self.assertEqual(
+            rolling_history_rows,
+            [
+                ["Fund", "Date", "Price"],
+                ["AT_CUTOFF", "2025-01-02", "2.00"],
+                ["TODAY", "2025-04-01", "5.00"],
+            ],
+        )
+
+    def test_write_results_empty_results_creates_empty_rolling_history(self):
+        """Test an empty run still writes a valid rolling-history CSV."""
+        write_results([], self.test_dir)
+
+        rolling_history_csv = os.path.join(
+            self.test_dir, "prices_history_90_days.csv"
+        )
+        with open(rolling_history_csv, "r") as file:
+            rows = list(csv.reader(file))
+
+        self.assertEqual(rows, [["Fund", "Date", "Price"]])
     
     def test_write_results_append_history(self):
         """Test that history file appends new data."""
@@ -258,6 +327,14 @@ class TestFundPriceScraper(unittest.TestCase):
             ["Fund", "Date", "Price"],
             ["IE0008368742", "2025-01-20", "125.67"]  # Updated price, not duplicate
         ]
+        self.assertEqual(rows, expected_history)
+
+        rolling_history_csv = os.path.join(
+            self.test_dir, "prices_history_90_days.csv"
+        )
+        with open(rolling_history_csv, "r") as f:
+            rows = list(csv.reader(f))
+
         self.assertEqual(rows, expected_history)
     
     def test_write_results_mixed_updates_and_new_entries(self):
