@@ -13,6 +13,7 @@ LATEST_CSV = os.path.join(DATA_DIR, "latest_prices.csv")
 HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
 MAX_PRICE_ATTEMPTS = 3
+ROLLING_HISTORY_DAYS = 90
 
 
 class ScrapeResults(list):
@@ -237,8 +238,8 @@ def write_results(results, data_dir=None):
     """Write results to CSV files.
     
     Latest prices file is overwritten on each run.
-    History file prevents duplicates by removing any existing entries
-    for today's date before appending new results.
+    Complete history prevents duplicates by replacing entries for the result
+    date. Rolling history contains that date and the preceding 89 calendar days.
     
     Args:
         results: List of [fund_id, date, price] results
@@ -249,6 +250,7 @@ def write_results(results, data_dir=None):
     
     latest_csv = os.path.join(data_dir, "latest_prices.csv")
     history_csv = os.path.join(data_dir, "prices_history.csv")
+    rolling_history_csv = os.path.join(data_dir, "prices_history_90_days.csv")
     
     # Write latest prices (overwrite)
     with open(latest_csv, mode="w", newline="") as file:
@@ -279,6 +281,23 @@ def write_results(results, data_dir=None):
         writer = csv.writer(file)
         writer.writerow(["Fund", "Date", "Price"])
         writer.writerows(history_rows)
+
+    reference_date = datetime.date.fromisoformat(today)
+    cutoff_date = reference_date - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
+    rolling_history_rows = []
+    for row in history_rows:
+        try:
+            row_date = datetime.date.fromisoformat(row[1])
+        except ValueError:
+            continue
+        if cutoff_date <= row_date <= reference_date:
+            rolling_history_rows.append(row)
+
+    with open(rolling_history_csv, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Fund", "Date", "Price"])
+        writer.writerows(rolling_history_rows)
+
 
 def parse_arguments(args=None):
     """Parse command-line arguments.
