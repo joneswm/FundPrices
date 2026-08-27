@@ -224,6 +224,7 @@ def scrape_funds(funds, data_dir=None):
                 price = fallback_price if fallback_price is not None else "N/A"
                 results.failures.append(f"{fund_id}: {error}")
 
+            price = price.replace(",", "")
             results.append([fund_id, today, price])
             # Write latest_<identifier>.price file
             latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
