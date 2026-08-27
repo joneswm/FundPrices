@@ -173,6 +173,42 @@ class TestFundPriceScraper(unittest.TestCase):
         # Verify that price files were created
         self.assertTrue(os.path.exists(os.path.join(self.test_dir, "latest_IE0008368742.price")))
         self.assertTrue(os.path.exists(os.path.join(self.test_dir, "latest_IDTG.L.price")))
+
+    @patch('scrape_fund_price.sync_playwright')
+    def test_scrape_funds_removes_commas_from_all_price_sources(
+        self, mock_playwright
+    ):
+        """Test that every source stores prices without thousands separators."""
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value.chromium.launch.return_value = (
+            mock_browser
+        )
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+        mock_page.locator.return_value.first.text_content.return_value = "1,234.56"
+
+        test_funds = [
+            ("FT", "FT_FUND"),
+            ("YH", "SGLN.L"),
+            ("MS", "MS_FUND"),
+            ("GF", "API_FUND"),
+        ]
+
+        with patch(
+            'scrape_fund_price.fetch_price_api', return_value="1,234.56"
+        ):
+            results = scrape_funds(test_funds, self.test_dir)
+
+        self.assertEqual([row[2] for row in results], ["1234.56"] * 4)
+        for _, fund_id in test_funds:
+            latest_price_file = os.path.join(
+                self.test_dir, f"latest_{fund_id}.price"
+            )
+            with open(latest_price_file, "r") as f:
+                self.assertEqual(f.read().strip(), "1234.56")
     
     def test_write_results(self):
         """Test writing results to CSV files."""
