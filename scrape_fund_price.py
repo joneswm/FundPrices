@@ -100,6 +100,11 @@ def is_error_price(price):
     return isinstance(price, str) and price.startswith("Error:")
 
 
+def normalize_price(price):
+    """Remove thousands separators from a price before storing it."""
+    return price.replace(",", "")
+
+
 def is_usable_price(price):
     """Return True when a stored value can be reused as a prior price."""
     return bool(price) and price != "N/A" and not is_error_price(price)
@@ -224,7 +229,7 @@ def scrape_funds(funds, data_dir=None):
                 price = fallback_price if fallback_price is not None else "N/A"
                 results.failures.append(f"{fund_id}: {error}")
 
-            price = price.replace(",", "")
+            price = normalize_price(price)
             results.append([fund_id, today, price])
             # Write latest_<identifier>.price file
             latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
