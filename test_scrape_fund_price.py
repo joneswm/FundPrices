@@ -20,7 +20,8 @@ from scrape_fund_price import (
     get_last_known_price,
     Quote,
     format_yahoo_price,
-    fetch_yahoo_quotes
+    fetch_yahoo_quotes,
+    fetch_ft_quotes
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -1074,6 +1075,97 @@ class TestYahooQuoteFetching(unittest.TestCase):
         price = fetch_price_api("IDTG.L")
         self.assertTrue(price.startswith("Error:"))
         self.assertIn("Network error", price)
+
+
+FT_PAGE = """
+<html><head><title>Fund</title></head><body>
+<div class="mod-ui-data-list__label">Price (GBP)</div>
+<div data-mod-config="{&quot;symbol&quot;:&quot;28305998&quot;,&quot;period&quot;:&quot;day&quot;}"></div>
+</body></html>
+"""
+
+FT_ROWS = """
+<tr>
+  <td><span class="mod-ui-hide-small-below">Friday, September 18, 2026</span>
+      <span class="mod-ui-hide-medium-above">Fri, Sep 18, 2026</span></td>
+  <td>7.10</td><td>7.20</td><td>7.05</td><td>7.15</td>
+  <td><span>0</span></td>
+</tr>
+<tr>
+  <td><span class="mod-ui-hide-small-below">Thursday, September 17, 2026</span>
+      <span class="mod-ui-hide-medium-above">Thu, Sep 17, 2026</span></td>
+  <td>1,230.00</td><td>1,240.00</td><td>1,225.00</td><td>1,234.5600</td>
+  <td><span>0</span></td>
+</tr>
+"""
+
+
+class TestFTQuoteFetching(unittest.TestCase):
+    """Test dated quote retrieval from the FT historical-prices endpoint."""
+
+    def _responses(self, page=FT_PAGE, rows=FT_ROWS):
+        page_resp = MagicMock()
+        page_resp.text = page
+        page_resp.raise_for_status.return_value = None
+        ajax_resp = MagicMock()
+        ajax_resp.json.return_value = {"html": rows}
+        ajax_resp.raise_for_status.return_value = None
+        return [page_resp, ajax_resp]
+
+    @patch('scrape_fund_price.requests.get')
+    def test_returns_dated_quotes_with_currency(self, mock_get):
+        """Test rows become Quotes carrying the FT price date and currency."""
+        mock_get.side_effect = self._responses()
+        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+        self.assertEqual(len(quotes), 2)
+        self.assertEqual(quotes[0].date, "2026-09-17")
+        self.assertEqual(quotes[1].date, "2026-09-18")
+        self.assertEqual(quotes[1].currency, "GBP")
+
+    @patch('scrape_fund_price.requests.get')
+    def test_uses_close_not_open(self, mock_get):
+        """Test the closing price is taken, not the opening price."""
+        mock_get.side_effect = self._responses()
+        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+        self.assertEqual(quotes[1].price, "7.15")
+
+    @patch('scrape_fund_price.requests.get')
+    def test_strips_thousands_separators_without_float_conversion(self, mock_get):
+        """Test FT text prices keep their exact digits, commas removed."""
+        mock_get.side_effect = self._responses()
+        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+        self.assertEqual(quotes[0].price, "1234.5600")
+
+    @patch('scrape_fund_price.requests.get')
+    def test_requests_endpoint_with_slash_dates(self, mock_get):
+        """Test the ajax endpoint receives YYYY/MM/DD dates and the xid."""
+        mock_get.side_effect = self._responses()
+        fetch_ft_quotes("GB00B1FXTF86", "2026-09-01", "2026-09-20")
+        ajax_url = mock_get.call_args_list[1].args[0]
+        self.assertIn("startDate=2026/09/01", ajax_url)
+        self.assertIn("endDate=2026/09/20", ajax_url)
+        self.assertIn("symbol=28305998", ajax_url)
+
+    @patch('scrape_fund_price.requests.get')
+    def test_missing_internal_id_raises(self, mock_get):
+        """Test a page without the internal id is an error, not empty data."""
+        mock_get.side_effect = self._responses(page="<html>no config here</html>")
+        with self.assertRaises(Exception):
+            fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+
+    @patch('scrape_fund_price.requests.get')
+    def test_no_rows_raises(self, mock_get):
+        """Test an empty result set is an error so the fallback can run."""
+        mock_get.side_effect = self._responses(rows="")
+        with self.assertRaises(Exception):
+            fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+
+    @patch('scrape_fund_price.requests.get')
+    def test_missing_currency_label_is_tolerated(self, mock_get):
+        """Test quotes are still returned when no currency label is present."""
+        page = FT_PAGE.replace("Price (GBP)", "Price")
+        mock_get.side_effect = self._responses(page=page)
+        self.assertEqual(fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")[0].currency, "")
 
 if __name__ == '__main__':
     unittest.main() 
