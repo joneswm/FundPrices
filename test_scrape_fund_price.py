@@ -30,6 +30,10 @@ from scrape_fund_price import (
     validate_backfill_args,
     BackfillReport,
     check_quoting_unit,
+    read_fx_pairs,
+    fetch_fx_quotes,
+    write_fx_results,
+    snap_fx_rates,
 )
 
 
@@ -2181,6 +2185,204 @@ class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
 
         self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
+
+
+class TestFxPairConfiguration(unittest.TestCase):
+    """Test fx_pairs.txt parsing and validation."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _write(self, text):
+        path = os.path.join(self.test_dir, "fx_pairs.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_reads_one_pair_per_line(self):
+        """Test the configured pairs are read in order."""
+        pairs = read_fx_pairs(self._write("NZDGBP\nSGDGBP\nUSDGBP\nHKDGBP\n"))
+        self.assertEqual(pairs, ["NZDGBP", "SGDGBP", "USDGBP", "HKDGBP"])
+
+    def test_ignores_comments_and_blank_lines(self):
+        """Test the file can be annotated."""
+        pairs = read_fx_pairs(
+            self._write("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n")
+        )
+        self.assertEqual(pairs, ["USDGBP"])
+
+    def test_rejects_a_slash_separated_pair(self):
+        """Test the market-convention spelling is rejected, not misread.
+
+        'GBP/NZD' conventionally means NZD per GBP, the inverse of what is
+        wanted, so accepting it would store plausible but wrong values.
+        """
+        with self.assertRaises(ValueError) as error:
+            read_fx_pairs(self._write("GBP/NZD\n"))
+        self.assertIn("line 1", str(error.exception))
+
+    def test_rejects_lowercase_and_wrong_length(self):
+        """Test only six uppercase letters are accepted."""
+        for bad in ("usdgbp", "USDGB", "USDGBPX"):
+            with self.assertRaises(ValueError):
+                read_fx_pairs(self._write(bad + "\n"))
+
+    def test_rejects_duplicate_pairs(self):
+        """Test a repeated pair cannot produce duplicate rows."""
+        with self.assertRaises(ValueError) as error:
+            read_fx_pairs(self._write("USDGBP\nSGDGBP\nUSDGBP\n"))
+        self.assertIn("line 3", str(error.exception))
+
+    def test_missing_file_means_no_fx(self):
+        """Test FX is optional, so an absent file is not an error."""
+        self.assertEqual(
+            read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), []
+        )
+
+
+class TestFxQuoteFetching(unittest.TestCase):
+    """Test FX rate retrieval."""
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_requests_the_yahoo_fx_ticker(self, mock_quotes):
+        """Test the pair is turned into Yahoo's FX ticker."""
+        mock_quotes.return_value = [Quote("2026-09-18", "0.7467", "GBP")]
+        fetch_fx_quotes("USDGBP", "2026-09-10")
+        self.assertEqual(mock_quotes.call_args.args[0], "USDGBP=X")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_drops_weekend_bars(self, mock_quotes):
+        """Test the transient weekend bar Yahoo shows is not stored."""
+        mock_quotes.return_value = [
+            Quote("2026-09-18", "0.7467", "GBP"),  # Friday
+            Quote("2026-09-19", "0.7467", "GBP"),  # Saturday
+            Quote("2026-09-20", "0.7470", "GBP"),  # Sunday
+        ]
+        quotes = fetch_fx_quotes("USDGBP", "2026-09-10")
+        self.assertEqual([q.date for q in quotes], ["2026-09-18"])
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_rates_are_stored_at_six_decimal_places(self, mock_quotes):
+        """Test precision is enough for small rates such as HKDGBP."""
+        mock_quotes.return_value = [Quote("2026-09-18", "0.0951234567", "GBP")]
+        self.assertEqual(fetch_fx_quotes("HKDGBP", "2026-09-10")[0].price, "0.095123")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_rate_carries_the_pair_name(self, mock_quotes):
+        """Test the quote is self-describing."""
+        mock_quotes.return_value = [Quote("2026-09-18", "0.4267", "GBP")]
+        self.assertEqual(fetch_fx_quotes("NZDGBP", "2026-09-10")[0].currency, "NZDGBP")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_whole_number_rate_keeps_six_places(self, mock_quotes):
+        """Test formatting is fixed width, not shortest representation."""
+        mock_quotes.return_value = [Quote("2026-09-18", "1", "GBP")]
+        self.assertEqual(fetch_fx_quotes("GBPGBP", "2026-09-10")[0].price, "1.000000")
+
+
+class TestFxStorage(unittest.TestCase):
+    """Test FX output files."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.history = os.path.join(self.test_dir, "fx_history.csv")
+        self.latest = os.path.join(self.test_dir, "latest_fx.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _rows(self, path):
+        with open(path, newline="") as f:
+            return list(csv.reader(f))
+
+    def test_history_header_names_the_rate(self):
+        """Test the header does not use an ambiguous GBP/xxx label."""
+        write_fx_results([["USDGBP", "2026-09-18", "0.746700"]], self.test_dir)
+        self.assertEqual(self._rows(self.history)[0], ["Pair", "Date", "Rate"])
+
+    def test_same_pair_and_date_is_replaced(self):
+        """Test a provisional rate is overwritten once the day completes."""
+        write_fx_results([["USDGBP", "2026-09-18", "0.746000"]], self.test_dir)
+        write_fx_results([["USDGBP", "2026-09-18", "0.746700"]], self.test_dir)
+        self.assertEqual(
+            self._rows(self.history)[1:], [["USDGBP", "2026-09-18", "0.746700"]]
+        )
+
+    def test_rows_are_sorted_by_date_then_pair(self):
+        """Test deterministic ordering."""
+        write_fx_results(
+            [
+                ["USDGBP", "2026-09-18", "0.746700"],
+                ["HKDGBP", "2026-09-18", "0.095100"],
+                ["USDGBP", "2026-09-17", "0.745000"],
+            ],
+            self.test_dir,
+        )
+        self.assertEqual(
+            [(r[0], r[1]) for r in self._rows(self.history)[1:]],
+            [("USDGBP", "2026-09-17"), ("HKDGBP", "2026-09-18"), ("USDGBP", "2026-09-18")],
+        )
+
+    def test_rewriting_identical_data_changes_nothing(self):
+        """Test the FX run is idempotent."""
+        rows = [["USDGBP", "2026-09-18", "0.746700"]]
+        write_fx_results(rows, self.test_dir)
+        first = open(self.history, "rb").read()
+        write_fx_results(rows, self.test_dir)
+        self.assertEqual(open(self.history, "rb").read(), first)
+
+    def test_latest_fx_takes_the_newest_date_per_pair(self):
+        """Test latest_fx.csv reports the most recent rate."""
+        write_fx_results(
+            [
+                ["USDGBP", "2026-09-17", "0.745000"],
+                ["USDGBP", "2026-09-18", "0.746700"],
+            ],
+            self.test_dir,
+        )
+        self.assertEqual(
+            self._rows(self.latest)[1:], [["USDGBP", "2026-09-18", "0.746700"]]
+        )
+
+
+class TestFxFailureIsolation(unittest.TestCase):
+    """Test FX and price failures do not block each other."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_one_failing_pair_does_not_block_the_others(self, mock_quotes):
+        """Test a dead pair does not cost the rest of the day's rates."""
+
+        def side_effect(pair, start, end=None):
+            if pair == "USDGBP":
+                raise Exception("Network error")
+            return [Quote("2026-09-18", "0.426700", pair)]
+
+        mock_quotes.side_effect = side_effect
+        results = snap_fx_rates(["USDGBP", "NZDGBP"], self.test_dir)
+
+        self.assertEqual(list(results), [["NZDGBP", "2026-09-18", "0.426700"]])
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("USDGBP", results.failures[0])
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_retries_before_giving_up_on_a_pair(self, mock_quotes):
+        """Test a transient FX error is retried like a price fetch."""
+        mock_quotes.side_effect = [
+            Exception("timeout"),
+            [Quote("2026-09-18", "0.746700", "USDGBP")],
+        ]
+        results = snap_fx_rates(["USDGBP"], self.test_dir)
+        self.assertEqual(list(results), [["USDGBP", "2026-09-18", "0.746700"]])
+        self.assertEqual(results.failures, [])
 
 if __name__ == "__main__":
     unittest.main()
