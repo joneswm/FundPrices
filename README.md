@@ -14,13 +14,10 @@ A Python application for scraping fund prices from multiple financial data sourc
 
 ## Quick Start
 
-### Using Ona (Recommended)
+### Using the Dev Container
 
-Open this project in Ona for instant setup:
-
-[![Open in Ona](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/joneswm/FundPrices)
-
-The Dev Container will automatically:
+The repository includes a standard [Dev Container](https://containers.dev/) (`.devcontainer/`),
+which works with VS Code ("Reopen in Container") and GitHub Codespaces. It will automatically:
 - Set up Python 3.12 environment
 - Install all dependencies from requirements.txt
 - Install Playwright with Chromium browser
@@ -212,18 +209,15 @@ The list above names what each dependency is for; it deliberately omits version 
 cannot drift out of sync with the actual requirements.
 
 
-## Development with Ona
+## Development Environment
 
-This project is optimized for [Ona](https://www.gitpod.io/ona) (formerly Gitpod):
-
-- **AGENTS.md**: Project-specific guidelines automatically loaded by Ona Agent
 - **Dev Container**: Python 3.12 environment with automatic dependency installation
-- **VS Code Tasks**: Quick access to common commands (Run Tests, Format Code, etc.)
+- **AGENTS.md**: Project-specific guidelines for AI coding agents
 - **TDD Workflow**: Enforced test-driven development process
 
-### Ona Agent Guidelines
+### AI Agent Guidelines
 
-Ona Agent automatically reads `AGENTS.md` for project-specific instructions including:
+AI coding agents should read `AGENTS.md` for project-specific instructions including:
 - Common commands and testing procedures
 - Project structure and key files
 - Code style and TDD requirements

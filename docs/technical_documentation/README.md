@@ -18,7 +18,6 @@ This directory contains technical documentation for the Fund Price Scraping proj
 
 ### Environment Setup
 - `ide_setup.md` - VS Code / Cursor setup
-- `ona_setup.md` - Ona / Dev Container setup
 
 ## Purpose
 
@@ -29,4 +28,4 @@ Technical documentation provides detailed information for developers, system adm
 This documentation should be kept up to date with code changes. Each major feature or change should include corresponding documentation updates.
 
 When adding a document to this directory, add it to the Structure list above - the index
-previously listed only 5 of the 10 documents present. 
+has previously drifted out of date. 

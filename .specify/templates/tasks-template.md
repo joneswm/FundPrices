@@ -220,8 +220,6 @@ docs: Update documentation for [feature name] (SPEC-XXX)
 - Update AGENTS.md with [changes]
 - Mark SPEC-XXX complete in implementation_status.md
 - Add code comments explaining [feature]
-
-Co-authored-by: Ona <no-reply@ona.com>
 ```
 
 ---
@@ -285,7 +283,7 @@ Co-authored-by: Ona <no-reply@ona.com>
 ### Commit Messages
 - Use RED/GREEN/REFACTOR prefixes
 - Reference SPEC-XXX in all commits
-- Include Co-authored-by: Ona <no-reply@ona.com>
+- If an AI assistant contributed to a commit, include that assistant's `Co-authored-by:` trailer
 
 ### Testing
 - Write tests BEFORE implementation (RED)

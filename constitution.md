@@ -169,7 +169,7 @@ docs/
 - **All documentation** in Git
 - **Meaningful commit messages** following conventional format
 - **Reference spec IDs** in commits (e.g., "SPEC-001: Add feature")
-- **Include co-author**: `Co-authored-by: Ona <no-reply@ona.com>`
+- **Attribute AI assistance**: If an AI assistant contributed to a commit, include that assistant's `Co-authored-by:` trailer
 
 ### Commit Message Format
 ```
@@ -178,8 +178,6 @@ docs/
 [optional body]
 
 [optional footer]
-
-Co-authored-by: Ona <no-reply@ona.com>
 ```
 
 **Types**: feat, fix, docs, style, refactor, test, chore
@@ -195,8 +193,6 @@ GREEN: Implement Bloomberg scraper with basic functionality
 REFACTOR: Extract common scraping logic into helper function
 
 feat(api): Add Yahoo Finance API integration (SPEC-001)
-
-Co-authored-by: Ona <no-reply@ona.com>
 ```
 
 ### Branching Strategy

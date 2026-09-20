@@ -4,7 +4,6 @@
 project:
   name: FundPrices
   description: Python application for scraping fund prices from multiple financial data sources
-  ai_assistant: ona  # Using Ona AI agent
 
 paths:
   specs: specs/

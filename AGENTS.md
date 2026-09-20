@@ -49,7 +49,7 @@ Python application for scraping fund prices from multiple financial data sources
 ### Key Directories
 - `data/` - Output directory for CSV files and price files (gitignored)
 - `docs/` - Documentation including user stories and technical docs
-- `.devcontainer/` - Dev Container configuration for Ona
+- `.devcontainer/` - Dev Container configuration (VS Code / GitHub Codespaces)
 - `.github/workflows/` - GitHub Actions for CI/CD
 
 ### Documentation
@@ -75,7 +75,7 @@ Python application for scraping fund prices from multiple financial data sources
 
 ### Commit Messages
 - Follow conventional commit format
-- Include `Co-authored-by: Ona <no-reply@ona.com>` in commits
+- If an AI assistant contributed to a commit, include that assistant's `Co-authored-by:` trailer
 - Reference the GitHub issue number when applicable (e.g., "Fixes #12")
 - Legacy commits reference user story IDs (e.g., "US-026"); these are historical
 - Use prefixes: RED, GREEN, REFACTOR for TDD commits
@@ -177,8 +177,6 @@ Reference spec ID in commits:
 RED: Add test for Bloomberg scraper (SPEC-002)
 GREEN: Implement Bloomberg scraper (SPEC-002)
 REFACTOR: Extract common logic (SPEC-002)
-
-Co-authored-by: Ona <no-reply@ona.com>
 ```
 
 ### Key Files
@@ -215,7 +213,7 @@ cannot drift out of sync with the actual requirements.
 - **Scrape Workflow**: Scheduled daily at 22:00 UTC
 - Both workflows automatically commit results
 
-## Notes for Ona Agent
+## Notes for AI Agents
 
 - This project has high test coverage (98% overall) - maintain it!
 - Always run tests after making changes

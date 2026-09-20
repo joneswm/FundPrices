@@ -141,8 +141,6 @@ Reference spec ID in commits:
 RED: Add test for Bloomberg price scraping (SPEC-002)
 GREEN: Implement Bloomberg scraper (SPEC-002)
 REFACTOR: Extract common scraping logic (SPEC-002)
-
-Co-authored-by: Ona <no-reply@ona.com>
 ```
 
 ## Templates
