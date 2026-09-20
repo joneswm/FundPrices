@@ -59,11 +59,103 @@ class ScrapeResults(list):
         self.carried = carried or []
 
 
-def read_fund_ids(filename):
-    """Read fund identifiers from a file."""
+class FundSpec(NamedTuple):
+    """One configured instrument.
+
+    A fund is fetched using `lookup_id` but published under every identifier
+    in `publish_ids`, so a fund can move to a better source without stranding
+    the history recorded under its previous identifier.
+    """
+
+    source: str
+    lookup_id: str
+    aliases: tuple = ()
+
+    @property
+    def publish_ids(self):
+        """Identifiers this fund is written out under, lookup id first."""
+        return (self.lookup_id,) + tuple(self.aliases)
+
+
+def read_fund_specs(filename):
+    """Read instrument configuration from a funds file.
+
+    Each line is `<source>,<lookup_id>[,<alias>[;<alias>...]]`. Blank lines and
+    `#` comments are ignored, including trailing comments, which the docs have
+    always shown but the parser previously folded into the identifier.
+
+    Raises:
+        ValueError: naming the offending line, for malformed lines, empty or
+            self-referencing aliases, and identifiers repeated anywhere in the
+            file. Validating up front means a bad config fails before any
+            network call rather than half way through a run.
+    """
+    specs = []
+    seen = {}
+
     with open(filename, "r") as f:
-        # Each line: <source>,<identifier>
-        return [tuple(line.strip().split(",", 1)) for line in f if line.strip()]
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) < 2 or not fields[0] or not fields[1]:
+                raise ValueError(
+                    f"funds file line {number}: expected "
+                    f"'<source>,<identifier>[,<alias>]', got {line!r}"
+                )
+
+            source, lookup_id = fields[0], fields[1]
+            aliases = []
+            if len(fields) > 2 and fields[2]:
+                aliases = [alias.strip() for alias in fields[2].split(";")]
+            elif len(fields) > 2:
+                raise ValueError(
+                    f"funds file line {number}: alias field is empty; "
+                    f"remove the trailing comma if the fund has no alias"
+                )
+
+            for alias in aliases:
+                if not alias:
+                    raise ValueError(
+                        f"funds file line {number}: empty alias in {fields[2]!r}"
+                    )
+                if alias == lookup_id:
+                    raise ValueError(
+                        f"funds file line {number}: alias {alias!r} repeats its "
+                        f"own identifier"
+                    )
+
+            spec = FundSpec(source, lookup_id, tuple(aliases))
+            for identifier in spec.publish_ids:
+                if identifier in seen:
+                    raise ValueError(
+                        f"funds file line {number}: identifier {identifier!r} "
+                        f"already used on line {seen[identifier]}"
+                    )
+                seen[identifier] = number
+
+            specs.append(spec)
+
+    return specs
+
+
+def read_fund_ids(filename):
+    """Read (source, identifier) pairs from a funds file.
+
+    Compatibility wrapper over read_fund_specs() for callers that only need
+    the identifier a fund is looked up by.
+    """
+    return [(spec.source, spec.lookup_id) for spec in read_fund_specs(filename)]
+
+
+def as_fund_spec(entry):
+    """Accept a FundSpec or a plain (source, identifier) pair."""
+    if isinstance(entry, FundSpec):
+        return entry
+    source, lookup_id = entry
+    return FundSpec(source, lookup_id, ())
 
 
 def get_source_config(source, fund_id):
@@ -428,8 +520,19 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
     return [Quote(datetime.date.today().isoformat(), normalize_price(price), "")]
 
 
+def write_latest_price_file(fund_id, price, data_dir):
+    """Write a fund's single-value price file."""
+    with open(os.path.join(data_dir, f"latest_{fund_id}.price"), "w") as f:
+        f.write(price + "\n")
+
+
 def scrape_funds(funds, data_dir=None):
-    """Scrape a window of dated prices for each fund and return results."""
+    """Scrape a window of dated prices for each fund and return results.
+
+    Args:
+        funds: FundSpec instances, or plain (source, identifier) pairs
+        data_dir: Directory for per-fund price files (default: DATA_DIR)
+    """
     if data_dir is None:
         data_dir = DATA_DIR
 
@@ -441,36 +544,48 @@ def scrape_funds(funds, data_dir=None):
     browser = LazyBrowser()
 
     try:
-        for source, fund_id in funds:
+        for entry in funds:
+            spec = as_fund_spec(entry)
+            # Fetched once on the lookup identifier, then published under every
+            # identifier, so aliases cost no extra network calls.
             quotes, error = fetch_with_retries(
-                lambda: scrape_fund_quotes(source, fund_id, start, browser=browser)
+                lambda: scrape_fund_quotes(
+                    spec.source, spec.lookup_id, start, browser=browser
+                )
             )
 
             if error:
                 # Keep reporting the fund's last known price, dated as the
                 # source originally published it, rather than inventing a row
-                # for today. Record the failure so the run still reports it.
-                results.failures.append(f"{fund_id}: {error}")
-                last_known = read_last_known_row(fund_id, data_dir)
+                # for today. Record the failure once for the fund, not once
+                # per identifier.
+                results.failures.append(f"{spec.lookup_id}: {error}")
+                last_known = None
+                for identifier in spec.publish_ids:
+                    # A newly introduced lookup id has nothing stored yet,
+                    # while an alias may carry the fund's whole history.
+                    last_known = read_last_known_row(identifier, data_dir)
+                    if last_known is not None:
+                        break
+
                 if last_known is not None:
-                    results.carried.append([fund_id] + last_known)
-                    # Heal the published price file: it may still hold an
-                    # error string written before this behaviour existed.
-                    latest_price_file = os.path.join(
-                        data_dir, f"latest_{fund_id}.price"
-                    )
-                    with open(latest_price_file, "w") as f:
-                        f.write(last_known[1] + "\n")
+                    for identifier in spec.publish_ids:
+                        results.carried.append([identifier] + last_known)
+                        # Heal the published price file: it may still hold an
+                        # error string written before this behaviour existed.
+                        write_latest_price_file(identifier, last_known[1], data_dir)
                 continue
 
             for quote in quotes:
-                results.append([fund_id, quote.date, quote.price, quote.currency])
+                for identifier in spec.publish_ids:
+                    results.append(
+                        [identifier, quote.date, quote.price, quote.currency]
+                    )
 
             latest = max(quotes, key=lambda quote: quote.date, default=None)
             if latest is not None:
-                latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
-                with open(latest_price_file, "w") as f:
-                    f.write(latest.price + "\n")
+                for identifier in spec.publish_ids:
+                    write_latest_price_file(identifier, latest.price, data_dir)
     finally:
         browser.close()
 
