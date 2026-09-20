@@ -59,6 +59,77 @@ Scrapes price data using common browser settings.
 - Timeout: 30 seconds for page load, 60 seconds for selector
 - Wait condition: DOM content loaded
 
+### `Quote(date, price, currency)`
+
+A single dated price as reported by a source.
+
+- `date` (str): ISO `YYYY-MM-DD`, the price date the source reports
+- `price` (str): as quoted, thousands separators removed
+- `currency` (str): `"GBP"`, `"GBp"`, `"USD"`, `"HKD"`; `""` when the source gives none
+
+### `format_yahoo_price(value)`
+
+Formats a Yahoo bar value without losing or inventing precision.
+
+Yahoo daily bars are float32, so widening them to Python floats introduces artefacts:
+124.87 arrives as `124.87000274658203`. Rounding to fixed decimals would store that
+noise, while a significant-digit format would discard real precision
+(`format(126530.25, ".7g")` gives `126530.2`). The shortest string that round-trips as
+float32 recovers exactly what the source published.
+
+**Returns:** `str`, e.g. `"124.87"`, `"2.7785"`, `"6317"`, `"126530.25"`
+
+### `fetch_yahoo_quotes(symbol, start, end=None)`
+
+Fetches dated daily quotes from Yahoo Finance.
+
+**Parameters:**
+- `symbol` (str): Yahoo ticker (e.g. `IDTG.L`, `0P00000YAN`)
+- `start` (str): Inclusive ISO start date
+- `end` (str, optional): **Exclusive** ISO end date; `None` for the latest bar
+
+**Returns:** `list[Quote]`, oldest first
+
+Uses `Close` with `auto_adjust=False`, so values match the price quoted that day rather
+than a dividend-adjusted series. Does **not** use the summary endpoint (`.info`), which
+carries no date and was observed returning a stale price for mutual funds. Exceptions
+propagate so `fetch_with_retries()` can retry them.
+
+### `fetch_ft_quotes(isin, start, end=None)`
+
+Fetches dated daily quotes from Financial Times.
+
+**Parameters:**
+- `isin` (str): Fund ISIN as used in `funds.txt`
+- `start` (str): Inclusive ISO start date
+- `end` (str, optional): Inclusive ISO end date; `None` for today
+
+**Returns:** `list[Quote]`, oldest first
+
+**Raises:** `ValueError` when FT's internal id cannot be resolved or no rows are
+returned, so the caller can fall back to scraping.
+
+Two plain HTTP requests, no browser. Prices are kept as text so published digits are
+preserved exactly.
+
+### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None)`
+
+Returns dated quotes for one fund from its configured source, falling back from FT's
+endpoint to scraping when needed. `YH` and `MS` scrape a page showing only the current
+price, so their quotes carry the run date and an empty currency.
+
+### `LazyBrowser`
+
+Starts Playwright on first use, so a configuration that needs no scraping never
+launches Chromium. `page()` returns a live page; `close()` is safe if unused.
+
+### `read_last_known_row(fund_id, data_dir)`
+
+Returns a fund's most recent stored `[date, price, currency]`, or `None`.
+
+Used when every fetch attempt failed: the fund keeps reporting its real last price
+against the date that price belongs to, instead of a row invented for today.
+
 ### `fetch_price_api(symbol)`
 
 Fetches a price via the Yahoo Finance API instead of scraping. Used for the `GF` source.
@@ -106,19 +177,27 @@ results.failures
 Writes scraping results to CSV files.
 
 **Parameters:**
-- `results` (list): List of `[fund_id, date, price]` rows
+- `results` (list): List of `[fund_id, date, price, currency]` rows
 - `data_dir` (str, optional): Directory to write files (defaults to `"data"`)
 
 **Output Files:**
 - `latest_prices.csv`: Most recent price per fund, overwritten each run
-- `prices_history.csv`: Full history; rows for the current date are replaced rather
-  than duplicated, so repeated runs on one day are safe
-- `prices_history_90_days.csv`: Derived rolling window containing the result date and
-  the preceding 89 calendar days (90 inclusive, `ROLLING_HISTORY_DAYS`)
+- `prices_history.csv`: Full history, keyed on **(Fund, Date)**. An incoming row
+  replaces an existing row with the same key, so corrections apply and re-runs
+  cannot duplicate
+- `prices_history_90_days.csv`: Derived rolling window containing the latest result
+  date and the preceding 89 calendar days (90 inclusive, `ROLLING_HISTORY_DAYS`)
 
 **CSV Format:**
-- Headers: `Fund,Date,Price`
-- Dates in `YYYY-MM-DD` format
+- Headers: `Fund,Date,Price,Currency`
+- `Date` is the price date reported by the source, not the collection date
+- `Currency` is as quoted (`GBp` and `GBP` are distinct); `""` when unknown
+- Rows are sorted by date then fund, so repeated runs are byte-identical
+- Values that are not usable prices (`Error: ...`, `N/A`) are never stored
+
+**Compatibility**: `Currency` is appended as a fourth column, so readers that use the
+first three positions are unaffected. Rows written before SPEC-003 have no currency
+and load with an empty value.
 
 ### `fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR)`
 

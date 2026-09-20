@@ -86,14 +86,14 @@ Python application for scraping fund prices from multiple financial data sources
 File: `funds.txt`
 ```
 FT,GB00B1FXTF86    # Financial Times
-YH,IDTG.L          # Yahoo Finance (web scraping)
+YH,IDTG.L          # Yahoo Finance (web scraping; prefer GF)
 MS,LU0196696453    # Morningstar
 GF,AAPL            # Yahoo Finance API (for stocks)
 ```
 
 **Source Codes:**
 - `FT` - Financial Times (web scraping)
-- `YH` - Yahoo Finance (web scraping)
+- `YH` - Yahoo Finance (web scraping; undated, so prefer `GF`)
 - `MS` - Morningstar (web scraping)
 - `GF` - Yahoo Finance API (uses yfinance library)
 

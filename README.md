@@ -111,10 +111,18 @@ The application creates the following files in the `data/` directory:
 
 **Normal Mode (latest_prices.csv)**:
 ```csv
-Fund,Date,Price
-GB00B1FXTF86,2024-01-15,1.2345
-IDTG.L,2024-01-15,2.5678
+Fund,Date,Price,Currency
+GB00B1FXTF86,2026-09-18,7.15,GBP
+SGLN.L,2026-09-18,6317,GBp
 ```
+
+`Date` is the date the **source** reports the price for, not the date it was
+collected. No row is written for a day a source publishes no price, so weekends and
+holidays are absent rather than repeating the previous close.
+
+`Currency` is recorded exactly as the source quotes it. `GBp` (pence) and `GBP`
+(pounds) are both used by LSE-listed instruments and are deliberately kept distinct;
+prices are stored as quoted and are never converted.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
 ```csv

@@ -24,8 +24,8 @@ SNAP_WINDOW_DAYS = 10
 class Quote(NamedTuple):
     """A single dated price as reported by a source."""
 
-    date: str      # ISO YYYY-MM-DD, the price date reported by the source
-    price: str     # as quoted, thousands separators removed, no float noise
+    date: str  # ISO YYYY-MM-DD, the price date reported by the source
+    price: str  # as quoted, thousands separators removed, no float noise
     currency: str  # "GBP", "GBp", "USD", "HKD"; "" when the source gives none
 
 
@@ -65,38 +65,40 @@ def read_fund_ids(filename):
         # Each line: <source>,<identifier>
         return [tuple(line.strip().split(",", 1)) for line in f if line.strip()]
 
+
 def get_source_config(source, fund_id):
     """Get URL and CSS selector configuration for web scraping sources.
-    
+
     Note: GF (Google Finance) source uses API instead of scraping,
     so it's not included in this configuration.
-    
+
     Args:
         source: Two-character source code (FT, YH, MS)
         fund_id: Fund identifier specific to the source
-        
+
     Returns:
         Tuple of (url, selector) or (None, None) if source is invalid or uses API
     """
     source_configs = {
         "FT": {
             "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
-            "selector": ".mod-ui-data-list__value"
+            "selector": ".mod-ui-data-list__value",
         },
         "YH": {
             "url": f"https://sg.finance.yahoo.com/quote/{fund_id}/",
-            "selector": 'span[data-testid="qsp-price"]'
+            "selector": 'span[data-testid="qsp-price"]',
         },
         "MS": {
             "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
-            "selector": '#mainContent_quicktakeContent_fvOverview_lblNAV'
-        }
+            "selector": "#mainContent_quicktakeContent_fvOverview_lblNAV",
+        },
     }
-    
+
     config = source_configs.get(source.upper())
     if config:
         return config["url"], config["selector"]
     return None, None
+
 
 def fetch_yahoo_quotes(symbol, start, end=None):
     """Fetch dated daily quotes for a symbol from Yahoo Finance.
@@ -190,7 +192,9 @@ def fetch_ft_quotes(isin, start, end=None):
 
     quotes = []
     for row in re.findall(r"<tr>(.*?)</tr>", response.json().get("html", ""), re.S):
-        date_match = re.search(r"<span[^>]*>([A-Za-z]+, [A-Za-z]+ \d{1,2}, \d{4})</span>", row)
+        date_match = re.search(
+            r"<span[^>]*>([A-Za-z]+, [A-Za-z]+ \d{1,2}, \d{4})</span>", row
+        )
         # Only Open/High/Low/Close are plain cells; the date and volume cells
         # wrap their contents in spans.
         cells = re.findall(r"<td[^>]*>([^<]*)</td>", row)
@@ -230,6 +234,7 @@ def fetch_price_api(symbol):
         return quotes[-1].price
     except Exception as e:
         return f"Error: {str(e)}"
+
 
 def scrape_price_with_common_settings(page, url, selector):
     """Scrape price using common settings for all sources."""
@@ -544,7 +549,9 @@ def write_results(results, data_dir=None):
         writer.writerows(latest_by_fund[fund] for fund in sorted(latest_by_fund))
 
     reference_date = (
-        max(row[1] for row in incoming) if incoming else datetime.date.today().isoformat()
+        max(row[1] for row in incoming)
+        if incoming
+        else datetime.date.today().isoformat()
     )
     reference = datetime.date.fromisoformat(reference_date)
     cutoff = reference - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
@@ -566,76 +573,88 @@ def write_results(results, data_dir=None):
 
 def parse_arguments(args=None):
     """Parse command-line arguments.
-    
+
     Args:
         args: List of arguments to parse (for testing). If None, uses sys.argv.
-        
+
     Returns:
         Parsed arguments namespace
     """
     parser = argparse.ArgumentParser(
-        description='Fund Price Scraper with Historical Data Support',
-        epilog='Examples:\n'
-               '  Normal mode: python scrape_fund_price.py\n'
-               '  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Fund Price Scraper with Historical Data Support",
+        epilog="Examples:\n"
+        "  Normal mode: python scrape_fund_price.py\n"
+        "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--history', type=str, metavar='SYMBOL',
-                        help='Symbol to fetch historical data for (e.g., AAPL, MSFT)')
-    parser.add_argument('--start', type=str, metavar='YYYY-MM-DD',
-                        help='Start date in YYYY-MM-DD format (required with --history)')
-    parser.add_argument('--end', type=str, metavar='YYYY-MM-DD',
-                        help='End date in YYYY-MM-DD format (optional, defaults to today)')
-    
+    parser.add_argument(
+        "--history",
+        type=str,
+        metavar="SYMBOL",
+        help="Symbol to fetch historical data for (e.g., AAPL, MSFT)",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        metavar="YYYY-MM-DD",
+        help="Start date in YYYY-MM-DD format (required with --history)",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        metavar="YYYY-MM-DD",
+        help="End date in YYYY-MM-DD format (optional, defaults to today)",
+    )
+
     return parser.parse_args(args)
 
 
 def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
     """Fetch historical price data for a symbol.
-    
+
     Args:
         symbol: Stock/fund symbol
         start_date: Start date in YYYY-MM-DD format
         end_date: End date in YYYY-MM-DD format (can be None)
         data_dir: Directory to save the CSV file
-        
+
     Returns:
         Filename of saved CSV or error message starting with "Error:"
     """
     # Validate date format
-    date_pattern = r'^\d{4}-\d{2}-\d{2}$'
+    date_pattern = r"^\d{4}-\d{2}-\d{2}$"
     if not re.match(date_pattern, start_date):
         return "Error: Invalid start date format. Use YYYY-MM-DD"
-    
+
     if end_date and not re.match(date_pattern, end_date):
         return "Error: Invalid end date format. Use YYYY-MM-DD"
-    
+
     # Validate start date is before end date
     if end_date and start_date > end_date:
         return "Error: Start date must be before end date"
-    
+
     try:
         # Fetch historical data using yfinance
         ticker = yf.Ticker(symbol)
         hist = ticker.history(start=start_date, end=end_date)
-        
+
         # Check if data was returned
         if hist.empty:
             return f"Error: No data found for symbol {symbol}"
-        
+
         # Create filename
         end_str = end_date if end_date else datetime.date.today().isoformat()
         filename = f"history_{symbol}_{start_date}_{end_str}.csv"
         filepath = os.path.join(data_dir, filename)
-        
+
         # Ensure data directory exists
         os.makedirs(data_dir, exist_ok=True)
-        
+
         # Save to CSV
         hist.to_csv(filepath)
-        
+
         return filepath
-        
+
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -643,15 +662,15 @@ def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
 def main():
     """Main function to run the fund price scraper."""
     args = parse_arguments()
-    
+
     # Check if historical data mode
     if args.history:
         if not args.start:
             print("Error: --start date is required when using --history")
             return
-        
+
         result = fetch_historical_data(args.history, args.start, args.end)
-        
+
         if result.startswith("Error:"):
             print(result)
         else:
@@ -665,6 +684,7 @@ def main():
             for failure in results.failures:
                 print(f"Error: {failure}")
             raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()

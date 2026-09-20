@@ -2,7 +2,7 @@ name: Daily Fund Price Scraper
 
 on:
   schedule:
-    - cron: '1 21 * * *'  # Runs daily at 22:00 UTC (5pm EST, 6pm EDT)
+    - cron: '30 22 * * *'  # 22:30 UTC, after the US close year-round (21:00 UTC in winter, 20:00 UTC in summer)
   workflow_dispatch:     # Allows manual trigger
 
 jobs:
@@ -27,15 +27,18 @@ jobs:
         run: python scrape_fund_price.py
 
       - name: Set up Git user
+        if: always()
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@users.noreply.github.com"
 
       - name: Set up authentication for pushing
+        if: always()
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
 
       - name: Commit and push results
+        if: always()
         run: |
           git add -f data/*.csv data/*.price
           git commit -m "Update fund prices" || echo "No changes to commit"
