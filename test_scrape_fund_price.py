@@ -21,7 +21,8 @@ from scrape_fund_price import (
     Quote,
     format_yahoo_price,
     fetch_yahoo_quotes,
-    fetch_ft_quotes
+    fetch_ft_quotes,
+    source_requires_browser
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -1166,6 +1167,201 @@ class TestFTQuoteFetching(unittest.TestCase):
         page = FT_PAGE.replace("Price (GBP)", "Price")
         mock_get.side_effect = self._responses(page=page)
         self.assertEqual(fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")[0].currency, "")
+
+
+class TestHistoryUpsert(unittest.TestCase):
+    """Test (Fund, Date) keyed storage with upsert semantics."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.history = os.path.join(self.test_dir, "prices_history.csv")
+        self.latest = os.path.join(self.test_dir, "latest_prices.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _rows(self, path):
+        with open(path, "r", newline="") as f:
+            return list(csv.reader(f))
+
+    def test_history_has_currency_column(self):
+        """Test Currency is appended after Price, keeping column order stable."""
+        write_results([["AAA", "2026-09-17", "1.50", "GBp"]], self.test_dir)
+        self.assertEqual(
+            self._rows(self.history)[0], ["Fund", "Date", "Price", "Currency"]
+        )
+
+    def test_same_fund_and_date_is_replaced_not_duplicated(self):
+        """Test a corrected price overwrites the row with the same key."""
+        write_results([["AAA", "2026-09-17", "1.50", "GBP"]], self.test_dir)
+        write_results([["AAA", "2026-09-17", "1.55", "GBP"]], self.test_dir)
+        rows = self._rows(self.history)[1:]
+        self.assertEqual(rows, [["AAA", "2026-09-17", "1.55", "GBP"]])
+
+    def test_same_fund_different_dates_both_kept(self):
+        """Test distinct price dates accumulate."""
+        write_results(
+            [
+                ["AAA", "2026-09-17", "1.50", "GBP"],
+                ["AAA", "2026-09-18", "1.60", "GBP"],
+            ],
+            self.test_dir,
+        )
+        self.assertEqual(len(self._rows(self.history)[1:]), 2)
+
+    def test_rows_are_sorted_by_date_then_fund(self):
+        """Test deterministic ordering so diffs stay readable."""
+        write_results(
+            [
+                ["BBB", "2026-09-18", "2.00", "GBP"],
+                ["AAA", "2026-09-18", "1.00", "GBP"],
+                ["BBB", "2026-09-17", "1.90", "GBP"],
+            ],
+            self.test_dir,
+        )
+        rows = self._rows(self.history)[1:]
+        self.assertEqual(
+            [(r[0], r[1]) for r in rows],
+            [("BBB", "2026-09-17"), ("AAA", "2026-09-18"), ("BBB", "2026-09-18")],
+        )
+
+    def test_rewriting_identical_data_changes_nothing(self):
+        """Test the run is idempotent, so a re-run produces no diff."""
+        rows = [
+            ["AAA", "2026-09-17", "1.50", "GBP"],
+            ["BBB", "2026-09-17", "2.50", "USD"],
+        ]
+        write_results(rows, self.test_dir)
+        first = open(self.history, "rb").read()
+        write_results(rows, self.test_dir)
+        self.assertEqual(open(self.history, "rb").read(), first)
+
+    def test_unusable_prices_are_never_stored(self):
+        """Test error markers and N/A never enter the history file."""
+        write_results(
+            [
+                ["AAA", "2026-09-17", "Error: Timeout", ""],
+                ["BBB", "2026-09-17", "N/A", ""],
+                ["CCC", "2026-09-17", "3.00", "GBP"],
+            ],
+            self.test_dir,
+        )
+        rows = self._rows(self.history)[1:]
+        self.assertEqual([r[0] for r in rows], ["CCC"])
+
+    def test_legacy_three_column_history_is_upgraded(self):
+        """Test pre-existing rows without a currency remain readable."""
+        with open(self.history, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["Fund", "Date", "Price"])
+            w.writerow(["OLD", "2026-09-01", "9.99"])
+        write_results([["AAA", "2026-09-17", "1.50", "GBP"]], self.test_dir)
+        rows = self._rows(self.history)
+        self.assertEqual(rows[0], ["Fund", "Date", "Price", "Currency"])
+        self.assertIn(["OLD", "2026-09-01", "9.99", ""], rows)
+
+    def test_latest_prices_takes_the_newest_date_per_fund(self):
+        """Test latest_prices.csv reports each fund's most recent price date."""
+        write_results(
+            [
+                ["AAA", "2026-09-16", "1.40", "GBP"],
+                ["AAA", "2026-09-18", "1.60", "GBP"],
+                ["AAA", "2026-09-17", "1.50", "GBP"],
+            ],
+            self.test_dir,
+        )
+        rows = self._rows(self.latest)
+        self.assertEqual(rows[0], ["Fund", "Date", "Price", "Currency"])
+        self.assertEqual(rows[1:], [["AAA", "2026-09-18", "1.60", "GBP"]])
+
+    def test_rolling_window_filters_on_price_date(self):
+        """Test the 90-day window is measured against price dates."""
+        write_results(
+            [
+                ["OLD", "2026-06-01", "1.00", "GBP"],
+                ["NEW", "2026-09-18", "2.00", "GBP"],
+            ],
+            self.test_dir,
+        )
+        rolling = os.path.join(self.test_dir, "prices_history_90_days.csv")
+        funds = [r[0] for r in self._rows(rolling)[1:]]
+        self.assertEqual(funds, ["NEW"])
+
+
+class TestWindowedScraping(unittest.TestCase):
+    """Test scrape_funds over dated windows, and lazy browser startup."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_emits_a_row_per_quote_with_currency(self, mock_quotes, mock_pw):
+        """Test every quote in the window becomes a dated result row."""
+        mock_quotes.return_value = [
+            Quote("2026-09-17", "1.50", "GBp"),
+            Quote("2026-09-18", "1.60", "GBp"),
+        ]
+        results = scrape_funds([("GF", "SGLN.L")], self.test_dir)
+        self.assertEqual(
+            list(results),
+            [
+                ["SGLN.L", "2026-09-17", "1.50", "GBp"],
+                ["SGLN.L", "2026-09-18", "1.60", "GBp"],
+            ],
+        )
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_ft_quotes")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_browser_not_started_for_api_only_config(self, mock_y, mock_ft, mock_pw):
+        """Test Playwright is not launched when no fund needs scraping."""
+        mock_y.return_value = [Quote("2026-09-18", "1.60", "USD")]
+        mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
+        scrape_funds([("GF", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
+        mock_pw.assert_not_called()
+
+    def test_ft_and_api_sources_do_not_require_a_browser(self):
+        """Test source_requires_browser reflects the HTTP-only routes."""
+        self.assertFalse(source_requires_browser("FT", "GB00B1FXTF86"))
+        self.assertFalse(source_requires_browser("GF", "QQQ"))
+        self.assertTrue(source_requires_browser("YH", "IDTG.L"))
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_total_failure_writes_no_history_row(self, mock_quotes, mock_pw):
+        """Test a fund that cannot be fetched contributes no dated row."""
+        mock_quotes.side_effect = Exception("Network error")
+        results = scrape_funds([("GF", "QQQ")], self.test_dir)
+        self.assertEqual(list(results), [])
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("QQQ", results.failures[0])
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes, mock_pw):
+        """Test the per-fund price file is not overwritten with an error."""
+        with open(os.path.join(self.test_dir, "latest_QQQ.price"), "w") as f:
+            f.write("700.00\n")
+        mock_quotes.side_effect = Exception("Network error")
+        scrape_funds([("GF", "QQQ")], self.test_dir)
+        with open(os.path.join(self.test_dir, "latest_QQQ.price")) as f:
+            self.assertEqual(f.read().strip(), "700.00")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.scrape_price_with_common_settings")
+    @patch("scrape_fund_price.fetch_ft_quotes")
+    def test_ft_failure_falls_back_to_scraping(self, mock_ft, mock_scrape, mock_pw):
+        """Test an FT endpoint failure still yields a price, dated as today."""
+        mock_ft.side_effect = ValueError("FT internal id not found")
+        mock_scrape.return_value = "7.15"
+        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir)
+        today = date.today().isoformat()
+        self.assertEqual(list(results), [["GB00B1FXTF86", today, "7.15", ""]])
+        mock_pw.assert_called()
 
 if __name__ == '__main__':
     unittest.main() 
