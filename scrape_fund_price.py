@@ -801,6 +801,252 @@ def check_quoting_unit(identifier, quotes):
     return None
 
 
+FX_PAIRS_FILE = "fx_pairs.txt"
+FX_RATE_DECIMALS = 6
+FX_HEADER = ["Pair", "Date", "Rate"]
+
+
+def read_fx_pairs(filename=None):
+    """Read currency pairs to snap from a pairs file.
+
+    One six-letter pair per line, e.g. `USDGBP`, meaning GBP per 1 USD. Blank
+    lines and `#` comments are ignored. A missing file returns no pairs, so FX
+    is optional rather than required.
+
+    The slash spelling is deliberately rejected: by market convention
+    `GBP/NZD` means NZD per GBP, the inverse of what these rates are for, and
+    accepting it would store plausible but wrong values.
+
+    Raises:
+        ValueError: naming the line, for a malformed or repeated pair.
+    """
+    if filename is None:
+        filename = FX_PAIRS_FILE
+
+    if not os.path.isfile(filename):
+        return []
+
+    pairs = []
+    seen = {}
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            if not re.match(r"^[A-Z]{6}$", line):
+                raise ValueError(
+                    f"fx pairs file line {number}: expected six uppercase letters "
+                    f"such as 'USDGBP' (GBP per 1 USD), got {line!r}"
+                )
+
+            if line in seen:
+                raise ValueError(
+                    f"fx pairs file line {number}: pair {line!r} already used on "
+                    f"line {seen[line]}"
+                )
+
+            seen[line] = number
+            pairs.append(line)
+
+    return pairs
+
+
+def format_fx_rate(value):
+    """Format a rate at a fixed 6 decimal places.
+
+    Unlike prices, which keep the source's own precision, rates use a fixed
+    width: HKDGBP is about 0.0951, where 4dp would lose roughly 0.1%.
+    """
+    return f"{float(value):.{FX_RATE_DECIMALS}f}"
+
+
+def fetch_fx_quotes(pair, start, end=None):
+    """Fetch dated FX rates for a pair, as GBP per 1 unit of the base currency.
+
+    Weekend bars are dropped: FX trades continuously and Yahoo shows a
+    transient Sunday bar when the market reopens, which is not an end-of-day
+    rate for any trading session.
+
+    The current day's bar is still in progress and is stored provisionally;
+    the windowed upsert overwrites it on the next run once it has completed.
+
+    Args:
+        pair: Six-letter pair, e.g. "USDGBP"
+        start: Inclusive ISO start date
+        end: Exclusive ISO end date, or None for the latest bar
+
+    Returns:
+        list[Quote] whose `currency` carries the pair name
+    """
+    quotes = []
+    for quote in fetch_yahoo_quotes(f"{pair}=X", start, end):
+        if datetime.date.fromisoformat(quote.date).weekday() >= 5:
+            continue
+        quotes.append(Quote(quote.date, format_fx_rate(quote.price), pair))
+    return quotes
+
+
+def snap_fx_rates(pairs, data_dir=None):
+    """Fetch a window of dated rates for each pair.
+
+    Failures are isolated per pair, so one dead pair does not cost the day's
+    other rates.
+
+    Returns:
+        ScrapeResults of [pair, date, rate] rows
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    results = ScrapeResults()
+    start = (
+        datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
+    ).isoformat()
+
+    for pair in pairs:
+        quotes, error = fetch_with_retries(lambda: fetch_fx_quotes(pair, start))
+        if error:
+            results.failures.append(f"{pair}: {error}")
+            continue
+        for quote in quotes:
+            results.append([pair, quote.date, quote.price])
+
+    return results
+
+
+def read_fx_rows(fx_csv):
+    """Read stored FX rates keyed on (Pair, Date)."""
+    if not os.path.isfile(fx_csv):
+        return {}
+
+    rows = {}
+    with open(fx_csv, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            if len(row) < 3:
+                continue
+            rows[(row[0], row[1])] = [row[0], row[1], row[2]]
+    return rows
+
+
+def write_fx_files(rows, data_dir):
+    """Write the FX history and latest-rate CSVs from an authoritative row set.
+
+    Does not merge with what is already stored, so a rebuild that removed rows
+    actually removes them. write_fx_results() does the merging for the daily
+    run before calling this.
+    """
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+
+    with open(os.path.join(data_dir, "fx_history.csv"), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(FX_HEADER)
+        writer.writerows(ordered)
+
+    latest = latest_rows_by_fund(ordered)
+
+    with open(os.path.join(data_dir, "latest_fx.csv"), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(FX_HEADER)
+        writer.writerows(latest[pair] for pair in sorted(latest))
+
+
+def write_fx_results(results, data_dir=None):
+    """Write dated FX rates to CSV files.
+
+    Keyed on (Pair, Date) and upserted, so the current day's provisional rate
+    is replaced by the final one without duplicating.
+
+    Args:
+        results: List of [pair, date, rate] rows
+        data_dir: Directory for output files (default: DATA_DIR)
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    fx_csv = os.path.join(data_dir, "fx_history.csv")
+
+    stored = read_fx_rows(fx_csv)
+    for row in results:
+        if row[2]:
+            stored[(row[0], row[1])] = [row[0], row[1], row[2]]
+
+    write_fx_files(list(stored.values()), data_dir)
+
+
+def backfill_fx(pairs, start, data_dir=None, report=None):
+    """Rebuild stored FX rates from source data, from `start` onwards.
+
+    Uses the same rule as the price rebuild: a pair that fetches successfully
+    has its rows from the start date replaced, while a pair that fails keeps
+    everything it had.
+
+    Args:
+        pairs: Six-letter pair names
+        start: Inclusive ISO start date
+        data_dir: Directory for output files (default: DATA_DIR)
+        report: Existing BackfillReport to add to, or None for a new one
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    report = report if report is not None else BackfillReport()
+    stored = read_fx_rows(os.path.join(data_dir, "fx_history.csv"))
+
+    for pair in pairs:
+        quotes, error = fetch_with_retries(lambda: fetch_fx_quotes(pair, start))
+        existing = [key for key in stored if key[0] == pair]
+
+        if error:
+            report.failures.append(f"{pair}: {error}")
+            report.entries.append(
+                {
+                    "identifier": pair,
+                    "before": len(existing),
+                    "deleted": 0,
+                    "retained": len(existing),
+                    "inserted": 0,
+                    "first": min((k[1] for k in existing), default="-"),
+                    "last": max((k[1] for k in existing), default="-"),
+                    "currency": "-",
+                    "status": "failed, kept existing",
+                }
+            )
+            continue
+
+        doomed = [key for key in existing if key[1] >= start]
+        for key in doomed:
+            del stored[key]
+
+        for quote in quotes:
+            stored[(pair, quote.date)] = [pair, quote.date, quote.price]
+
+        report.entries.append(
+            {
+                "identifier": pair,
+                "before": len(existing),
+                "deleted": len(doomed),
+                "retained": 0,
+                "inserted": len(quotes),
+                "first": quotes[0].date if quotes else "-",
+                "last": quotes[-1].date if quotes else "-",
+                "currency": "GBP",
+                "status": "rebuilt",
+            }
+        )
+
+    write_fx_files(list(stored.values()), data_dir)
+    return report
+
+
 def is_removable_row(row):
     """Return True when a stored row may be deleted during a rebuild.
 
@@ -936,6 +1182,10 @@ def backfill_history(specs, start, data_dir=None):
 
     for row in latest_rows_by_fund(rows).values():
         write_latest_price_file(row[0], row[2], data_dir)
+
+    pairs = read_fx_pairs()
+    if pairs:
+        backfill_fx(pairs, start, data_dir, report=report)
 
     return report
 
@@ -1080,11 +1330,23 @@ def main():
             print(f"Historical data saved to: {result}")
     else:
         # Normal scraping mode
+        failures = []
+
         funds = read_fund_specs(FUNDS_FILE)
         results = scrape_funds(funds)
         write_results(results)
-        if getattr(results, "failures", []):
-            for failure in results.failures:
+        failures.extend(getattr(results, "failures", []))
+
+        # FX is snapped after prices and written independently, so a problem
+        # with one never costs the other a day of data.
+        pairs = read_fx_pairs()
+        if pairs:
+            fx_results = snap_fx_rates(pairs)
+            write_fx_results(fx_results)
+            failures.extend(fx_results.failures)
+
+        if failures:
+            for failure in failures:
                 print(f"Error: {failure}")
             raise SystemExit(1)
 

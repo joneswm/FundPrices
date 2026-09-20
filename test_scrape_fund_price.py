@@ -34,6 +34,7 @@ from scrape_fund_price import (
     fetch_fx_quotes,
     write_fx_results,
     snap_fx_rates,
+    backfill_fx,
 )
 
 
@@ -2186,7 +2187,6 @@ class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
         self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
 
-
 class TestFxPairConfiguration(unittest.TestCase):
     """Test fx_pairs.txt parsing and validation."""
 
@@ -2209,9 +2209,7 @@ class TestFxPairConfiguration(unittest.TestCase):
 
     def test_ignores_comments_and_blank_lines(self):
         """Test the file can be annotated."""
-        pairs = read_fx_pairs(
-            self._write("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n")
-        )
+        pairs = read_fx_pairs(self._write("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n"))
         self.assertEqual(pairs, ["USDGBP"])
 
     def test_rejects_a_slash_separated_pair(self):
@@ -2238,9 +2236,7 @@ class TestFxPairConfiguration(unittest.TestCase):
 
     def test_missing_file_means_no_fx(self):
         """Test FX is optional, so an absent file is not an error."""
-        self.assertEqual(
-            read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), []
-        )
+        self.assertEqual(read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), [])
 
 
 class TestFxQuoteFetching(unittest.TestCase):
@@ -2323,7 +2319,11 @@ class TestFxStorage(unittest.TestCase):
         )
         self.assertEqual(
             [(r[0], r[1]) for r in self._rows(self.history)[1:]],
-            [("USDGBP", "2026-09-17"), ("HKDGBP", "2026-09-18"), ("USDGBP", "2026-09-18")],
+            [
+                ("USDGBP", "2026-09-17"),
+                ("HKDGBP", "2026-09-18"),
+                ("USDGBP", "2026-09-18"),
+            ],
         )
 
     def test_rewriting_identical_data_changes_nothing(self):
@@ -2383,6 +2383,61 @@ class TestFxFailureIsolation(unittest.TestCase):
         results = snap_fx_rates(["USDGBP"], self.test_dir)
         self.assertEqual(list(results), [["USDGBP", "2026-09-18", "0.746700"]])
         self.assertEqual(results.failures, [])
+
+
+class TestFxBackfill(unittest.TestCase):
+    """Test FX history is rebuilt by the same rule as prices."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.history = os.path.join(self.test_dir, "fx_history.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _rows(self):
+        with open(self.history, newline="") as f:
+            return [r for r in csv.reader(f)][1:]
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_rebuilds_rates_from_the_start_date(self, mock_quotes):
+        """Test rates are rebuilt from source data."""
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "0.830000", "USDGBP"),
+            Quote("2026-09-18", "0.746700", "USDGBP"),
+        ]
+        report = backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
+        self.assertEqual(len(self._rows()), 2)
+        entry = next(e for e in report.entries if e["identifier"] == "USDGBP")
+        self.assertEqual(entry["inserted"], 2)
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_stale_rows_in_range_are_removed(self, mock_quotes):
+        """Test a rate the source no longer reports does not linger."""
+        with open(self.history, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Pair", "Date", "Rate"])
+            writer.writerow(["USDGBP", "2026-09-19", "0.999999"])  # Saturday
+        mock_quotes.return_value = [Quote("2026-09-18", "0.746700", "USDGBP")]
+
+        backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
+
+        self.assertEqual(self._rows(), [["USDGBP", "2026-09-18", "0.746700"]])
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_failed_pair_keeps_its_rows(self, mock_quotes):
+        """Test a failed fetch never destroys stored rates."""
+        with open(self.history, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Pair", "Date", "Rate"])
+            writer.writerow(["USDGBP", "2026-09-18", "0.746700"])
+        mock_quotes.side_effect = Exception("Network error")
+
+        report = backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
+
+        self.assertEqual(self._rows(), [["USDGBP", "2026-09-18", "0.746700"]])
+        self.assertEqual(len(report.failures), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
