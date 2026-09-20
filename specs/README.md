@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-004: Identifier Aliases
+**Status**: ✅ Complete
+**Location**: [004-identifier-aliases/](004-identifier-aliases/)
+**Description**: Fetch a fund once from one source identifier and publish it under several, so a fund can change source without stranding its history.
+
 ### SPEC-003: True Price Dates and Currency
 **Status**: ✅ Complete
 **Location**: [003-price-date-and-currency/](003-price-date-and-currency/)

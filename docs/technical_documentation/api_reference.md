@@ -4,9 +4,37 @@ This document provides detailed API documentation for the Fund Price Scraping pr
 
 ## Core Functions
 
+### `FundSpec(source, lookup_id, aliases=())`
+
+One configured instrument.
+
+- `source` (str): source code (`FT`, `GF`, `YH`, `MS`)
+- `lookup_id` (str): the identifier sent to the source
+- `aliases` (tuple): extra identifiers to publish under
+- `publish_ids` (property): `lookup_id` followed by each alias
+
+### `read_fund_specs(filename)`
+
+Reads instrument configuration.
+
+**Line grammar:** `<source>,<lookup_id>[,<alias>[;<alias>...]]`. Blank lines, full-line
+`#` comments and trailing comments are ignored.
+
+**Returns:** `list[FundSpec]`
+
+**Raises:** `ValueError` naming the offending line, for a malformed line, an empty or
+self-referencing alias, or an identifier repeated anywhere in the file. Validation runs
+before any network call, so a bad config cannot fail half way through a run.
+
+```python
+read_fund_specs("funds.txt")
+# [FundSpec(source="GF", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
+```
+
 ### `read_fund_ids(filename)`
 
-Reads fund identifiers from a file.
+Reads `(source, lookup_id)` pairs. A compatibility wrapper over `read_fund_specs()`
+for callers that do not need aliases.
 
 **Parameters:**
 - `filename` (str): Path to the file containing fund identifiers

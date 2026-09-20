@@ -598,7 +598,7 @@ class TestFundPriceScraper(unittest.TestCase):
             scrape_fund_price.DATA_DIR = original_data_dir
 
     @patch("scrape_fund_price.parse_arguments")
-    @patch("scrape_fund_price.read_fund_ids")
+    @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
     def test_main_function(self, mock_write, mock_scrape, mock_read, mock_parse):
@@ -609,8 +609,8 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_parse.return_value = mock_args
 
         # Mock the functions
-        mock_read.return_value = [("FT", "TEST123")]
-        mock_scrape.return_value = [["TEST123", "2025-01-20", "100.00"]]
+        mock_read.return_value = [FundSpec("FT", "TEST123", ())]
+        mock_scrape.return_value = [["TEST123", "2025-01-20", "100.00", "GBP"]]
 
         # Call main
         main()
@@ -622,7 +622,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_write.assert_called_once()
 
     @patch("scrape_fund_price.parse_arguments")
-    @patch("scrape_fund_price.read_fund_ids")
+    @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
     def test_main_fails_job_when_scrape_failures_remain(
@@ -632,7 +632,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_args = MagicMock()
         mock_args.history = None
         mock_parse.return_value = mock_args
-        mock_read.return_value = [("FT", "TEST123")]
+        mock_read.return_value = [FundSpec("FT", "TEST123", ())]
 
         class FailedResults(list):
             failures = ["TEST123: timeout"]
@@ -1348,7 +1348,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
 
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.read_fund_ids")
+    @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_results_are_written_before_failure_is_signalled(
         self, mock_args, mock_read, mock_scrape, mock_write
@@ -1371,7 +1371,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
 
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.read_fund_ids")
+    @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_clean_run_does_not_exit_non_zero(
         self, mock_args, mock_read, mock_scrape, mock_write
@@ -1386,7 +1386,6 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         main()
 
         mock_write.assert_called_once()
-
 
 
 class TestFundSpecParsing(unittest.TestCase):
@@ -1439,9 +1438,7 @@ class TestFundSpecParsing(unittest.TestCase):
     def test_read_fund_ids_still_returns_pairs(self):
         """Test the existing helper keeps its shape for existing callers."""
         path = self._write("GF,0P00000YAN,JFM0003373\nFT,ISIN1\n")
-        self.assertEqual(
-            read_fund_ids(path), [("GF", "0P00000YAN"), ("FT", "ISIN1")]
-        )
+        self.assertEqual(read_fund_ids(path), [("GF", "0P00000YAN"), ("FT", "ISIN1")])
 
     def test_line_with_one_field_is_rejected(self):
         """Test an incomplete line names its line number."""
@@ -1571,6 +1568,7 @@ class TestAliasPublishing(unittest.TestCase):
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
         results = scrape_funds([("GF", "QQQ")], self.test_dir)
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+
 
 if __name__ == "__main__":
     unittest.main()

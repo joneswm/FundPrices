@@ -84,18 +84,32 @@ Python application for scraping fund prices from multiple financial data sources
 
 ### Fund Configuration Format
 File: `funds.txt`
+
+Each line is `<source>,<lookup_id>[,<alias>[;<alias>...]]`. Blank lines, full-line
+`#` comments and trailing comments are ignored.
+
 ```
-FT,GB00B1FXTF86    # Financial Times
-YH,IDTG.L          # Yahoo Finance (web scraping; prefer GF)
-MS,LU0196696453    # Morningstar
-GF,AAPL            # Yahoo Finance API (for stocks)
+FT,GB00B1FXTF86             # Financial Times (dated HTTP endpoint)
+GF,AAPL                     # Yahoo Finance API
+GF,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 ```
 
 **Source Codes:**
-- `FT` - Financial Times (web scraping)
-- `YH` - Yahoo Finance (web scraping; undated, so prefer `GF`)
-- `MS` - Morningstar (web scraping)
-- `GF` - Yahoo Finance API (uses yfinance library)
+- `FT` - Financial Times (dated HTTP endpoint; falls back to scraping)
+- `GF` - **Yahoo Finance API** via yfinance. The name is a leftover from Google
+  Finance and is a misnomer; it has nothing to do with Google
+- `YH` - Yahoo Finance (web scraping). Undated, so prefer `GF`
+- `MS` - Morningstar (web scraping). Supported but unused: the one fund that
+  needed it now comes from Yahoo
+
+**Identifier aliases**: the optional third field lists extra identifiers to publish
+under, separated by `;`. The price is fetched **once** using the second field and
+written under every identifier, so a fund can move to a better source without
+stranding history recorded under its old identifier.
+
+Configuration is validated before any network call. A malformed line, an empty or
+self-referencing alias, or an identifier repeated anywhere in the file raises an
+error naming the line.
 
 ## Data Sources
 

@@ -792,7 +792,7 @@ def main():
             print(f"Historical data saved to: {result}")
     else:
         # Normal scraping mode
-        funds = read_fund_ids(FUNDS_FILE)
+        funds = read_fund_specs(FUNDS_FILE)
         results = scrape_funds(funds)
         write_results(results)
         if getattr(results, "failures", []):

@@ -43,15 +43,26 @@ playwright install chromium
 ```
 
 ### Configuration
-Create or edit `funds.txt` with your fund identifiers:
+Create or edit `funds.txt`. Each line is `<source>,<lookup_id>[,<alias>[;<alias>...]]`.
+Blank lines and `#` comments are ignored.
 ```
-FT,GB00B1FXTF86
-YH,IDTG.L
-MS,LU0196696453
-GF,AAPL
+FT,GB00B1FXTF86             # Financial Times
+GF,AAPL                     # Yahoo Finance API
+GF,0P00000YAN,JFM0003373    # fetched once, published under both identifiers
 ```
 
-**Note**: GF (Google Finance) source uses Yahoo Finance API and requires standard ticker symbols (e.g., AAPL, MSFT, GOOGL) without exchange prefixes.
+**Identifier aliases**: the optional third field lists extra identifiers to publish
+the same price under, separated by `;`. The price is fetched **once** using the
+second field. This lets a fund change source without breaking anything keyed on its
+old identifier: its history simply continues under both.
+
+The configuration is validated before any network call, so a malformed line, an
+empty or self-referencing alias, or an identifier repeated anywhere in the file
+fails immediately with the line number.
+
+**Note**: `GF` uses the Yahoo Finance API and requires standard ticker symbols
+(e.g. `AAPL`, `IDTG.L`, `0P00000YAN`). The name is a leftover from Google Finance
+and is a misnomer.
 
 ### Usage
 

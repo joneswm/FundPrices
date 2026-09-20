@@ -1,7 +1,7 @@
 # Tasks: Identifier Aliases
 
 **Spec**: SPEC-004
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 
 ---
@@ -34,7 +34,7 @@ REFACTOR: document why the comment handling is new.
 ## Task 2: Publish fan-out
 
 ### Acceptance Criteria
-- [ ] One fetch per fund regardless of alias count, asserted with a mock call count
+- [x] One fetch per fund regardless of alias count, asserted with a mock call count
 - [ ] Every quote produces one row per publish identifier, identical in all but name
 - [ ] One `latest_<id>.price` file per identifier
 - [ ] Fallback tries the lookup id, then each alias in order, and publishes the carried
