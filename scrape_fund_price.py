@@ -45,11 +45,18 @@ def format_yahoo_price(value):
 
 
 class ScrapeResults(list):
-    """Scrape results with non-price failure metadata."""
+    """Scrape results with non-price failure metadata.
 
-    def __init__(self, rows=None, failures=None):
+    `carried` holds rows for funds that could not be fetched at all. They are
+    reported as the latest known price but are deliberately kept out of
+    history: writing them there would invent a price for a date the source
+    never published.
+    """
+
+    def __init__(self, rows=None, failures=None, carried=None):
         super().__init__(rows or [])
         self.failures = failures or []
+        self.carried = carried or []
 
 
 def read_fund_ids(filename):
@@ -296,6 +303,31 @@ def read_history_price(fund_id, data_dir):
     return None
 
 
+def read_last_known_row(fund_id, data_dir):
+    """Return a fund's most recent stored [date, price, currency], or None.
+
+    Used when every fetch attempt failed, so the fund keeps reporting its real
+    last price against the date that price actually belongs to.
+    """
+    candidates = []
+    for name in ("latest_prices.csv", "prices_history.csv"):
+        path = os.path.join(data_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, mode="r", newline="") as file:
+            for row in csv.DictReader(file):
+                if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
+                    candidates.append(
+                        [row.get("Date", ""), row["Price"], row.get("Currency") or ""]
+                    )
+
+    if not candidates:
+        price = read_latest_price_file(fund_id, data_dir)
+        return [datetime.date.today().isoformat(), price, ""] if price else None
+
+    return max(candidates, key=lambda row: row[0])
+
+
 def get_last_known_price(fund_id, data_dir):
     """Return the last non-error price available for a fund."""
     return (
@@ -325,126 +357,211 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
 
 
 def source_requires_browser(source, fund_id):
-    """Return True when a fund source needs Playwright scraping."""
-    if source.upper() == "GF":
+    """Return True when a fund source needs Playwright scraping.
+
+    GF uses the Yahoo API and FT uses a plain HTTP endpoint, so neither needs
+    a browser on its normal path. FT can still fall back to scraping, which
+    starts the browser lazily at that point.
+    """
+    if source.upper() in ("GF", "FT"):
         return False
 
     url, selector = get_source_config(source, fund_id)
     return bool(url and selector)
 
 
+class LazyBrowser:
+    """Start Playwright only if a fund actually needs scraping.
+
+    Most sources are now plain HTTP, so launching Chromium up front wastes
+    seconds on every run. The browser starts on first use and is reused.
+    """
+
+    def __init__(self):
+        self._context_manager = None
+        self._browser = None
+        self._page = None
+
+    def page(self):
+        if self._page is None:
+            self._context_manager = sync_playwright()
+            playwright = self._context_manager.__enter__()
+            self._browser = playwright.chromium.launch(headless=True)
+            self._page = self._browser.new_context().new_page()
+        return self._page
+
+    def close(self):
+        if self._browser is not None:
+            self._browser.close()
+        if self._context_manager is not None:
+            self._context_manager.__exit__(None, None, None)
+
+
+def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
+    """Return dated quotes for one fund from its configured source.
+
+    FT and GF use dated HTTP routes. YH and MS scrape a page that shows only
+    the current price, so their quotes carry the run date and no currency.
+    An FT failure falls back to scraping rather than losing the fund.
+    """
+    code = source.upper()
+
+    if code == "GF":
+        return fetch_yahoo_quotes(fund_id, start, end)
+
+    if code == "FT":
+        try:
+            return fetch_ft_quotes(fund_id, start, end)
+        except Exception as error:
+            print(f"Warning: FT historical lookup failed for {fund_id}: {error}")
+
+    url, selector = get_source_config(source, fund_id)
+    if not (url and selector):
+        raise ValueError(f"Unsupported source {source} for {fund_id}")
+
+    price = scrape_price_with_common_settings(browser.page(), url, selector)
+    return [Quote(datetime.date.today().isoformat(), normalize_price(price), "")]
+
+
 def scrape_funds(funds, data_dir=None):
-    """Scrape prices for a list of funds and return results."""
+    """Scrape a window of dated prices for each fund and return results."""
     if data_dir is None:
         data_dir = DATA_DIR
-    
+
     os.makedirs(data_dir, exist_ok=True)
     results = ScrapeResults()
-    today = datetime.date.today().isoformat()
-    needs_browser = any(
-        source_requires_browser(source, fund_id) for source, fund_id in funds
-    )
+    start = (
+        datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
+    ).isoformat()
+    browser = LazyBrowser()
 
-    with sync_playwright() if needs_browser else nullcontext(None) as p:
-        browser = None
-        page = None
-        if needs_browser:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
-            page = context.new_page()
+    try:
         for source, fund_id in funds:
-            # Use API for GF source, scraping for others
-            if source.upper() == "GF":
-                price, error = fetch_with_retries(lambda: fetch_price_api(fund_id))
-            else:
-                url, selector = get_source_config(source, fund_id)
-                if url and selector:
-                    price, error = fetch_with_retries(
-                        lambda: scrape_price_with_common_settings(page, url, selector)
-                    )
-                else:
-                    price = "N/A"
-                    error = None
+            quotes, error = fetch_with_retries(
+                lambda: scrape_fund_quotes(source, fund_id, start, browser=browser)
+            )
 
             if error:
-                fallback_price = get_last_known_price(fund_id, data_dir)
-                price = fallback_price if fallback_price is not None else "N/A"
+                # Keep reporting the fund's last known price, dated as the
+                # source originally published it, rather than inventing a row
+                # for today. Record the failure so the run still reports it.
                 results.failures.append(f"{fund_id}: {error}")
+                last_known = read_last_known_row(fund_id, data_dir)
+                if last_known is not None:
+                    results.carried.append([fund_id] + last_known)
+                    # Heal the published price file: it may still hold an
+                    # error string written before this behaviour existed.
+                    latest_price_file = os.path.join(
+                        data_dir, f"latest_{fund_id}.price"
+                    )
+                    with open(latest_price_file, "w") as f:
+                        f.write(last_known[1] + "\n")
+                continue
 
-            price = normalize_price(price)
-            results.append([fund_id, today, price])
-            # Write latest_<identifier>.price file
-            latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
-            with open(latest_price_file, "w") as f:
-                f.write(price + "\n")
-        if browser:
-            browser.close()
-    
+            for quote in quotes:
+                results.append([fund_id, quote.date, quote.price, quote.currency])
+
+            latest = max(quotes, key=lambda quote: quote.date, default=None)
+            if latest is not None:
+                latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
+                with open(latest_price_file, "w") as f:
+                    f.write(latest.price + "\n")
+    finally:
+        browser.close()
+
     return results
 
+
+def read_history_rows(history_csv):
+    """Read stored history, tolerating legacy rows that carry no currency."""
+    if not os.path.isfile(history_csv):
+        return {}
+
+    rows = {}
+    with open(history_csv, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            if len(row) < 3:
+                continue
+            fund, date_text, price = row[0], row[1], row[2]
+            currency = row[3] if len(row) > 3 else ""
+            rows[(fund, date_text)] = [fund, date_text, price, currency]
+    return rows
+
+
 def write_results(results, data_dir=None):
-    """Write results to CSV files.
-    
-    Latest prices file is overwritten on each run.
-    Complete history prevents duplicates by replacing entries for the result
-    date. Rolling history contains that date and the preceding 89 calendar days.
-    
+    """Write dated results to CSV files.
+
+    History is keyed on (Fund, Date): an incoming row replaces an existing row
+    with the same key, so corrections apply and re-runs cannot duplicate. Rows
+    are sorted by date then fund, which keeps daily diffs readable and makes
+    repeated runs byte-identical.
+
     Args:
-        results: List of [fund_id, date, price] results
+        results: List of [fund_id, date, price, currency] rows
         data_dir: Directory for output files (default: DATA_DIR)
     """
     if data_dir is None:
         data_dir = DATA_DIR
-    
+
+    os.makedirs(data_dir, exist_ok=True)
     latest_csv = os.path.join(data_dir, "latest_prices.csv")
     history_csv = os.path.join(data_dir, "prices_history.csv")
     rolling_history_csv = os.path.join(data_dir, "prices_history_90_days.csv")
-    
-    # Write latest prices (overwrite)
-    with open(latest_csv, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["Fund", "Date", "Price"])
-        writer.writerows(results)
+    header = ["Fund", "Date", "Price", "Currency"]
 
-    # Get today's date from results (all results have same date)
-    today = results[0][1] if results else datetime.date.today().isoformat()
-    
-    # Read existing history and filter out today's entries
-    history_rows = []
-    file_exists = os.path.isfile(history_csv)
-    
-    if file_exists:
-        with open(history_csv, mode="r", newline="") as file:
-            reader = csv.reader(file)
-            next(reader, None)  # Skip header
-            for row in reader:
-                if len(row) >= 3 and row[1] != today:
-                    history_rows.append(row)
-    
-    # Append new results for today
-    history_rows.extend(results)
-    
-    # Write complete history back to file
+    incoming = []
+    for row in results:
+        fund, date_text, price = row[0], row[1], row[2]
+        currency = row[3] if len(row) > 3 else ""
+        if is_usable_price(price):
+            incoming.append([fund, date_text, price, currency])
+
+    history_rows = read_history_rows(history_csv)
+    for row in incoming:
+        history_rows[(row[0], row[1])] = row
+
+    ordered = sorted(history_rows.values(), key=lambda row: (row[1], row[0]))
+
     with open(history_csv, mode="w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["Fund", "Date", "Price"])
-        writer.writerows(history_rows)
+        writer.writerow(header)
+        writer.writerows(ordered)
 
-    reference_date = datetime.date.fromisoformat(today)
-    cutoff_date = reference_date - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
-    rolling_history_rows = []
-    for row in history_rows:
+    latest_by_fund = {}
+    for row in incoming:
+        current = latest_by_fund.get(row[0])
+        if current is None or row[1] > current[1]:
+            latest_by_fund[row[0]] = row
+
+    for row in getattr(results, "carried", []):
+        latest_by_fund.setdefault(row[0], list(row))
+
+    with open(latest_csv, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(header)
+        writer.writerows(latest_by_fund[fund] for fund in sorted(latest_by_fund))
+
+    reference_date = (
+        max(row[1] for row in incoming) if incoming else datetime.date.today().isoformat()
+    )
+    reference = datetime.date.fromisoformat(reference_date)
+    cutoff = reference - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
+
+    rolling_rows = []
+    for row in ordered:
         try:
             row_date = datetime.date.fromisoformat(row[1])
         except ValueError:
             continue
-        if cutoff_date <= row_date <= reference_date:
-            rolling_history_rows.append(row)
+        if cutoff <= row_date <= reference:
+            rolling_rows.append(row)
 
     with open(rolling_history_csv, mode="w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["Fund", "Date", "Price"])
-        writer.writerows(rolling_history_rows)
+        writer.writerow(header)
+        writer.writerows(rolling_rows)
 
 
 def parse_arguments(args=None):
