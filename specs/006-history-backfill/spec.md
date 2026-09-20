@@ -1,6 +1,6 @@
 # SPEC-006: History Backfill and Rebuild
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 **Type**: Data Remediation
 **Tracking**: [#67](https://github.com/joneswm/FundPrices/issues/67)
@@ -70,17 +70,17 @@ sit on dates the source never reports, so an upsert would leave them behind.
 
 ## Acceptance Criteria
 
-- [ ] `python scrape_fund_price.py --backfill --from 2023-01-01` rebuilds history
-- [ ] Every identifier's first date is 2023-01-02/03, or its listing date if later
-- [ ] Zero Saturday or Sunday rows
-- [ ] Zero duplicate (Fund, Date) keys
-- [ ] Zero `Error:` or `N/A` prices
-- [ ] Every row carries a currency
-- [ ] `JFM0003373` and `0P00000YAN` hold identical series
-- [ ] `JFM0003373` on 2026-09-17 reads 192.43, having been stored against 2026-09-18
-- [ ] A repeated run loses no rows (FT intermittently omits rows, so the file converges upward rather than being byte-identical every time)
-- [ ] `backfill.yml` runs from the Actions tab and commits the result
-- [ ] CI green on all three Python versions
+- [x] `python scrape_fund_price.py --backfill --from 2023-01-01` rebuilds history
+- [x] Every identifier's first date is 2023-01-02/03, or its listing date if later
+- [x] Zero Saturday or Sunday rows
+- [x] Zero duplicate (Fund, Date) keys
+- [x] Zero `Error:` or `N/A` prices
+- [x] Every row carries a currency
+- [x] `JFM0003373` and `0P00000YAN` hold identical series
+- [x] `JFM0003373` on 2026-09-17 reads 192.43, having been stored against 2026-09-18
+- [x] A repeated run loses no rows (FT intermittently omits rows, so the file converges upward rather than being byte-identical every time)
+- [x] `backfill.yml` runs from the Actions tab and commits the result
+- [x] CI green on all three Python versions
 
 ## Risks and Mitigations
 

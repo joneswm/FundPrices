@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-006: History Backfill and Rebuild
+**Status**: ✅ Complete
+**Location**: [006-history-backfill/](006-history-backfill/)
+**Description**: Rebuild stored history from true-dated source data, deleting scrape-dated and carry-forward rows while protecting rows a flaky source omits.
+
 ### SPEC-004: Identifier Aliases
 **Status**: ✅ Complete
 **Location**: [004-identifier-aliases/](004-identifier-aliases/)
