@@ -117,6 +117,27 @@ Configuration is validated before any network call. A malformed line, an empty o
 self-referencing alias, or an identifier repeated anywhere in the file raises an
 error naming the line.
 
+## FX Rates
+
+`fx_pairs.txt` lists the exchange rates to snap, one six-letter pair per line:
+
+```
+NZDGBP
+SGDGBP
+USDGBP
+HKDGBP
+```
+
+**Direction**: rates are **GBP per 1 unit of the foreign currency**. `USDGBP` is about
+0.75, meaning one dollar buys 0.75 pounds. This is the inverse of the market convention
+`GBP/USD` (about 1.34), and the pairs file rejects the slash spelling so the two cannot
+be confused. Rates are stored at 6 decimal places, which `HKDGBP` (about 0.0951) needs.
+
+Output: `data/fx_history.csv` and `data/latest_fx.csv`, both `Pair,Date,Rate`.
+
+FX trades continuously, so the current day's bar is provisional and is replaced by the
+final value on the next run. Weekend bars are never stored.
+
 ## Data Sources
 
 | Source | Method | Status |

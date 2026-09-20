@@ -289,6 +289,45 @@ Returns the most recent usable price for a fund, checked in order:
 - `source_requires_browser(source, fund_id)` - False for `GF` (API) and unknown sources, so
   Playwright is only launched when genuinely needed
 
+## FX Rates
+
+### `read_fx_pairs(filename=FX_PAIRS_FILE)`
+
+Reads currency pairs to snap. One six-letter pair per line; blank lines and `#` comments
+ignored. A missing file returns `[]`, so FX is optional.
+
+**Raises:** `ValueError` naming the line, for a malformed or repeated pair. The slash
+spelling (`GBP/NZD`) is rejected deliberately: by market convention it means the inverse
+of the stored direction, so accepting it would store plausible but wrong values.
+
+### `fetch_fx_quotes(pair, start, end=None)`
+
+Fetches dated rates as **GBP per 1 unit of the base currency**, via Yahoo's direct
+`<PAIR>=X` ticker. Weekend bars are dropped. Rates are formatted at a fixed 6 decimal
+places, unlike prices, which keep the source's own precision.
+
+**Returns:** `list[Quote]`, whose `currency` field carries the pair name.
+
+### `snap_fx_rates(pairs, data_dir=None)`
+
+Fetches a window of rates per pair, isolating failures so one dead pair does not cost
+the others.
+
+**Returns:** `ScrapeResults` of `[pair, date, rate]` rows.
+
+### `write_fx_results(results, data_dir=None)`
+
+Upserts rates on **(Pair, Date)** into `data/fx_history.csv` and regenerates
+`data/latest_fx.csv`. Headers are `Pair,Date,Rate`.
+
+The current day's rate is provisional and is replaced once the bar completes; the upsert
+makes this self-correcting, so no flag is stored.
+
+### `backfill_fx(pairs, start, data_dir=None, report=None)`
+
+Rebuilds stored rates from the start date using the same rule as the price rebuild.
+Called automatically by `--backfill` when `fx_pairs.txt` exists.
+
 ## Configuration Constants
 
 ### Data Directory Settings

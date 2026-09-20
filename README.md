@@ -110,6 +110,27 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 python scrape_fund_price.py --help
 ```
 
+### FX Rates
+
+`fx_pairs.txt` lists the exchange rates to snap, one six-letter pair per line:
+
+```
+NZDGBP
+SGDGBP
+USDGBP
+HKDGBP
+```
+
+**Direction**: rates are **GBP per 1 unit of the foreign currency**. `USDGBP` is about
+0.75, meaning one dollar buys 0.75 pounds. This is the inverse of the market convention
+`GBP/USD` (about 1.34), and the pairs file rejects the slash spelling so the two cannot
+be confused. Rates are stored at 6 decimal places, which `HKDGBP` (about 0.0951) needs.
+
+Output: `data/fx_history.csv` and `data/latest_fx.csv`, both `Pair,Date,Rate`.
+
+FX trades continuously, so the current day's bar is provisional and is replaced by the
+final value on the next run. Weekend bars are never stored.
+
 ## Data Sources
 
 | Source | Code | Method | Example | Status |
@@ -128,6 +149,8 @@ The application creates the following files in the `data/` directory:
 - `prices_history.csv`: Complete historical price data
 - `prices_history_90_days.csv`: Rolling window of the most recent 90 calendar days,
   derived from the full history on every run
+- `fx_history.csv`: Exchange rates, GBP per 1 unit of the foreign currency
+- `latest_fx.csv`: Most recent rate per currency pair
 - `latest_<identifier>.price`: Individual price files for each fund
 
 ### Historical Data Mode
