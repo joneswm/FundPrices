@@ -117,6 +117,22 @@ Configuration is validated before any network call. A malformed line, an empty o
 self-referencing alias, or an identifier repeated anywhere in the file raises an
 error naming the line.
 
+## Daily Summary
+
+Each run writes a summary of what moved, as both
+[`data/daily_summary.md`](data/daily_summary.md) for reading and
+`data/daily_summary.csv` for machines. The same table appears on the Actions run page.
+
+Each instrument is compared with its **previous distinct price date**, not with
+yesterday: funds, LSE, US and HK instruments keep different calendars, and fund NAVs
+arrive a day later than exchange prices. A Friday-to-Monday move is therefore a real
+comparison rather than a flat day.
+
+Instruments with no recent price are marked stale (`~`) and those that could not be
+fetched are marked `!`, so neither is mistaken for a 0% day. Percent changes are
+unit-independent, so `GBp` and `GBP` instruments are directly comparable; absolute
+deltas are in each instrument's own currency.
+
 ## FX Rates
 
 `fx_pairs.txt` lists the exchange rates to snap, one six-letter pair per line:

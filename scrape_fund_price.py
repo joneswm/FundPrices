@@ -1,6 +1,7 @@
 from playwright.sync_api import sync_playwright
 import datetime
 import csv
+import decimal
 import math
 import os
 import time
@@ -750,6 +751,288 @@ class BackfillReport:
         return "\n".join(lines)
 
 
+STALE_AFTER_DAYS = 4
+SUMMARY_HEADER = [
+    "Name",
+    "Aliases",
+    "Currency",
+    "NewDate",
+    "New",
+    "OldDate",
+    "Old",
+    "Delta",
+    "PctDelta",
+    "AgeDays",
+    "Stale",
+    "Failed",
+]
+
+
+class SummaryRow(NamedTuple):
+    """One instrument's or pair's movement for the day."""
+
+    name: str
+    aliases: tuple
+    currency: str
+    new_date: str
+    new: str
+    old_date: str
+    old: str
+    delta: str
+    pct_delta: str
+    age_days: int
+    stale: bool
+    failed: bool
+
+
+def format_decimal(value, places=None):
+    """Render a Decimal without exponent notation or trailing noise."""
+    if places is not None:
+        text = f"{value:.{places}f}"
+    else:
+        text = format(value.normalize(), "f")
+    return text
+
+
+def compare_values(new_text, old_text, places=None):
+    """Return (delta, percent delta) as strings for two stored values.
+
+    Uses Decimal so that 7.15 - 7.09 is exactly 0.06 rather than the binary
+    float 0.0600000000000005. An old value of zero yields no percentage
+    instead of a division error.
+    """
+    try:
+        new_value = decimal.Decimal(new_text)
+        old_value = decimal.Decimal(old_text)
+    except (decimal.InvalidOperation, TypeError):
+        return "", ""
+
+    delta = new_value - old_value
+    delta_text = format_decimal(delta, places)
+
+    if old_value == 0:
+        return delta_text, ""
+
+    percent = (delta / old_value) * 100
+    return delta_text, f"{percent:+.2f}"
+
+
+def summarise_series(name, aliases, rows, failures, run_date, places=None):
+    """Build one SummaryRow from an instrument's dated rows.
+
+    `old` is the price on the previous **distinct** price date, never the
+    calendar day before: funds, LSE, US and HK instruments keep different
+    calendars, and fund NAVs arrive a day later than exchange prices.
+    """
+    failed = any(name in failure for failure in failures)
+    ordered = sorted(rows, key=lambda row: row[1])
+
+    if not ordered:
+        return SummaryRow(name, aliases, "", "", "", "", "", "", "", 0, False, True)
+
+    newest = ordered[-1]
+    previous = ordered[-2] if len(ordered) > 1 else None
+    currency = newest[3] if len(newest) > 3 else ""
+
+    delta, pct_delta = ("", "")
+    if previous is not None:
+        delta, pct_delta = compare_values(newest[2], previous[2], places)
+
+    age_days = (
+        datetime.date.fromisoformat(run_date) - datetime.date.fromisoformat(newest[1])
+    ).days
+
+    return SummaryRow(
+        name=name,
+        aliases=aliases,
+        currency=currency,
+        new_date=newest[1],
+        new=newest[2],
+        old_date=previous[1] if previous is not None else "",
+        old=previous[2] if previous is not None else "",
+        delta=delta,
+        pct_delta=pct_delta,
+        age_days=age_days,
+        stale=age_days > STALE_AFTER_DAYS,
+        failed=failed,
+    )
+
+
+def build_price_summary(history_rows, specs, failures, run_date):
+    """Summarise each configured instrument's latest movement.
+
+    An aliased instrument is reported once, under its lookup identifier, since
+    its aliases carry an identical series by construction.
+    """
+    by_fund = {}
+    for row in history_rows:
+        by_fund.setdefault(row[0], []).append(row)
+
+    rows = []
+    for entry in specs:
+        # Accept plain (source, identifier) pairs as scrape_funds() does.
+        spec = as_fund_spec(entry)
+        rows.append(
+            summarise_series(
+                spec.lookup_id,
+                tuple(spec.aliases),
+                by_fund.get(spec.lookup_id, []),
+                failures,
+                run_date,
+            )
+        )
+    return rows
+
+
+def build_fx_summary(fx_rows, pairs, failures, run_date):
+    """Summarise each currency pair's latest movement."""
+    by_pair = {}
+    for row in fx_rows:
+        by_pair.setdefault(row[0], []).append(row)
+
+    return [
+        summarise_series(
+            pair,
+            (),
+            by_pair.get(pair, []),
+            failures,
+            run_date,
+            places=FX_RATE_DECIMALS,
+        )
+        for pair in pairs
+    ]
+
+
+def _summary_table(rows, value_label, include_currency):
+    """Render one Markdown table of summary rows."""
+    columns = ["Name"]
+    if include_currency:
+        columns.append("Ccy")
+    columns += [f"{value_label} date", "New", "Old", "Delta", "% Delta"]
+
+    lines = [
+        "| " + " | ".join(columns) + " |",
+        "|" + "|".join(["---"] * len(columns)) + "|",
+    ]
+
+    for row in rows:
+        name = row.name
+        if row.aliases:
+            name = f"{name} ({', '.join(row.aliases)})"
+        if row.failed:
+            name += " !"
+        elif row.stale:
+            name += " ~"
+
+        cells = [name]
+        if include_currency:
+            cells.append(row.currency or "-")
+        cells += [
+            row.new_date or "-",
+            row.new or "-",
+            row.old or "-",
+            row.delta or "-",
+            row.pct_delta or "-",
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+
+    return lines
+
+
+def render_summary_markdown(price_rows, fx_rows, run_date):
+    """Render the day's movements for reading directly on GitHub."""
+    lines = [f"# Daily Price Summary - {run_date}", ""]
+
+    lines += ["## Prices", ""]
+    lines += _summary_table(price_rows, "Price", include_currency=True)
+
+    if fx_rows:
+        lines += [
+            "",
+            "## FX (GBP per 1 unit of foreign currency)",
+            "",
+        ]
+        lines += _summary_table(fx_rows, "Rate", include_currency=False)
+
+    attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
+    lines += ["", "## Attention", ""]
+    if attention:
+        for row in attention:
+            reason = (
+                "no price obtained this run"
+                if row.failed
+                else (f"stale: last price {row.age_days} days ago")
+            )
+            lines.append(f"- **{row.name}**: {reason}")
+    else:
+        lines.append("None")
+
+    movers = [
+        row
+        for row in price_rows + fx_rows
+        if row.pct_delta and not row.stale and not row.failed
+    ]
+    movers.sort(key=lambda row: abs(decimal.Decimal(row.pct_delta)), reverse=True)
+    lines += ["", "## Biggest movers", ""]
+    if movers:
+        for row in movers[:5]:
+            lines.append(f"- **{row.name}**: {row.pct_delta}%")
+    else:
+        lines.append("None")
+
+    lines.append("")
+    lines.append(
+        "Legend: `!` no price this run, `~` stale. "
+        "Percent changes are unit-independent; absolute deltas are in the "
+        "instrument's own currency."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(price_rows, fx_rows, run_date, data_dir=None):
+    """Write the daily summary as CSV and Markdown.
+
+    Past summaries stay recoverable from git history and can be recomputed
+    from prices_history.csv, so no dated archive is kept.
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+
+    with open(os.path.join(data_dir, "daily_summary.csv"), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(SUMMARY_HEADER)
+        for row in price_rows + fx_rows:
+            writer.writerow(
+                [
+                    row.name,
+                    ";".join(row.aliases),
+                    row.currency,
+                    row.new_date,
+                    row.new,
+                    row.old_date,
+                    row.old,
+                    row.delta,
+                    row.pct_delta,
+                    row.age_days,
+                    row.stale,
+                    row.failed,
+                ]
+            )
+
+    markdown = render_summary_markdown(price_rows, fx_rows, run_date)
+    with open(
+        os.path.join(data_dir, "daily_summary.md"), "w", encoding="utf-8"
+    ) as file:
+        file.write(markdown)
+
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as file:
+            file.write(markdown)
+
+
 def validate_backfill_args(args):
     """Return an error message for an invalid backfill invocation, else None."""
     if not getattr(args, "backfill", False):
@@ -1340,10 +1623,27 @@ def main():
         # FX is snapped after prices and written independently, so a problem
         # with one never costs the other a day of data.
         pairs = read_fx_pairs()
+        fx_failures = []
         if pairs:
             fx_results = snap_fx_rates(pairs)
             write_fx_results(fx_results)
-            failures.extend(fx_results.failures)
+            fx_failures = list(fx_results.failures)
+            failures.extend(fx_failures)
+
+        # Built from what was just written, so it reflects a partial run too;
+        # a day with failures is exactly when the summary is most useful.
+        run_date = datetime.date.today().isoformat()
+        history = list(read_history_rows(HISTORY_CSV).values())
+        price_summary = build_price_summary(
+            history, funds, getattr(results, "failures", []), run_date
+        )
+        fx_summary = build_fx_summary(
+            list(read_fx_rows(os.path.join(DATA_DIR, "fx_history.csv")).values()),
+            pairs,
+            fx_failures,
+            run_date,
+        )
+        write_summary(price_summary, fx_summary, run_date)
 
         if failures:
             for failure in failures:

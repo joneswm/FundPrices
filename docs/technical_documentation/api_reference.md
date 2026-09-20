@@ -289,6 +289,35 @@ Returns the most recent usable price for a fund, checked in order:
 - `source_requires_browser(source, fund_id)` - False for `GF` (API) and unknown sources, so
   Playwright is only launched when genuinely needed
 
+## Daily Summary
+
+### `build_price_summary(history_rows, specs, failures, run_date)`
+
+Summarises each configured instrument's latest movement.
+
+`old` is the price on the previous **distinct** price date, never the calendar day
+before. An aliased instrument is reported once, under its lookup identifier.
+
+**Returns:** `list[SummaryRow]` in `funds.txt` order.
+
+### `build_fx_summary(fx_rows, pairs, failures, run_date)`
+
+The same, for currency pairs, with values at 6 decimal places.
+
+### `render_summary_markdown(price_rows, fx_rows, run_date)`
+
+Renders prices, FX, an Attention section and the biggest movers. Pure: no clock, no
+network.
+
+### `write_summary(price_rows, fx_rows, run_date, data_dir=None)`
+
+Writes `data/daily_summary.csv` and `data/daily_summary.md`, and appends the Markdown to
+`$GITHUB_STEP_SUMMARY` when set.
+
+**Arithmetic note**: deltas use `decimal.Decimal`, so `7.15 - 7.09` is `0.06` rather
+than the binary float `0.0600000000000005`. A previous price of zero yields an empty
+percentage instead of a division error.
+
 ## FX Rates
 
 ### `read_fx_pairs(filename=FX_PAIRS_FILE)`

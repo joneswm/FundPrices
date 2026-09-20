@@ -45,6 +45,6 @@ jobs:
       - name: Commit and push results
         if: always()
         run: |
-          git add -f data/*.csv data/*.price
+          git add -f data/*.csv data/*.price data/*.md
           git commit -m "Update fund prices" || echo "No changes to commit"
           git push

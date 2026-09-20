@@ -2452,7 +2452,6 @@ class TestFxBackfill(unittest.TestCase):
         self.assertEqual(len(report.failures), 1)
 
 
-
 class TestPriceSummary(unittest.TestCase):
     """Test day-on-day change calculation."""
 
@@ -2484,7 +2483,9 @@ class TestPriceSummary(unittest.TestCase):
                 ("ISIN1", "2026-09-18", "7.15", "GBP"),
             ]
         )
-        row = build_price_summary(rows, [FundSpec("FT", "ISIN1", ())], [], "2026-09-18")[0]
+        row = build_price_summary(
+            rows, [FundSpec("FT", "ISIN1", ())], [], "2026-09-18"
+        )[0]
         self.assertEqual(row.delta, "0.06")
 
     def test_negative_move_is_signed(self):
@@ -2495,7 +2496,9 @@ class TestPriceSummary(unittest.TestCase):
                 ("AAA", "2026-09-18", "98.00", "USD"),
             ]
         )
-        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[0]
+        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[
+            0
+        ]
         self.assertEqual(row.delta, "-2")
         self.assertEqual(row.pct_delta, "-2.00")
 
@@ -2522,7 +2525,9 @@ class TestPriceSummary(unittest.TestCase):
     def test_single_price_has_no_comparison(self):
         """Test a newly added instrument does not invent a delta."""
         rows = self._rows([("NEW", "2026-09-18", "10.00", "GBP")])
-        row = build_price_summary(rows, [FundSpec("GF", "NEW", ())], [], "2026-09-18")[0]
+        row = build_price_summary(rows, [FundSpec("GF", "NEW", ())], [], "2026-09-18")[
+            0
+        ]
         self.assertEqual(row.old, "")
         self.assertEqual(row.delta, "")
         self.assertEqual(row.pct_delta, "")
@@ -2535,7 +2540,9 @@ class TestPriceSummary(unittest.TestCase):
                 ("AAA", "2026-09-18", "5.00", "USD"),
             ]
         )
-        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[0]
+        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[
+            0
+        ]
         self.assertEqual(row.delta, "5")
         self.assertEqual(row.pct_delta, "")
 
@@ -2585,7 +2592,9 @@ class TestPriceSummary(unittest.TestCase):
                 ("IGWD.L", "2026-09-18", "13339", "GBp"),
             ]
         )
-        row = build_price_summary(rows, [FundSpec("GF", "IGWD.L", ())], [], "2026-09-18")[0]
+        row = build_price_summary(
+            rows, [FundSpec("GF", "IGWD.L", ())], [], "2026-09-18"
+        )[0]
         self.assertEqual(row.currency, "GBp")
         self.assertEqual(row.delta, "339")
         self.assertEqual(row.pct_delta, "+2.61")
@@ -2599,7 +2608,10 @@ class TestPriceSummary(unittest.TestCase):
             ]
         )
         summary = build_price_summary(
-            rows, [FundSpec("GF", "BBB", ()), FundSpec("GF", "AAA", ())], [], "2026-09-18"
+            rows,
+            [FundSpec("GF", "BBB", ()), FundSpec("GF", "AAA", ())],
+            [],
+            "2026-09-18",
         )
         self.assertEqual([r.name for r in summary], ["BBB", "AAA"])
 
@@ -2614,7 +2626,9 @@ class TestPriceSummary(unittest.TestCase):
         row = build_price_summary(
             rows, [FundSpec("GF", "0P00000YAN", ())], [], "2026-09-17"
         )[0]
-        self.assertEqual((row.new, row.old, row.old_date), ("192.43", "192.23", "2026-09-16"))
+        self.assertEqual(
+            (row.new, row.old, row.old_date), ("192.43", "192.23", "2026-09-16")
+        )
         self.assertEqual(row.delta, "0.2")
         self.assertEqual(row.pct_delta, "+0.10")
 
@@ -2716,9 +2730,7 @@ class TestSummaryRendering(unittest.TestCase):
             rows = list(csv.reader(f))
         self.assertEqual(rows[0][0], "Name")
         self.assertTrue(any(r[0] == "QQQ" for r in rows))
-        self.assertTrue(
-            os.path.exists(os.path.join(self.test_dir, "daily_summary.md"))
-        )
+        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
 
     def test_summary_is_added_to_the_actions_job_summary(self):
         """Test the table appears on the workflow run page."""
@@ -2733,9 +2745,8 @@ class TestSummaryRendering(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
         with patch.dict(os.environ, env, clear=True):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
-        self.assertTrue(
-            os.path.exists(os.path.join(self.test_dir, "daily_summary.md"))
-        )
+        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
+
 
 if __name__ == "__main__":
     unittest.main()
