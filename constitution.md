@@ -305,9 +305,14 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 ## 12. Dependencies
 
 ### Required Libraries
-- `playwright>=1.35.0` - Web scraping and browser automation
-- `coverage>=7.2.7` - Code coverage measurement
-- `yfinance>=0.2.0` - Yahoo Finance API for stock/fund prices
+- `playwright` - Web scraping and browser automation
+- `coverage` - Code coverage measurement
+- `yfinance` - Yahoo Finance API for stock/fund prices and historical data
+
+**Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
+The list above names what each dependency is for; it deliberately omits version pins so it
+cannot drift out of sync with the actual requirements.
+
 
 ### Dependency Management
 - Pin major versions in `requirements.txt`

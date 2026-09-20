@@ -10,7 +10,7 @@ A Python application for scraping fund prices from multiple financial data sourc
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Full test suite with 34 test cases (92% code coverage)
+- **Testing**: Full test suite with 42 tests (96% code coverage)
 
 ## Quick Start
 
@@ -193,9 +193,14 @@ The test suite includes:
 
 ## Dependencies
 
-- `playwright>=1.35.0`: Web scraping and browser automation
-- `coverage>=7.2.7`: Code coverage measurement
-- `yfinance>=0.2.0`: Yahoo Finance API for stock/fund prices
+- `playwright`: Web scraping and browser automation
+- `coverage`: Code coverage measurement
+- `yfinance`: Yahoo Finance API for stock/fund prices and historical data
+
+**Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
+The list above names what each dependency is for; it deliberately omits version pins so it
+cannot drift out of sync with the actual requirements.
+
 
 ## Development with Ona
 

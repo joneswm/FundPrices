@@ -5,7 +5,7 @@ This document provides instructions for deploying the Fund Price Scraping projec
 ## Prerequisites
 
 ### System Requirements
-- Python 3.7 or higher
+- Python 3.10 or higher (CI tests 3.10, 3.12 and 3.14)
 - Linux/Unix environment (recommended for production)
 - Minimum 2GB RAM
 - 1GB free disk space

@@ -6,7 +6,7 @@ This guide explains how to set up VS Code or Cursor for optimal development expe
 
 1. **VS Code** or **Cursor** installed
 2. **Python extension** installed
-3. **Python 3.7+** installed
+3. **Python 3.10+** installed
 4. **Virtual environment** set up (recommended)
 
 ## Quick Setup

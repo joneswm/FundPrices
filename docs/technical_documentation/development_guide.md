@@ -125,7 +125,7 @@ coverage report -m
 ## Development Environment Setup
 
 ### Prerequisites
-- Python 3.7 or higher
+- Python 3.10 or higher (CI tests 3.10, 3.12 and 3.14)
 - Git
 - Code editor (VS Code, PyCharm, Vim, etc.)
 - Terminal/Command line access

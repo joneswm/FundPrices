@@ -16,7 +16,7 @@ Python application for scraping fund prices from multiple financial data sources
 ## Common Commands
 
 ### Testing
-- `python test_scrape_fund_price.py` - Run full test suite (26 tests)
+- `python test_scrape_fund_price.py` - Run full test suite (42 tests)
 - `python -m unittest test_scrape_fund_price.TestFundPriceScraper -v` - Run unit tests only
 - `python -m coverage run test_scrape_fund_price.py && python -m coverage report` - Run with coverage report
 - `./run_tests.sh` - Run tests with coverage (if script exists)
@@ -39,8 +39,8 @@ Python application for scraping fund prices from multiple financial data sources
 ## Project Structure
 
 ### Key Files
-- `scrape_fund_price.py` - Main scraping logic (90 statements, 99% coverage)
-- `test_scrape_fund_price.py` - Comprehensive test suite (251 statements, 96% coverage)
+- `scrape_fund_price.py` - Main scraping logic (215 statements, 92% coverage)
+- `test_scrape_fund_price.py` - Comprehensive test suite (462 statements, 98% coverage)
 - `funds.txt` - Configuration file for fund identifiers
 - `requirements.txt` - Python dependencies
 
@@ -67,7 +67,7 @@ Python application for scraping fund prices from multiple financial data sources
 ### Testing Requirements
 - **MANDATORY**: Follow Test-Driven Development (TDD) workflow
 - **RED-GREEN-REFACTOR** cycle for all changes
-- Maintain code coverage above 90% (currently at 97%)
+- Maintain code coverage above 90% overall; `constitution.md` additionally requires 95% for `scrape_fund_price.py`
 - Write tests BEFORE implementation
 - All tests must pass before committing
 
@@ -117,9 +117,11 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 - System continues processing even if individual funds fail
 
 ### Test Coverage
-- Overall: 97% coverage
-- Main code (scrape_fund_price.py): 99% coverage
-- 26 total tests: 22 unit tests + 4 functional tests
+- Overall: 96% coverage
+- Main code (scrape_fund_price.py): 92% coverage
+- 42 total tests: 30 core unit tests + 7 historical-data tests + 5 functional tests
+
+Run `make test-coverage` for current figures rather than relying on this snapshot.
 
 ## TDD Workflow (MANDATORY)
 
@@ -188,9 +190,14 @@ When referencing legacy features:
 
 ## Dependencies
 
-- `playwright>=1.35.0` - Web scraping and browser automation
-- `coverage>=7.2.7` - Code coverage measurement
-- `yfinance>=0.2.0` - Yahoo Finance API for stock/fund prices
+- `playwright` - Web scraping and browser automation
+- `coverage` - Code coverage measurement
+- `yfinance` - Yahoo Finance API for stock/fund prices and historical data
+
+**Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
+The list above names what each dependency is for; it deliberately omits version pins so it
+cannot drift out of sync with the actual requirements.
+
 
 ## GitHub Actions
 
@@ -200,7 +207,7 @@ When referencing legacy features:
 
 ## Notes for Ona Agent
 
-- This project has excellent test coverage (97%) - maintain it!
+- This project has high test coverage (96% overall) - maintain it!
 - Always run tests after making changes
 - **Use Spec Kit workflow for new features** (SPECIFY → PLAN → TASKS → IMPLEMENT)
 - **Follow TDD for all implementation** (RED-GREEN-REFACTOR mandatory)
