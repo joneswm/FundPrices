@@ -23,7 +23,9 @@ Python application for scraping fund prices from multiple financial data sources
 
 ### Running the Scraper
 - `python scrape_fund_price.py` - Run the fund price scraper once
-- Results are saved to `data/latest_prices.csv` and `data/prices_history.csv`
+- Results are saved to `data/latest_prices.csv`, `data/prices_history.csv` and
+  `data/prices_history_90_days.csv` (rolling 90-calendar-day window), plus one
+  `data/latest_<identifier>.price` file per fund
 
 ### Code Quality
 - `./format_code.sh` - Format code with Black and isort
@@ -115,6 +117,14 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 - Failed scrapes return "Error: <message>" instead of crashing
 - Invalid source codes return "N/A"
 - System continues processing even if individual funds fail
+
+### Retries and Last Known Price
+- Every fetch is retried up to `MAX_PRICE_ATTEMPTS` (3) via `fetch_with_retries()`
+- After exhausting retries, `get_last_known_price()` falls back to the fund's most recent
+  good price: `latest_<id>.price` -> `latest_prices.csv` -> `prices_history.csv`
+- Only when no usable previous price exists is the fund recorded as "N/A"
+- `ScrapeResults.failures` lists the funds that fell back
+- **This already exists - do not reimplement retry logic**
 
 ### Test Coverage
 - Overall: 96% coverage

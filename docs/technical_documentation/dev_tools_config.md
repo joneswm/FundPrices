@@ -258,7 +258,7 @@ echo "✅ Code formatting completed"
 
 ## VS Code Tasks Integration
 
-The project includes comprehensive VS Code task configuration in `.vscode/tasks.json` with:
+`.vscode/` is not tracked in git, so create `.vscode/tasks.json` yourself. A useful set of tasks:
 
 - **Run All Tests**: Execute complete test suite
 - **Run Tests with Coverage**: Generate coverage reports

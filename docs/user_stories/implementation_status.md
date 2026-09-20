@@ -311,6 +311,8 @@ completing Phase 2 of the Spec Kit migration.
 
 **Implementation Details**:
 - ✅ IDE configuration files provided (`.vscode/settings.json`, `launch.json`, `keybindings.json`, `tasks.json`, `extensions.json`)
+  - ⚠️ **Correction (2026-09-20)**: `.vscode/` is gitignored, so these files are not tracked in the repository
+    and do not arrive with a clone. See `docs/technical_documentation/ide_setup.md` for how to create them.
 - ✅ Keyboard shortcuts configured (`Ctrl+Shift+T`, `Ctrl+Shift+R`, `Ctrl+Shift+D`, etc.)
 - ✅ Test debugging supported with multiple debug configurations
 - ✅ IDE integration fully documented

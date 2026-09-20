@@ -11,9 +11,27 @@ This guide explains how to set up VS Code or Cursor for optimal development expe
 
 ## Quick Setup
 
+> **Note**: `.vscode/` is listed in `.gitignore` and is **not** tracked in this repository,
+> so none of these files arrive with a fresh clone. Create the ones you want locally using
+> the contents below. (Alternatively, the project could start tracking `.vscode/` — see the
+> discussion in issue #57.)
+
 ### 1. Install Recommended Extensions
 
-The project includes recommended extensions in `.vscode/extensions.json`. Install them:
+Install these extensions, or create `.vscode/extensions.json` to have VS Code recommend them:
+
+```json
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.flake8",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.debugpy"
+  ]
+}
+```
+
 
 - **Python** (`ms-python.python`) - Core Python support
 - **Flake8** (`ms-python.flake8`) - Linting
@@ -113,7 +131,7 @@ Access tasks via Command Palette (`Ctrl+Shift+P` → "Tasks: Run Task"):
 
 ### Debugging Issues
 1. Ensure Python extension is installed
-2. Check debug configuration in `.vscode/launch.json`
+2. Check debug configuration in `.vscode/launch.json` (create it if you have not already)
 3. Verify breakpoints are set correctly
 4. Check console output for error messages
 
@@ -132,7 +150,7 @@ Access tasks via Command Palette (`Ctrl+Shift+P` → "Tasks: Run Task"):
 ## Advanced Configuration
 
 ### Custom Settings
-Modify `.vscode/settings.json` for project-specific settings:
+Create `.vscode/settings.json` for project-specific settings:
 
 ```json
 {
@@ -143,7 +161,7 @@ Modify `.vscode/settings.json` for project-specific settings:
 ```
 
 ### Custom Tasks
-Add project-specific tasks to `.vscode/tasks.json`:
+Create `.vscode/tasks.json` and add project-specific tasks:
 
 ```json
 {
@@ -156,7 +174,7 @@ Add project-specific tasks to `.vscode/tasks.json`:
 ```
 
 ### Custom Debug Configurations
-Add debug configurations to `.vscode/launch.json`:
+Create `.vscode/launch.json` and add debug configurations:
 
 ```json
 {

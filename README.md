@@ -67,7 +67,15 @@ python scrape_fund_price.py
 python test_scrape_fund_price.py
 ```
 
-#### Historical Data Mode
+#### Price Resilience
+
+If a source fails, the scraper does not write an error into your price files. Each fund is
+retried up to 3 times (`MAX_PRICE_ATTEMPTS`), and if every attempt fails it falls back to the
+most recent good price for that fund - checking `latest_<identifier>.price`, then
+`latest_prices.csv`, then `prices_history.csv`. Only if no usable previous price exists is the
+fund recorded as `N/A`. Funds that fell back are listed on the returned results' `.failures`.
+
+### Historical Data Mode
 ```bash
 # Get historical data for a specific date range
 python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31
@@ -93,8 +101,10 @@ python scrape_fund_price.py --help
 The application creates the following files in the `data/` directory:
 
 ### Normal Mode
-- `latest_prices.csv`: Most recent prices for each fund
-- `prices_history.csv`: Historical price data with timestamps
+- `latest_prices.csv`: Most recent prices for each fund (overwritten each run)
+- `prices_history.csv`: Complete historical price data
+- `prices_history_90_days.csv`: Rolling window of the most recent 90 calendar days,
+  derived from the full history on every run
 - `latest_<identifier>.price`: Individual price files for each fund
 
 ### Historical Data Mode

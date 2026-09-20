@@ -491,18 +491,22 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 ```
 
 ### Error Handling
-Implement robust error handling:
+
+**Retry logic already exists - do not add your own.** `scrape_funds()` wraps every fetch in
+`fetch_with_retries()` (up to `MAX_PRICE_ATTEMPTS`, default 3) and falls back to the fund's
+last known good price via `get_last_known_price()` when all attempts fail:
+
 ```python
-def robust_scrape_funds(funds, max_retries=3):
-    """Scrape funds with retry logic."""
-    for attempt in range(max_retries):
-        try:
-            return scrape_funds(funds)
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(2 ** attempt)  # Exponential backoff
+# scrape_fund_price.py - existing behaviour
+price, error = fetch_with_retries(lambda: fetch_price_api(fund_id))
+if error:
+    fallback_price = get_last_known_price(fund_id, data_dir)
+    price = fallback_price if fallback_price is not None else "N/A"
+    results.failures.append(f"{fund_id}: {error}")
 ```
+
+If you need to change retry behaviour, adjust `MAX_PRICE_ATTEMPTS` or `fetch_with_retries()`
+rather than wrapping `scrape_funds()`. See `api_reference.md` for the full contract.
 
 ## Contributing Guidelines
 

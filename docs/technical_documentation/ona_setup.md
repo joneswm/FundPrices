@@ -70,7 +70,7 @@ Ona Agent automatically reads this file at the start of every conversation.
 
 ### 3. VS Code Tasks
 
-`.vscode/tasks.json` provides quick access to common commands:
+`.vscode/tasks.json` (create it locally - it is not tracked in git) can provide quick access to common commands:
 
 - **Run Tests** (Ctrl+Shift+B)
 - **Run Tests with Coverage**
