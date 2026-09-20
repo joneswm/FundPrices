@@ -113,17 +113,14 @@ class TestFundPriceScraper(unittest.TestCase):
         # Should return error message or N/A
         self.assertTrue(price.startswith("Error:") or price == "N/A")
     
-    @patch('scrape_fund_price.yf.Ticker')
-    def test_fetch_price_api_mock(self, mock_ticker):
-        """Test fetching price via API with mocked yfinance."""
-        # Mock the yfinance Ticker object
-        mock_ticker_instance = MagicMock()
-        mock_ticker_instance.info = {'currentPrice': 150.25}
-        mock_ticker.return_value = mock_ticker_instance
-        
+    @patch('scrape_fund_price.fetch_yahoo_quotes')
+    def test_fetch_price_api_mock(self, mock_quotes):
+        """Test fetching price via API with mocked quote retrieval."""
+        mock_quotes.return_value = [Quote("2026-09-18", "150.25", "USD")]
+
         price = fetch_price_api("AAPL")
         self.assertEqual(price, "150.25")
-        mock_ticker.assert_called_once_with("AAPL")
+        self.assertEqual(mock_quotes.call_args.args[0], "AAPL")
     
     @patch('scrape_fund_price.yf.Ticker')
     def test_fetch_price_api_exception(self, mock_ticker):
@@ -135,14 +132,11 @@ class TestFundPriceScraper(unittest.TestCase):
         self.assertTrue(price.startswith("Error:"))
         self.assertIn("Network error", price)
     
-    @patch('scrape_fund_price.yf.Ticker')
-    def test_fetch_price_api_no_price_available(self, mock_ticker):
-        """Test fetching price via API when price is not available."""
-        # Mock the yfinance Ticker with no price data
-        mock_ticker_instance = MagicMock()
-        mock_ticker_instance.info = {}
-        mock_ticker.return_value = mock_ticker_instance
-        
+    @patch('scrape_fund_price.fetch_yahoo_quotes')
+    def test_fetch_price_api_no_price_available(self, mock_quotes):
+        """Test fetching price via API when no quotes are returned."""
+        mock_quotes.return_value = []
+
         price = fetch_price_api("AAPL")
         self.assertEqual(price, "Error: Price not available")
     

@@ -1,11 +1,14 @@
 from playwright.sync_api import sync_playwright
 import datetime
 import csv
+import math
 import os
+import numpy as np
 import yfinance as yf
 import argparse
 import re
 from contextlib import nullcontext
+from typing import NamedTuple
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
@@ -14,6 +17,30 @@ HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
 MAX_PRICE_ATTEMPTS = 3
 ROLLING_HISTORY_DAYS = 90
+SNAP_WINDOW_DAYS = 10
+
+
+class Quote(NamedTuple):
+    """A single dated price as reported by a source."""
+
+    date: str      # ISO YYYY-MM-DD, the price date reported by the source
+    price: str     # as quoted, thousands separators removed, no float noise
+    currency: str  # "GBP", "GBp", "USD", "HKD"; "" when the source gives none
+
+
+def format_yahoo_price(value):
+    """Format a Yahoo bar value without losing or inventing precision.
+
+    Yahoo daily bars are float32. Widening them to Python floats introduces
+    artefacts (124.87 arrives as 124.87000274658203), so rounding to a fixed
+    number of decimals would store that noise, while a significant-digit
+    format would discard real precision (126530.25 -> 126530.2).
+
+    The shortest string that round-trips as float32 recovers exactly what the
+    source published.
+    """
+    text = str(np.float32(value))
+    return text[:-2] if text.endswith(".0") else text
 
 
 class ScrapeResults(list):
@@ -63,22 +90,63 @@ def get_source_config(source, fund_id):
         return config["url"], config["selector"]
     return None, None
 
+def fetch_yahoo_quotes(symbol, start, end=None):
+    """Fetch dated daily quotes for a symbol from Yahoo Finance.
+
+    Uses daily bars rather than the summary endpoint: the summary carries no
+    price date and is stale for mutual funds (0P00000YAN reported 192.23 while
+    the latest bar was 192.43).
+
+    Args:
+        symbol: Yahoo ticker (e.g. "IDTG.L", "0P00000YAN")
+        start: Inclusive ISO start date
+        end: Exclusive ISO end date, or None for up to the latest bar
+
+    Returns:
+        list[Quote], oldest first
+
+    Raises:
+        Exception: transport and API errors propagate so fetch_with_retries
+            can retry them
+    """
+    ticker = yf.Ticker(symbol)
+    # auto_adjust=False keeps Close as the price actually quoted that day;
+    # adjusted values would not match prices snapped at the time.
+    history = ticker.history(start=start, end=end, auto_adjust=False)
+
+    currency = ""
+    try:
+        currency = ticker.fast_info["currency"] or ""
+    except Exception:
+        currency = ""
+
+    quotes = []
+    for timestamp, close in history["Close"].items() if len(history) else []:
+        if close is None or (isinstance(close, float) and math.isnan(close)):
+            continue
+        quotes.append(
+            Quote(timestamp.date().isoformat(), format_yahoo_price(close), currency)
+        )
+    return quotes
+
+
 def fetch_price_api(symbol):
-    """Fetch price using Yahoo Finance API.
-    
+    """Fetch the latest price for a symbol using Yahoo Finance.
+
     Args:
         symbol: Stock/fund ticker symbol (e.g., AAPL, MSFT)
-        
+
     Returns:
         Price as string or error message
     """
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        price = info.get('currentPrice') or info.get('regularMarketPrice')
-        if price is None:
+        start = (
+            datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
+        ).isoformat()
+        quotes = fetch_yahoo_quotes(symbol, start)
+        if not quotes:
             return "Error: Price not available"
-        return str(price)
+        return quotes[-1].price
     except Exception as e:
         return f"Error: {str(e)}"
 
