@@ -26,6 +26,28 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-002: Rolling 90-Day Price History
+**Status**: ✅ **COMPLETED**  
+**Created**: 2026-08-16  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/002-rolling-price-history/`
+
+**Implementation Details**:
+- ✅ Full price history preserved in `prices_history.csv`
+- ✅ Derived `prices_history_90_days.csv` written each run
+- ✅ Inclusive 90-calendar-day window (`ROLLING_HISTORY_DAYS = 90`)
+- ✅ Empty runs still produce a valid rolling-history CSV
+- ✅ Unit tests cover the window boundary and the empty-run case
+
+**Evidence**: `write_results()` in `scrape_fund_price.py`; tests
+`test_write_results_limits_rolling_history_to_90_calendar_days` and
+`test_write_results_empty_results_creates_empty_rolling_history`.
+
+**Significance**: First feature written spec-first (SPEC-001 was retrospective),
+completing Phase 2 of the Spec Kit migration.
+
+---
+
 ### SPEC-001: Yahoo Finance API Integration
 **Status**: ✅ **COMPLETED**  
 **Format**: Spec Kit (Retrospective)  
@@ -530,8 +552,8 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ### Overall Status
 
 #### Spec Kit Specifications
-- **Active Specs**: 1
-- **Completed**: 1 (SPEC-001)
+- **Active Specs**: 2
+- **Completed**: 2 (SPEC-001, SPEC-002)
 - **In Progress**: 0
 - **Planned**: 0
 
@@ -542,12 +564,12 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 
 ### Migration Status
 
-**Spec Kit Migration**: ✅ Phase 1 Complete (2024-11-20)
+**Spec Kit Migration**: ✅ Complete — Spec Kit is the primary development approach
 
 - ✅ Constitution created
 - ✅ Spec Kit structure established
 - ✅ Templates created
-- ✅ Example spec documented (SPEC-001)
+- ✅ Example spec documented (SPEC-001, retrospective)
 - ✅ Documentation updated
 - ✅ Phase 2: Parallel operation (delivered via SPEC-002, Rolling 90-Day Price History)
 - ✅ Phase 3 (partial): User stories archived to `docs/archive/user_stories/`
