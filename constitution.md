@@ -404,7 +404,7 @@ This constitution is a living document. Amendments require:
 - [PEP 8 Style Guide](https://pep8.org/)
 - [Black Code Formatter](https://black.readthedocs.io/)
 - [TDD Workflow Documentation](docs/technical_documentation/tdd_workflow.md)
-- [Spec Kit Assessment](docs/technical_documentation/spec_kit_assessment.md)
+- [Spec Kit Assessment](docs/archive/spec_kit_assessment.md) - Archived: why Spec Kit was adopted
 - [Development Guide](docs/technical_documentation/development_guide.md)
 
 ---

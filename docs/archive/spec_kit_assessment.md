@@ -1,10 +1,22 @@
 # Spec Kit Assessment and Transformation Plan
 
+> ## 🗄️ Archived
+>
+> **Status**: Archived 2026-09-20 — the migration this document proposed is complete.
+>
+> Spec Kit is now the project's primary development approach. This assessment is retained
+> as a historical record of *why* that decision was made and how the migration was planned.
+> It is **not** a live decision document and is no longer maintained.
+>
+> - Current specifications: [`specs/README.md`](../../specs/README.md)
+> - Project principles: [`constitution.md`](../../constitution.md)
+> - Current work: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
+
 ## Executive Summary
 
 This document assesses the Spec Kit approach for codified specification and outlines a transformation plan to migrate from the current user stories structure to Spec Kit's spec-driven development (SDD) workflow.
 
-**Status**: Assessment Complete - Migration Implemented (retained for background)
+**Status**: Archived — Migration Complete (retained for background)
 
 **Recommendation**: Adopt Spec Kit with modifications to preserve TDD workflow
 

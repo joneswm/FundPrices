@@ -149,12 +149,12 @@ The project includes automated execution via GitHub Actions:
 ### Development Guides
 - [Development Guide](docs/technical_documentation/development_guide.md)
 - [TDD Workflow](docs/technical_documentation/tdd_workflow.md) - **🚨 MANDATORY**
-- [Spec Kit Assessment](docs/technical_documentation/spec_kit_assessment.md) - Migration guide (migration complete; retained for background)
 - [IDE Setup Guide](docs/technical_documentation/ide_setup.md)
 - [Development Tools Config](docs/technical_documentation/dev_tools_config.md)
 
 ### Historical Reference
 - [Archived User Stories](docs/archive/user_stories/README.md) - **Legacy user stories (100% complete)**
+- [Spec Kit Assessment](docs/archive/spec_kit_assessment.md) - **Archived: why Spec Kit was adopted**
 
 ## Development Status
 

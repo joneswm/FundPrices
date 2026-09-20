@@ -155,10 +155,10 @@ Templates are available in `.specify/templates/`:
 ## Related Documentation
 
 - [Constitution](../constitution.md) - Project principles and standards
-- [Spec Kit Assessment](../docs/technical_documentation/spec_kit_assessment.md) - Migration plan
+- [Spec Kit Assessment](../docs/archive/spec_kit_assessment.md) - Archived: background on the migration
 - [TDD Workflow](../docs/technical_documentation/tdd_workflow.md) - TDD guidelines
 - [Implementation Status](../docs/user_stories/implementation_status.md) - Overall tracking
 
 ## Questions?
 
-See the [Spec Kit Assessment](../docs/technical_documentation/spec_kit_assessment.md) for detailed information about the Spec Kit approach and how it integrates with our TDD workflow.
+See the [archived Spec Kit Assessment](../docs/archive/spec_kit_assessment.md) for background about the Spec Kit approach and how it integrates with our TDD workflow.

@@ -98,4 +98,5 @@ To view the original user stories:
 - **Historical status**: See `implementation_status.md` in this directory
 - **New features**: See `specs/README.md`
 - **Archived stories**: See `docs/archive/user_stories/README.md`
-- **Spec Kit guide**: See `docs/technical_documentation/spec_kit_assessment.md`
+- **Spec Kit background**: See `docs/archive/spec_kit_assessment.md` (archived)
+- **Spec Kit workflow**: See `specs/README.md`

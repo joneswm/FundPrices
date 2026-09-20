@@ -157,7 +157,7 @@ These files provide a complete audit trail of:
 - **Constitution**: `constitution.md` - Project principles
 - **Specifications**: `specs/` - New feature specs
 - **Status Tracking**: `docs/user_stories/implementation_status.md`
-- **Spec Kit Guide**: `docs/technical_documentation/spec_kit_assessment.md`
+- **Spec Kit Guide**: `docs/archive/spec_kit_assessment.md` (archived)
 
 ### Technical Documentation
 - **TDD Workflow**: `docs/technical_documentation/tdd_workflow.md`
