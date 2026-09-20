@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-005: End-of-Day FX Rates
+**Status**: ✅ Complete
+**Location**: [005-fx-rates/](005-fx-rates/)
+**Description**: Snap daily exchange rates as GBP per 1 unit of foreign currency, for NZD, SGD, USD and HKD.
+
 ### SPEC-006: History Backfill and Rebuild
 **Status**: ✅ Complete
 **Location**: [006-history-backfill/](006-history-backfill/)

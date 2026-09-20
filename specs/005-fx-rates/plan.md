@@ -1,7 +1,7 @@
 # Technical Plan: End-of-Day FX Rates
 
 **Spec**: SPEC-005
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 
 ---

@@ -1,6 +1,6 @@
 # SPEC-005: End-of-Day FX Rates
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 **Type**: Feature
 **Tracking**: [#66](https://github.com/joneswm/FundPrices/issues/66)
@@ -88,15 +88,15 @@ partial in-progress bar appears for the current day.
 
 ## Acceptance Criteria
 
-- [ ] `fx_pairs.txt` committed with the four pairs
-- [ ] A local run produces `data/fx_history.csv` and `data/latest_fx.csv`
-- [ ] Sanity: `NZDGBP` near 0.43, `SGDGBP` near 0.58, `USDGBP` near 0.75, `HKDGBP` near
+- [x] `fx_pairs.txt` committed with the four pairs
+- [x] A local run produces `data/fx_history.csv` and `data/latest_fx.csv`
+- [x] Sanity: `NZDGBP` near 0.43, `SGDGBP` near 0.58, `USDGBP` near 0.75, `HKDGBP` near
       0.095. A value near 2.3 or 10.5 means the direction is inverted
-- [ ] Rates at 6dp
-- [ ] No weekend rows
-- [ ] A second run changes nothing
-- [ ] FX history backfilled to 2023
-- [ ] CI green on all three Python versions
+- [x] Rates at 6dp
+- [x] No weekend rows
+- [x] A second run changes nothing
+- [x] FX history backfilled to 2023
+- [x] CI green on all three Python versions
 
 ## Risks and Mitigations
 
