@@ -10,9 +10,14 @@ This document assesses the Spec Kit approach for codified specification and outl
 
 ---
 
+---
+
 ## Table of Contents
 
 - [Executive Summary](#executive-summary)
+- [1. Spec Kit Overview](#1-spec-kit-overview)
+- [2. Current Project Structure Analysis](#2-current-project-structure-analysis)
+- [3. Compatibility Assessment](#3-compatibility-assessment)
 - [4. Transformation Plan](#4-transformation-plan)
 - [5. Recommendations](#5-recommendations)
 - [6. Next Steps](#6-next-steps)
@@ -20,12 +25,237 @@ This document assesses the Spec Kit approach for codified specification and outl
 - [Appendix A: Example Spec Structure](#appendix-a-example-spec-structure)
 - [Appendix B: Constitution Template](#appendix-b-constitution-template)
 - [Appendix C: Resources](#appendix-c-resources)
-- [2. Current Project Structure Analysis](#2-current-project-structure-analysis)
-- [1. Spec Kit Overview](#1-spec-kit-overview)
 
-> **Note**: sections appear out of numerical order, and section 3 (Compatibility
-> Assessment) has no heading — its content sits immediately before section 2.
-> Tracked separately; this listing follows the document as it actually reads.
+---
+
+## 1. Spec Kit Overview
+
+### What is Spec Kit?
+
+Spec Kit is an open-source toolkit and workflow pattern for **Spec-Driven Development (SDD)** when using AI coding assistants (GitHub Copilot, Claude, Gemini, etc.). It provides a structured approach to software development that begins with specification rather than code.
+
+**Repository**: `github.com/github/spec-kit`
+
+### Core Philosophy
+
+Instead of "write code → document later → fix later", Spec Kit enforces:
+1. **Specify** what you're building and why (high-level, non-technical)
+2. **Plan** how you'll build it (technical architecture)
+3. **Tasks** break the plan into manageable units
+4. **Implement** execute tasks guided by spec + plan
+
+The specification becomes the **single source of truth** that guides both AI and human developers.
+
+### The Four-Phase Workflow
+
+#### Phase 1: SPECIFY
+- **Purpose**: Capture what you're building and why
+- **Questions**: Who is the user? What problem? What features/outcomes?
+- **Output**: High-level, non-technical specification
+- **Format**: `specs/<spec-id>/spec.md`
+
+#### Phase 2: PLAN
+- **Purpose**: Define how you'll build it
+- **Content**: Technology stack, architecture, constraints (security, compliance, performance)
+- **Output**: Technical plan document
+- **Format**: `specs/<spec-id>/plan.md`
+
+#### Phase 3: TASKS
+- **Purpose**: Break plan into manageable work units
+- **Scope**: Discrete tasks that AI or humans can execute and review
+- **Output**: Task list with clear boundaries
+- **Format**: `specs/<spec-id>/tasks.md`
+
+#### Phase 4: IMPLEMENT
+- **Purpose**: Execute tasks guided by spec + plan
+- **Process**: Review occurs per task to maintain alignment
+- **Output**: Working code tied to specification
+
+### Additional Components
+
+#### Constitution
+- **Purpose**: Define non-negotiable project principles
+- **Content**: Coding standards, architecture guidelines, test coverage expectations
+- **Location**: `constitution.md` at project root
+- **Benefit**: Ensures AI and team stay aligned on foundational decisions
+
+#### Clarify (Optional)
+- **Purpose**: Resolve ambiguities before planning
+- **Process**: Ask questions about edge cases, integration points, dependencies
+- **Timing**: Between Specify and Plan phases
+
+### Key Benefits
+
+1. **Alignment**: Human + AI work from same specification
+2. **Traceability**: Every code change traces back to spec → plan → task
+3. **Reduced Errors**: Small, reviewable tasks vs. monolithic changes
+4. **Living Documentation**: Specs are version-controlled and evolve with project
+5. **AI Discipline**: Prevents "vibe-coding" where AI guesses requirements
+6. **Complexity Management**: Large features decomposed into manageable units
+7. **Review-Friendly**: Clear boundaries for code review
+
+### Limitations and Considerations
+
+1. **Mindset Shift**: Requires up-front investment in "what/why" before coding
+2. **Overhead**: May feel heavy for very small features (ROI improves for medium/large features)
+3. **AI Imperfection**: Still requires human oversight and code review
+4. **Process Discipline**: Needs commitment to branching, version control, team workflows
+5. **Learning Curve**: Team must learn new workflow and tooling
+
+---
+
+---
+
+## 2. Current Project Structure Analysis
+
+### Existing Documentation Structure
+
+```
+docs/
+├── user_stories/
+│   ├── README.md
+│   ├── implementation_status.md      # Tracks 27 completed user stories
+│   ├── core_functionality.md         # US-001 to US-006
+│   ├── automation.md                 # US-007 to US-012
+│   ├── testing.md                    # US-013 to US-018
+│   ├── configuration.md              # US-019 to US-024
+│   └── historical_data.md            # US-025 to US-027
+└── technical_documentation/
+    ├── README.md
+    ├── architecture.md
+    ├── api_reference.md
+    ├── development_guide.md
+    ├── tdd_workflow.md               # Mandatory TDD process
+    ├── tdd_templates.md
+    ├── ide_setup.md
+    ├── dev_tools_config.md
+    ├── deployment.md
+    ├── troubleshooting.md
+    └── ona_setup.md
+```
+
+### Current User Story Format
+
+**Structure**: Traditional Agile user stories with acceptance criteria
+
+**Example** (US-001):
+```markdown
+## US-001: Multi-Source Fund Price Scraping
+
+**As** a financial analyst  
+**I want** to scrape fund prices from multiple sources  
+**So that** I can get comprehensive price data
+
+### Acceptance Criteria:
+- [ ] System can scrape prices from Financial Times (FT)
+- [ ] System can scrape prices from Yahoo Finance (YH)
+- [ ] System can scrape prices from Morningstar (MS)
+- [ ] Each source uses appropriate URL patterns
+- [ ] System handles source-specific error cases
+- [ ] All sources return data in consistent format
+
+### Definition of Done:
+- [ ] All three sources implemented and tested
+- [ ] Error handling implemented
+- [ ] Functional tests pass
+- [ ] Documentation updated
+```
+
+### Current Workflow
+
+1. **User Story Creation**: Define feature as user story with acceptance criteria
+2. **TDD RED Phase**: Write failing tests for acceptance criteria
+3. **TDD GREEN Phase**: Implement minimal code to pass tests
+4. **TDD REFACTOR Phase**: Improve code while keeping tests green
+5. **Documentation Update**: Update implementation_status.md
+6. **Commit**: Use RED/GREEN/REFACTOR prefixes with user story ID
+
+### Strengths of Current Approach
+
+1. **100% Completion**: All 27 user stories implemented
+2. **High Test Coverage**: 97% overall, 99% for main code
+3. **Strict TDD Discipline**: Mandatory RED-GREEN-REFACTOR cycle
+4. **Clear Traceability**: User story ID in commits (e.g., "US-026")
+5. **Comprehensive Documentation**: Technical docs complement user stories
+6. **Well-Organized**: Stories grouped by category (core, automation, testing, config)
+
+### Gaps Compared to Spec Kit
+
+1. **No Constitution**: Project principles scattered across docs, not codified
+2. **No Technical Plans**: Architecture exists but not tied to specific features
+3. **No Task Breakdown**: User stories don't decompose into discrete tasks
+4. **Limited AI Guidance**: Docs written for humans, not optimized for AI consumption
+5. **No Clarify Phase**: Ambiguities resolved ad-hoc, not systematically
+6. **Retrospective Documentation**: User stories written after project started
+
+### What Works Well
+
+1. **TDD Workflow**: Already enforces discipline similar to Spec Kit
+2. **Version Control**: All documentation in Git
+3. **Status Tracking**: implementation_status.md provides clear progress view
+4. **Categorization**: Stories grouped logically by domain
+5. **Acceptance Criteria**: Clear, testable requirements
+
+---
+
+---
+
+## 3. Compatibility Assessment
+
+### Spec Kit + TDD Integration
+
+**Key Finding**: Spec Kit and TDD are **highly compatible** and **complementary**.
+
+#### How They Work Together
+
+| Spec Kit Phase | TDD Phase | Integration Point |
+|----------------|-----------|-------------------|
+| **SPECIFY** | Pre-TDD | Define what to build (user needs) |
+| **PLAN** | Pre-TDD | Define how to build (architecture) |
+| **TASKS** | Pre-TDD | Define test scenarios and implementation units |
+| **IMPLEMENT** | **RED-GREEN-REFACTOR** | Execute with TDD discipline |
+
+#### Enhanced Workflow
+
+```
+SPECIFY → PLAN → TASKS → [RED → GREEN → REFACTOR] per task
+```
+
+Each task in the TASKS phase becomes a TDD cycle:
+1. **Task Definition**: "Create registration endpoint with email validation"
+2. **RED**: Write failing test for endpoint
+3. **GREEN**: Implement minimal endpoint code
+4. **REFACTOR**: Improve endpoint implementation
+5. **Review**: Verify task completion against spec
+
+### Synergies
+
+1. **Spec Kit provides structure**: What to build, how to build, what tasks
+2. **TDD provides discipline**: How to implement each task safely
+3. **Both enforce small changes**: Tasks = small units, TDD = incremental
+4. **Both require review**: Spec review + code review
+5. **Both create documentation**: Specs + tests as documentation
+
+### Potential Conflicts
+
+1. **Overhead Perception**: Some may see both as "too much process"
+   - **Mitigation**: Demonstrate ROI on medium/large features
+   
+2. **Learning Curve**: Team must learn both methodologies
+   - **Mitigation**: Gradual adoption, start with one feature
+   
+3. **Tool Complexity**: Spec Kit CLI + existing dev tools
+   - **Mitigation**: Integrate into existing Makefile/scripts
+
+### Compatibility Score: 9/10
+
+**Rationale**: 
+- Both methodologies emphasize discipline and incremental progress
+- Spec Kit fills gaps in current approach (constitution, planning, tasks)
+- TDD provides implementation rigor that Spec Kit assumes but doesn't enforce
+- Minimal conflicts, mostly additive benefits
+
+---
 
 ---
 
@@ -371,6 +601,8 @@ Refine constitution based on Phase 2 learnings:
 
 ---
 
+---
+
 ## 5. Recommendations
 
 ### Primary Recommendation: ADOPT with Modifications
@@ -455,6 +687,8 @@ If full adoption seems too aggressive:
 
 ---
 
+---
+
 ## 6. Next Steps
 
 ### Immediate Actions (This Week)
@@ -514,6 +748,8 @@ If full adoption seems too aggressive:
 
 ---
 
+---
+
 ## 7. Conclusion
 
 ### Summary
@@ -537,6 +773,8 @@ Spec Kit is a **strong fit** for the FundPrices project:
 **PROCEED** with Spec Kit adoption using the 3-phase transformation plan outlined in this document.
 
 The combination of Spec Kit's structure and the project's existing TDD discipline will create a robust, AI-friendly development workflow that scales well for future growth.
+
+---
 
 ---
 
@@ -634,9 +872,13 @@ Use yfinance library (official Yahoo Finance API wrapper)
 
 ---
 
+---
+
 ## Appendix B: Constitution Template
 
 See Phase 1, Task 1.2 for full constitution example.
+
+---
 
 ---
 
@@ -655,7 +897,7 @@ See Phase 1, Task 1.2 for full constitution example.
 
 ### Project-Specific Docs
 - `docs/technical_documentation/tdd_workflow.md` - Current TDD process
-- `docs/user_stories/implementation_status.md` - Current tracking
+- `docs/user_stories/implementation_status.md` - Historical record (tracking moved to GitHub Issues)
 - `AGENTS.md` - Agent guidelines
 
 ---
@@ -663,229 +905,4 @@ See Phase 1, Task 1.2 for full constitution example.
 **Document Version**: 1.0  
 **Date**: 2024-11-20  
 **Author**: Ona (AI Agent)  
-**Status**: Assessment Complete - Awaiting Decision
-
-
-
-### Spec Kit + TDD Integration
-
-**Key Finding**: Spec Kit and TDD are **highly compatible** and **complementary**.
-
-#### How They Work Together
-
-| Spec Kit Phase | TDD Phase | Integration Point |
-|----------------|-----------|-------------------|
-| **SPECIFY** | Pre-TDD | Define what to build (user needs) |
-| **PLAN** | Pre-TDD | Define how to build (architecture) |
-| **TASKS** | Pre-TDD | Define test scenarios and implementation units |
-| **IMPLEMENT** | **RED-GREEN-REFACTOR** | Execute with TDD discipline |
-
-#### Enhanced Workflow
-
-```
-SPECIFY → PLAN → TASKS → [RED → GREEN → REFACTOR] per task
-```
-
-Each task in the TASKS phase becomes a TDD cycle:
-1. **Task Definition**: "Create registration endpoint with email validation"
-2. **RED**: Write failing test for endpoint
-3. **GREEN**: Implement minimal endpoint code
-4. **REFACTOR**: Improve endpoint implementation
-5. **Review**: Verify task completion against spec
-
-### Synergies
-
-1. **Spec Kit provides structure**: What to build, how to build, what tasks
-2. **TDD provides discipline**: How to implement each task safely
-3. **Both enforce small changes**: Tasks = small units, TDD = incremental
-4. **Both require review**: Spec review + code review
-5. **Both create documentation**: Specs + tests as documentation
-
-### Potential Conflicts
-
-1. **Overhead Perception**: Some may see both as "too much process"
-   - **Mitigation**: Demonstrate ROI on medium/large features
-   
-2. **Learning Curve**: Team must learn both methodologies
-   - **Mitigation**: Gradual adoption, start with one feature
-   
-3. **Tool Complexity**: Spec Kit CLI + existing dev tools
-   - **Mitigation**: Integrate into existing Makefile/scripts
-
-### Compatibility Score: 9/10
-
-**Rationale**: 
-- Both methodologies emphasize discipline and incremental progress
-- Spec Kit fills gaps in current approach (constitution, planning, tasks)
-- TDD provides implementation rigor that Spec Kit assumes but doesn't enforce
-- Minimal conflicts, mostly additive benefits
-
----
-
-## 2. Current Project Structure Analysis
-
-### Existing Documentation Structure
-
-```
-docs/
-├── user_stories/
-│   ├── README.md
-│   ├── implementation_status.md      # Tracks 27 completed user stories
-│   ├── core_functionality.md         # US-001 to US-006
-│   ├── automation.md                 # US-007 to US-012
-│   ├── testing.md                    # US-013 to US-018
-│   ├── configuration.md              # US-019 to US-024
-│   └── historical_data.md            # US-025 to US-027
-└── technical_documentation/
-    ├── README.md
-    ├── architecture.md
-    ├── api_reference.md
-    ├── development_guide.md
-    ├── tdd_workflow.md               # Mandatory TDD process
-    ├── tdd_templates.md
-    ├── ide_setup.md
-    ├── dev_tools_config.md
-    ├── deployment.md
-    ├── troubleshooting.md
-    └── ona_setup.md
-```
-
-### Current User Story Format
-
-**Structure**: Traditional Agile user stories with acceptance criteria
-
-**Example** (US-001):
-```markdown
-## US-001: Multi-Source Fund Price Scraping
-
-**As** a financial analyst  
-**I want** to scrape fund prices from multiple sources  
-**So that** I can get comprehensive price data
-
-### Acceptance Criteria:
-- [ ] System can scrape prices from Financial Times (FT)
-- [ ] System can scrape prices from Yahoo Finance (YH)
-- [ ] System can scrape prices from Morningstar (MS)
-- [ ] Each source uses appropriate URL patterns
-- [ ] System handles source-specific error cases
-- [ ] All sources return data in consistent format
-
-### Definition of Done:
-- [ ] All three sources implemented and tested
-- [ ] Error handling implemented
-- [ ] Functional tests pass
-- [ ] Documentation updated
-```
-
-### Current Workflow
-
-1. **User Story Creation**: Define feature as user story with acceptance criteria
-2. **TDD RED Phase**: Write failing tests for acceptance criteria
-3. **TDD GREEN Phase**: Implement minimal code to pass tests
-4. **TDD REFACTOR Phase**: Improve code while keeping tests green
-5. **Documentation Update**: Update implementation_status.md
-6. **Commit**: Use RED/GREEN/REFACTOR prefixes with user story ID
-
-### Strengths of Current Approach
-
-1. **100% Completion**: All 27 user stories implemented
-2. **High Test Coverage**: 97% overall, 99% for main code
-3. **Strict TDD Discipline**: Mandatory RED-GREEN-REFACTOR cycle
-4. **Clear Traceability**: User story ID in commits (e.g., "US-026")
-5. **Comprehensive Documentation**: Technical docs complement user stories
-6. **Well-Organized**: Stories grouped by category (core, automation, testing, config)
-
-### Gaps Compared to Spec Kit
-
-1. **No Constitution**: Project principles scattered across docs, not codified
-2. **No Technical Plans**: Architecture exists but not tied to specific features
-3. **No Task Breakdown**: User stories don't decompose into discrete tasks
-4. **Limited AI Guidance**: Docs written for humans, not optimized for AI consumption
-5. **No Clarify Phase**: Ambiguities resolved ad-hoc, not systematically
-6. **Retrospective Documentation**: User stories written after project started
-
-### What Works Well
-
-1. **TDD Workflow**: Already enforces discipline similar to Spec Kit
-2. **Version Control**: All documentation in Git
-3. **Status Tracking**: implementation_status.md provides clear progress view
-4. **Categorization**: Stories grouped logically by domain
-5. **Acceptance Criteria**: Clear, testable requirements
-
----
-
-## 1. Spec Kit Overview
-
-### What is Spec Kit?
-
-Spec Kit is an open-source toolkit and workflow pattern for **Spec-Driven Development (SDD)** when using AI coding assistants (GitHub Copilot, Claude, Gemini, etc.). It provides a structured approach to software development that begins with specification rather than code.
-
-**Repository**: `github.com/github/spec-kit`
-
-### Core Philosophy
-
-Instead of "write code → document later → fix later", Spec Kit enforces:
-1. **Specify** what you're building and why (high-level, non-technical)
-2. **Plan** how you'll build it (technical architecture)
-3. **Tasks** break the plan into manageable units
-4. **Implement** execute tasks guided by spec + plan
-
-The specification becomes the **single source of truth** that guides both AI and human developers.
-
-### The Four-Phase Workflow
-
-#### Phase 1: SPECIFY
-- **Purpose**: Capture what you're building and why
-- **Questions**: Who is the user? What problem? What features/outcomes?
-- **Output**: High-level, non-technical specification
-- **Format**: `specs/<spec-id>/spec.md`
-
-#### Phase 2: PLAN
-- **Purpose**: Define how you'll build it
-- **Content**: Technology stack, architecture, constraints (security, compliance, performance)
-- **Output**: Technical plan document
-- **Format**: `specs/<spec-id>/plan.md`
-
-#### Phase 3: TASKS
-- **Purpose**: Break plan into manageable work units
-- **Scope**: Discrete tasks that AI or humans can execute and review
-- **Output**: Task list with clear boundaries
-- **Format**: `specs/<spec-id>/tasks.md`
-
-#### Phase 4: IMPLEMENT
-- **Purpose**: Execute tasks guided by spec + plan
-- **Process**: Review occurs per task to maintain alignment
-- **Output**: Working code tied to specification
-
-### Additional Components
-
-#### Constitution
-- **Purpose**: Define non-negotiable project principles
-- **Content**: Coding standards, architecture guidelines, test coverage expectations
-- **Location**: `constitution.md` at project root
-- **Benefit**: Ensures AI and team stay aligned on foundational decisions
-
-#### Clarify (Optional)
-- **Purpose**: Resolve ambiguities before planning
-- **Process**: Ask questions about edge cases, integration points, dependencies
-- **Timing**: Between Specify and Plan phases
-
-### Key Benefits
-
-1. **Alignment**: Human + AI work from same specification
-2. **Traceability**: Every code change traces back to spec → plan → task
-3. **Reduced Errors**: Small, reviewable tasks vs. monolithic changes
-4. **Living Documentation**: Specs are version-controlled and evolve with project
-5. **AI Discipline**: Prevents "vibe-coding" where AI guesses requirements
-6. **Complexity Management**: Large features decomposed into manageable units
-7. **Review-Friendly**: Clear boundaries for code review
-
-### Limitations and Considerations
-
-1. **Mindset Shift**: Requires up-front investment in "what/why" before coding
-2. **Overhead**: May feel heavy for very small features (ROI improves for medium/large features)
-3. **AI Imperfection**: Still requires human oversight and code review
-4. **Process Discipline**: Needs commitment to branching, version control, team workflows
-5. **Learning Curve**: Team must learn new workflow and tooling
-
----
+**Status**: Assessment Complete - Migration Implemented
