@@ -2,6 +2,10 @@
 
 This directory contains all Spec Kit specifications for the FundPrices project.
 
+> **Task tracking:** work items live in [GitHub Issues](https://github.com/joneswm/FundPrices/issues).
+> Specs describe *what and how*; issues track *what still needs doing*. Reference the issue
+> number from the spec, and close the issue when the spec ships.
+
 ## Active Specifications
 
 ### SPEC-002: Rolling 90-Day Price History

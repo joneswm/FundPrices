@@ -1,5 +1,14 @@
 # Tasks: Yahoo Finance API Integration
 
+> ## 📌 Task tracking has moved to GitHub Issues
+>
+> The acceptance criteria below were migrated to GitHub Issues and **closed as completed** —
+> see [all SPEC-001 issues](https://github.com/joneswm/FundPrices/issues?q=is%3Aissue+label%3Aspec-001).
+>
+> The checkboxes were historically left unticked because this spec was written *retrospectively*,
+> after the feature had already shipped. They are ticked below to reflect reality.
+> New work belongs in [GitHub Issues](https://github.com/joneswm/FundPrices/issues), not in this file.
+
 **Spec**: SPEC-001  
 **Status**: ✅ All Complete  
 **Created**: 2024-11-20 (Retrospective)
@@ -27,9 +36,9 @@ This document breaks down the Yahoo Finance API integration into discrete, manag
 Add `yfinance` library to project dependencies.
 
 ### Acceptance Criteria
-- [ ] `yfinance>=0.2.0` added to `requirements.txt`
-- [ ] Library installs successfully
-- [ ] No conflicts with existing dependencies
+- [x] `yfinance>=0.2.0` added to `requirements.txt`
+- [x] Library installs successfully
+- [x] No conflicts with existing dependencies
 
 ### Steps
 1. Add line to `requirements.txt`: `yfinance>=0.2.0`
@@ -61,10 +70,10 @@ Co-authored-by: Ona <no-reply@ona.com>
 Create new function to fetch prices via Yahoo Finance API.
 
 ### Acceptance Criteria
-- [ ] Function accepts symbol parameter
-- [ ] Function returns price as string
-- [ ] Function handles errors gracefully
-- [ ] Function returns "Error: <message>" on failure
+- [x] Function accepts symbol parameter
+- [x] Function returns price as string
+- [x] Function handles errors gracefully
+- [x] Function returns "Error: <message>" on failure
 
 ### TDD Cycle
 
@@ -145,10 +154,10 @@ def fetch_price_api(symbol):
 Create comprehensive unit tests with mocked API responses.
 
 ### Acceptance Criteria
-- [ ] Test valid symbol returns price
-- [ ] Test invalid symbol returns error
-- [ ] Test exception handling
-- [ ] All tests use mocking (no real API calls)
+- [x] Test valid symbol returns price
+- [x] Test invalid symbol returns error
+- [x] Test exception handling
+- [x] All tests use mocking (no real API calls)
 
 ### TDD Cycle
 
@@ -206,10 +215,10 @@ def test_fetch_price_api_mock(self, mock_ticker):
 Update `scrape_funds()` to route GF source to API instead of scraping.
 
 ### Acceptance Criteria
-- [ ] GF source uses `fetch_price_api()`
-- [ ] Other sources (FT, YH, MS) still use scraping
-- [ ] No breaking changes to function signature
-- [ ] Results format unchanged
+- [x] GF source uses `fetch_price_api()`
+- [x] Other sources (FT, YH, MS) still use scraping
+- [x] No breaking changes to function signature
+- [x] Results format unchanged
 
 ### TDD Cycle
 
@@ -295,10 +304,10 @@ def scrape_funds(fund_ids):
 Create functional test that makes real API call to verify integration.
 
 ### Acceptance Criteria
-- [ ] Test makes real API call (no mocking)
-- [ ] Test uses known valid symbol
-- [ ] Test validates price format
-- [ ] Test handles API unavailability gracefully
+- [x] Test makes real API call (no mocking)
+- [x] Test uses known valid symbol
+- [x] Test validates price format
+- [x] Test handles API unavailability gracefully
 
 ### TDD Cycle
 
@@ -365,10 +374,10 @@ def test_functional_yahoo_finance_api(self):
 Update all relevant documentation to reflect API integration.
 
 ### Acceptance Criteria
-- [ ] README.md updated
-- [ ] AGENTS.md updated
-- [ ] implementation_status.md updated
-- [ ] Code comments added
+- [x] README.md updated
+- [x] AGENTS.md updated
+- [x] implementation_status.md updated
+- [x] Code comments added
 
 ### Steps
 

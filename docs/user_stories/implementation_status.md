@@ -2,6 +2,13 @@
 
 This document tracks the implementation status of all features for the Fund Price Scraping project.
 
+> ## 📌 Task tracking has moved to GitHub Issues
+>
+> **Outstanding work for this project is tracked in [GitHub Issues](https://github.com/joneswm/FundPrices/issues), not in this file.**
+>
+> This document is retained as a **historical record** of completed work. Do not add new to-do items here —
+> [open an issue](https://github.com/joneswm/FundPrices/issues/new) instead.
+
 **Note**: As of 2024-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory.
 
 ## Status Legend
@@ -542,8 +549,9 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 - ✅ Templates created
 - ✅ Example spec documented (SPEC-001)
 - ✅ Documentation updated
-- 📋 Phase 2: Parallel operation (next new feature)
-- 📋 Phase 3: Full migration (archive user stories)
+- ✅ Phase 2: Parallel operation (delivered via SPEC-002, Rolling 90-Day Price History)
+- ✅ Phase 3 (partial): User stories archived to `docs/archive/user_stories/`
+- 🔗 Phase 3 remainder — tracked in [issue #6](https://github.com/joneswm/FundPrices/issues/6)
 
 ### Completed Major Features
 - ✅ Multi-source fund price scraping (FT, Yahoo Finance, Morningstar, Yahoo Finance API)
@@ -561,11 +569,15 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ### Next Development
 
 For new features:
-1. Create specification in `specs/XXX-feature-name/`
-2. Follow SPECIFY → PLAN → TASKS → IMPLEMENT workflow
-3. Use TDD (RED-GREEN-REFACTOR) for implementation
-4. Update this file with spec status
+1. **Open a [GitHub Issue](https://github.com/joneswm/FundPrices/issues/new)** — this is the source of truth for work to be done
+2. Create specification in `specs/XXX-feature-name/`, referencing the issue number
+3. Follow SPECIFY → PLAN → TASKS → IMPLEMENT workflow
+4. Use TDD (RED-GREEN-REFACTOR) for implementation
+5. Close the issue when the work ships
 
 See `specs/README.md` for specification guidelines.
+
+**Note**: This file is no longer updated with per-feature status. Current status lives in
+[GitHub Issues](https://github.com/joneswm/FundPrices/issues).
 
 The project has achieved 100% implementation of legacy user stories and successfully migrated to Spec Kit for future development. All four data sources are operational plus historical data retrieval capability.

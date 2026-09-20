@@ -1,5 +1,14 @@
 # SPEC-001: Yahoo Finance API Integration
 
+> ## 📌 Task tracking has moved to GitHub Issues
+>
+> The acceptance criteria below were migrated to GitHub Issues and **closed as completed** —
+> see [all SPEC-001 issues](https://github.com/joneswm/FundPrices/issues?q=is%3Aissue+label%3Aspec-001).
+>
+> The checkboxes were historically left unticked because this spec was written *retrospectively*,
+> after the feature had already shipped. They are ticked below to reflect reality.
+> New work belongs in [GitHub Issues](https://github.com/joneswm/FundPrices/issues), not in this file.
+
 **Status**: ✅ Complete  
 **Created**: 2024-11-20 (Retrospective)  
 **Implemented**: 2024 (as US-025)  
@@ -74,34 +83,34 @@ The following are explicitly **not** included in this specification:
 ## Acceptance Criteria
 
 1. **API Integration**
-   - [ ] `yfinance` library added to `requirements.txt`
-   - [ ] New `fetch_price_api()` function created
-   - [ ] Function accepts symbol as parameter
-   - [ ] Function returns price as string or error message
+   - [x] `yfinance` library added to `requirements.txt`
+   - [x] New `fetch_price_api()` function created
+   - [x] Function accepts symbol as parameter
+   - [x] Function returns price as string or error message
 
 2. **Source Routing**
-   - [ ] `scrape_funds()` routes GF source to API instead of scraping
-   - [ ] Other sources (FT, YH, MS) continue using web scraping
-   - [ ] No breaking changes to existing functionality
+   - [x] `scrape_funds()` routes GF source to API instead of scraping
+   - [x] Other sources (FT, YH, MS) continue using web scraping
+   - [x] No breaking changes to existing functionality
 
 3. **Error Handling**
-   - [ ] Invalid symbols return `"Error: Invalid symbol"`
-   - [ ] API failures return `"Error: API unavailable"`
-   - [ ] Network timeouts handled (30 second limit)
-   - [ ] All errors logged appropriately
+   - [x] Invalid symbols return `"Error: Invalid symbol"`
+   - [x] API failures return `"Error: API unavailable"`
+   - [x] Network timeouts handled (30 second limit)
+   - [x] All errors logged appropriately
 
 4. **Testing**
-   - [ ] Unit test: Valid symbol returns price
-   - [ ] Unit test: Invalid symbol returns error
-   - [ ] Unit test: Mocked API responses
-   - [ ] Functional test: Real API call succeeds
-   - [ ] Coverage maintained at 90%+
+   - [x] Unit test: Valid symbol returns price
+   - [x] Unit test: Invalid symbol returns error
+   - [x] Unit test: Mocked API responses
+   - [x] Functional test: Real API call succeeds
+   - [x] Coverage maintained at 90%+
 
 5. **Documentation**
-   - [ ] README updated with GF source explanation
-   - [ ] AGENTS.md updated with API approach
-   - [ ] `implementation_status.md` updated
-   - [ ] Code comments explain API usage
+   - [x] README updated with GF source explanation
+   - [x] AGENTS.md updated with API approach
+   - [x] `implementation_status.md` updated
+   - [x] Code comments explain API usage
 
 ## Stakeholders
 

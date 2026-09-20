@@ -3,6 +3,16 @@
 ## Project Overview
 Python application for scraping fund prices from multiple financial data sources (Financial Times, Yahoo Finance, Morningstar) and Yahoo Finance API for stock quotes.
 
+## Task Tracking
+
+**GitHub Issues is the single source of truth for work that needs doing.**
+
+- Open work: https://github.com/joneswm/FundPrices/issues
+- File new work as an issue — do **not** add to-do checkboxes to markdown files
+- Reference the issue number in branches, commits and PRs (e.g. `Fixes #12`)
+- Checkboxes remaining in `docs/` and `specs/` are either historical records of completed
+  work, reusable process checklists, or template placeholders — none are open tasks
+
 ## Common Commands
 
 ### Testing
@@ -64,7 +74,8 @@ Python application for scraping fund prices from multiple financial data sources
 ### Commit Messages
 - Follow conventional commit format
 - Include `Co-authored-by: Ona <no-reply@ona.com>` in commits
-- Reference user story IDs when applicable (e.g., "US-026")
+- Reference the GitHub issue number when applicable (e.g., "Fixes #12")
+- Legacy commits reference user story IDs (e.g., "US-026"); these are historical
 - Use prefixes: RED, GREEN, REFACTOR for TDD commits
 
 ## Configuration
