@@ -1,6 +1,6 @@
 # SPEC-003: True Price Dates and Currency
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 **Type**: Foundational Enhancement
 **Tracking**: [#64](https://github.com/joneswm/FundPrices/issues/64)
@@ -74,12 +74,12 @@ fetchers with a 2023 start date. A missed or failed day then heals itself on the
 
 ## Acceptance Criteria
 
-- [ ] `prices_history.csv`, `latest_prices.csv` and `prices_history_90_days.csv` carry a
+- [x] `prices_history.csv`, `latest_prices.csv` and `prices_history_90_days.csv` carry a
       `Currency` column appended after `Price`
-- [ ] Dates in those files are price dates, not scrape dates
-- [ ] Running the scraper twice produces no diff on the second run
-- [ ] No stored price contains float noise
-- [ ] `IDTG.L` is published at 4dp or better
+- [x] Dates in those files are price dates, not scrape dates
+- [x] Running the scraper twice produces no diff on the second run
+- [x] No stored price contains float noise
+- [x] `IDTG.L` is published at 4dp or better
 - [ ] CI green on all three Python versions with both coverage gates
 
 ## Risks and Mitigations

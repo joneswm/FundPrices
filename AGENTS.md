@@ -16,7 +16,7 @@ Python application for scraping fund prices from multiple financial data sources
 ## Common Commands
 
 ### Testing
-- `python test_scrape_fund_price.py` - Run full test suite (55 tests)
+- `python test_scrape_fund_price.py` - Run full test suite
 - `python -m unittest test_scrape_fund_price.TestFundPriceScraper -v` - Run unit tests only
 - `python -m coverage run test_scrape_fund_price.py && python -m coverage report` - Run with coverage report
 - `./run_tests.sh` - Run tests with coverage (if script exists)
@@ -41,8 +41,8 @@ Python application for scraping fund prices from multiple financial data sources
 ## Project Structure
 
 ### Key Files
-- `scrape_fund_price.py` - Main scraping logic (215 statements, 99% coverage)
-- `test_scrape_fund_price.py` - Comprehensive test suite (535 statements, 98% coverage)
+- `scrape_fund_price.py` - Main scraping logic (326 statements, 98% coverage)
+- `test_scrape_fund_price.py` - Comprehensive test suite
 - `funds.txt` - Configuration file for fund identifiers
 - `requirements.txt` - Python dependencies
 
@@ -128,8 +128,9 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 
 ### Test Coverage
 - Overall: 98% coverage
-- Main code (scrape_fund_price.py): 99% coverage (constitution requires >=95%, enforced in CI)
-- 55 total tests: 30 core + 9 historical-data + 8 price-fallback + 5 functional + 3 entry-point
+- Main code (scrape_fund_price.py): 98% coverage (constitution requires >=95%, enforced in CI)
+- Unit tests use mocks only and run in seconds; functional tests hit live sources and
+  skip when a source is down
 
 Run `make test-coverage` for current figures rather than relying on this snapshot.
 

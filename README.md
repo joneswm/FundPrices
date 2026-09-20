@@ -10,7 +10,7 @@ A Python application for scraping fund prices from multiple financial data sourc
 - **Automated execution**: GitHub Actions workflow for scheduled price collection
 - **Data persistence**: Stores latest prices and historical data in CSV format
 - **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Full test suite with 55 tests (98% code coverage)
+- **Testing**: Comprehensive unit and functional test suite (98% code coverage)
 
 ## Quick Start
 
