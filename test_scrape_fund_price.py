@@ -17,7 +17,10 @@ from scrape_fund_price import (
     main,
     read_latest_csv_price,
     read_history_price,
-    get_last_known_price
+    get_last_known_price,
+    Quote,
+    format_yahoo_price,
+    fetch_yahoo_quotes
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -965,6 +968,118 @@ class TestMainEntryPoint(unittest.TestCase):
         mock_fetch.return_value = "Error: No data found for symbol BADSYM"
         main()
         mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
+
+
+class TestPriceFormatting(unittest.TestCase):
+    """Test precision-preserving formatting of Yahoo float32 bar values."""
+
+    def test_format_strips_float32_noise(self):
+        """Test float32 artefacts are not stored as extra decimal places."""
+        self.assertEqual(format_yahoo_price(124.87000274658203), "124.87")
+        self.assertEqual(format_yahoo_price(192.42999267578125), "192.43")
+        self.assertEqual(format_yahoo_price(595.0499877929688), "595.05")
+        self.assertEqual(format_yahoo_price(721.4500122070312), "721.45")
+
+    def test_format_preserves_genuine_decimals(self):
+        """Test real precision is kept, not rounded away."""
+        self.assertEqual(format_yahoo_price(2.7785000801086426), "2.7785")
+        self.assertEqual(format_yahoo_price(5.060999870300293), "5.061")
+        self.assertEqual(format_yahoo_price(21.395000457763672), "21.395")
+
+    def test_format_drops_trailing_point_zero(self):
+        """Test whole numbers are stored without a trailing .0."""
+        self.assertEqual(format_yahoo_price(6317.0), "6317")
+        self.assertEqual(format_yahoo_price(126530.0), "126530")
+        self.assertEqual(format_yahoo_price(13339.0), "13339")
+
+    def test_format_keeps_precision_on_large_values(self):
+        """Test large values keep their decimals (a .7g format would not)."""
+        import numpy as np
+        self.assertEqual(format_yahoo_price(np.float32(126530.25)), "126530.25")
+
+
+class TestYahooQuoteFetching(unittest.TestCase):
+    """Test dated quote retrieval from the Yahoo daily-bar route."""
+
+    def _frame(self, rows):
+        import pandas as pd
+        idx = pd.to_datetime([d for d, _ in rows])
+        return pd.DataFrame({"Close": [c for _, c in rows]}, index=idx)
+
+    def _ticker(self, mock_ticker, rows, currency="GBP"):
+        inst = MagicMock()
+        inst.history.return_value = self._frame(rows)
+        inst.fast_info = {"currency": currency}
+        mock_ticker.return_value = inst
+        return inst
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_returns_dated_quotes(self, mock_ticker):
+        """Test each bar becomes a Quote carrying the bar's own date."""
+        self._ticker(mock_ticker, [("2026-09-17", 192.42999267578125),
+                                   ("2026-09-18", 193.5)])
+        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
+        self.assertEqual(len(quotes), 2)
+        self.assertEqual(quotes[0], Quote("2026-09-17", "192.43", "GBP"))
+        self.assertEqual(quotes[1].date, "2026-09-18")
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_requests_unadjusted_close(self, mock_ticker):
+        """Test history is requested unadjusted so prices match those snapped."""
+        inst = self._ticker(mock_ticker, [("2026-09-18", 7.15)])
+        fetch_yahoo_quotes("IDTG.L", "2026-09-10", "2026-09-19")
+        kwargs = inst.history.call_args.kwargs
+        self.assertFalse(kwargs["auto_adjust"])
+        self.assertEqual(kwargs["start"], "2026-09-10")
+        self.assertEqual(kwargs["end"], "2026-09-19")
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_preserves_pence_currency(self, mock_ticker):
+        """Test GBp is not silently normalised to GBP."""
+        self._ticker(mock_ticker, [("2026-09-18", 6317.0)], currency="GBp")
+        self.assertEqual(fetch_yahoo_quotes("SGLN.L", "2026-09-10")[0].currency, "GBp")
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_drops_rows_without_a_price(self, mock_ticker):
+        """Test NaN closes are skipped rather than stored."""
+        self._ticker(mock_ticker, [("2026-09-17", float("nan")),
+                                   ("2026-09-18", 7.15)])
+        quotes = fetch_yahoo_quotes("IDTG.L", "2026-09-10")
+        self.assertEqual([q.date for q in quotes], ["2026-09-18"])
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_empty_history_returns_no_quotes(self, mock_ticker):
+        """Test an empty result is not an error."""
+        self._ticker(mock_ticker, [])
+        self.assertEqual(fetch_yahoo_quotes("IDTG.L", "2026-09-10"), [])
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_exception_propagates_to_retry_wrapper(self, mock_ticker):
+        """Test transport errors are raised so fetch_with_retries can retry."""
+        mock_ticker.side_effect = Exception("Network error")
+        with self.assertRaises(Exception):
+            fetch_yahoo_quotes("IDTG.L", "2026-09-10")
+
+    @patch('scrape_fund_price.fetch_yahoo_quotes')
+    def test_fetch_price_api_uses_latest_quote(self, mock_quotes):
+        """Test the price API wrapper returns the newest quote, not .info."""
+        mock_quotes.return_value = [Quote("2026-09-16", "192.23", "USD"),
+                                    Quote("2026-09-17", "192.43", "USD")]
+        self.assertEqual(fetch_price_api("0P00000YAN"), "192.43")
+
+    @patch('scrape_fund_price.fetch_yahoo_quotes')
+    def test_fetch_price_api_reports_missing_price(self, mock_quotes):
+        """Test the error contract is kept when no quotes come back."""
+        mock_quotes.return_value = []
+        self.assertTrue(fetch_price_api("BADSYM").startswith("Error:"))
+
+    @patch('scrape_fund_price.fetch_yahoo_quotes')
+    def test_fetch_price_api_reports_exception(self, mock_quotes):
+        """Test exceptions keep the "Error: <message>" contract."""
+        mock_quotes.side_effect = Exception("Network error")
+        price = fetch_price_api("IDTG.L")
+        self.assertTrue(price.startswith("Error:"))
+        self.assertIn("Network error", price)
 
 if __name__ == '__main__':
     unittest.main() 
