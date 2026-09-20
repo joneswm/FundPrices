@@ -80,7 +80,7 @@ fetchers with a 2023 start date. A missed or failed day then heals itself on the
 - [x] Running the scraper twice produces no diff on the second run
 - [x] No stored price contains float noise
 - [x] `IDTG.L` is published at 4dp or better
-- [ ] CI green on all three Python versions with both coverage gates
+- [x] CI green on all three Python versions with both coverage gates
 
 ## Risks and Mitigations
 
