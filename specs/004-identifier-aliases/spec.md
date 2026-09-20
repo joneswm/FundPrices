@@ -73,7 +73,7 @@ GF,0P00000YAN,JFM0003373
 - [x] Both identifiers have rows for the same dates in `prices_history.csv`
 - [x] A duplicated identifier anywhere in `funds.txt` is rejected with its line number
 - [x] One fetch per fund, asserted by test
-- [ ] CI green on all three Python versions
+- [x] CI green on all three Python versions
 
 ## Risks and Mitigations
 
