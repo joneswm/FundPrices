@@ -1,6 +1,6 @@
 # SPEC-007: Daily Price-Change Summary
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-20
 **Type**: Feature
 **Tracking**: [#68](https://github.com/joneswm/FundPrices/issues/68)
@@ -59,15 +59,15 @@ in the repository.
 
 ## Acceptance Criteria
 
-- [ ] `data/daily_summary.csv` and `data/daily_summary.md` are produced
-- [ ] The Markdown renders cleanly on GitHub
-- [ ] Spot check: `JFM0003373` for price date 2026-09-17 shows New 192.43, Old 192.23
+- [x] `data/daily_summary.csv` and `data/daily_summary.md` are produced
+- [x] The Markdown renders cleanly on GitHub
+- [x] Spot check: `JFM0003373` for price date 2026-09-17 shows New 192.43, Old 192.23
       from 2026-09-16, Delta 0.2, % Delta +0.10
-- [ ] A Monday shows Friday-to-Monday deltas for exchange instruments, not 0%
-- [ ] Deltas use exact decimal arithmetic, so 7.15 − 7.09 is 0.06
-- [ ] FX section present, rates at 6dp
-- [ ] `scrape.yml` commits `data/*.md`
-- [ ] CI green on all three Python versions
+- [x] A Monday shows Friday-to-Monday deltas for exchange instruments, not 0%
+- [x] Deltas use exact decimal arithmetic, so 7.15 − 7.09 is 0.06
+- [x] FX section present, rates at 6dp
+- [x] `scrape.yml` commits `data/*.md`
+- [x] CI green on all three Python versions
 
 ## Risks and Mitigations
 

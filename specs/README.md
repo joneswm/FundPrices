@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-007: Daily Price-Change Summary
+**Status**: ✅ Complete
+**Location**: [007-daily-summary/](007-daily-summary/)
+**Description**: Publish a daily summary of price and FX movements, comparing each instrument with its previous distinct price date.
+
 ### SPEC-005: End-of-Day FX Rates
 **Status**: ✅ Complete
 **Location**: [005-fx-rates/](005-fx-rates/)
