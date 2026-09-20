@@ -1,6 +1,9 @@
 # User Stories
 
-**Status**: Migrated to Spec Kit (2024-11-20)
+**Status**: Migrated to Spec Kit (2024-11-20) — migration complete
+
+> **Task tracking lives in [GitHub Issues](https://github.com/joneswm/FundPrices/issues).**
+> Everything in this directory is a historical record of completed work.
 
 ---
 
@@ -10,7 +13,7 @@ This directory now contains only the **implementation status tracking** document
 
 ### Active File
 
-- **implementation_status.md** - Tracks both legacy user stories (US-XXX) and new Spec Kit specifications (SPEC-XXX)
+- **implementation_status.md** - Historical record of completed legacy user stories (US-XXX) and Spec Kit specifications (SPEC-XXX). No longer updated for new work — use GitHub Issues.
 
 ---
 
@@ -38,7 +41,9 @@ For new features, use the **Spec Kit** approach:
 
 ### Spec Kit Workflow
 
-1. **SPECIFY**: Create `specs/XXX-feature-name/spec.md`
+0. **ISSUE**: Open a [GitHub Issue](https://github.com/joneswm/FundPrices/issues/new) describing the work
+
+1. **SPECIFY**: Create `specs/XXX-feature-name/spec.md` (reference the issue number)
    - Define what to build and why
    - User needs and success criteria
 
@@ -61,7 +66,7 @@ For new features, use the **Spec Kit** approach:
 ### Resources
 
 - **Templates**: `.specify/templates/`
-- **Example**: `specs/001-yahoo-finance-api/`
+- **Examples**: `specs/002-rolling-price-history/` (written spec-first), `specs/001-yahoo-finance-api/` (retrospective)
 - **Guidelines**: `specs/README.md`
 - **Principles**: `constitution.md`
 
@@ -89,7 +94,8 @@ To view the original user stories:
 
 ## Questions?
 
-- **Current status**: See `implementation_status.md` in this directory
+- **Current status / open work**: See [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
+- **Historical status**: See `implementation_status.md` in this directory
 - **New features**: See `specs/README.md`
 - **Archived stories**: See `docs/archive/user_stories/README.md`
 - **Spec Kit guide**: See `docs/technical_documentation/spec_kit_assessment.md`

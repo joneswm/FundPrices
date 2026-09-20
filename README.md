@@ -135,8 +135,9 @@ The project includes automated execution via GitHub Actions:
 
 ### Core Documentation
 - [Constitution](constitution.md) - **Project principles and standards**
-- [Specifications](specs/README.md) - **Spec Kit specifications for features**
-- [Implementation Status](docs/user_stories/implementation_status.md) - **Track development progress**
+- [**GitHub Issues**](https://github.com/joneswm/FundPrices/issues) - **Task tracking (source of truth for work to be done)**
+- [Specifications](specs/README.md) - **Spec Kit specifications for features (primary development approach)**
+- [Implementation Status](docs/user_stories/implementation_status.md) - Historical record of completed work
 
 ### Technical Documentation
 - [Technical Documentation](docs/technical_documentation/README.md)
@@ -148,7 +149,7 @@ The project includes automated execution via GitHub Actions:
 ### Development Guides
 - [Development Guide](docs/technical_documentation/development_guide.md)
 - [TDD Workflow](docs/technical_documentation/tdd_workflow.md) - **🚨 MANDATORY**
-- [Spec Kit Assessment](docs/technical_documentation/spec_kit_assessment.md) - **Migration guide**
+- [Spec Kit Assessment](docs/technical_documentation/spec_kit_assessment.md) - Migration guide (migration complete; retained for background)
 - [IDE Setup Guide](docs/technical_documentation/ide_setup.md)
 - [Development Tools Config](docs/technical_documentation/dev_tools_config.md)
 
@@ -157,9 +158,10 @@ The project includes automated execution via GitHub Actions:
 
 ## Development Status
 
-**Current Implementation**: 100% Complete (27/27 legacy user stories)  
-**Spec Kit Migration**: Phase 1 Complete (2024-11-20)  
-**New Features**: Use Spec Kit format in `specs/` directory
+**Current Implementation**: 100% Complete (27/27 legacy user stories, archived)  
+**Spec Kit Migration**: ✅ Complete — Spec Kit is the primary development approach  
+**Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
+**New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
 - ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
 - ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges
@@ -173,7 +175,8 @@ The project includes automated execution via GitHub Actions:
 
 **🎉 All User Stories Complete - Production Ready!**
 
-See [Implementation Status](docs/user_stories/implementation_status.md) for detailed progress tracking.
+Current and planned work is tracked in [GitHub Issues](https://github.com/joneswm/FundPrices/issues).
+See [Implementation Status](docs/user_stories/implementation_status.md) for the historical record of completed work.
 
 ## Testing
 
