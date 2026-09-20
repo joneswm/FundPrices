@@ -660,6 +660,15 @@ class TestFundPriceScraper(unittest.TestCase):
 class TestFunctionalScraping(unittest.TestCase):
     """Functional tests that can run against real websites (optional)."""
 
+    def setUp(self):
+        # Without an explicit directory these write into the repository's
+        # data/, leaving files such as latest_AAPL.price for a symbol that is
+        # not in funds.txt.
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
     def assertUsableQuotes(self, results, fund_id, expect_dated=True):
         """Assert a live fetch produced at least one usable dated price.
 
@@ -690,26 +699,26 @@ class TestFunctionalScraping(unittest.TestCase):
 
     def test_functional_ft_scraping(self):
         """Functional test for FT prices (requires internet connection)."""
-        results = scrape_funds([("FT", "IE0008368742")])
+        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
         self.assertUsableQuotes(results, "IE0008368742")
         # FT reports the quoting currency alongside the price.
         self.assertTrue(all(row[3] for row in results))
 
     def test_functional_yahoo_scraping(self):
         """Functional test for Yahoo scraping (requires internet connection)."""
-        results = scrape_funds([("YH", "IDTG.L")])
+        results = scrape_funds([("YH", "IDTG.L")], self.test_dir)
         # The scrape route reads a page showing only the current price, so its
         # quote carries the run date and may fall on a weekend.
         self.assertUsableQuotes(results, "IDTG.L", expect_dated=False)
 
     def test_functional_morningstar_scraping(self):
         """Functional test for Morningstar scraping (requires internet connection)."""
-        results = scrape_funds([("MS", "JFM0003373")])
+        results = scrape_funds([("MS", "JFM0003373")], self.test_dir)
         self.assertUsableQuotes(results, "JFM0003373", expect_dated=False)
 
     def test_functional_google_finance_scraping(self):
         """Functional test for the Yahoo Finance API (requires internet)."""
-        results = scrape_funds([("GF", "AAPL")])
+        results = scrape_funds([("GF", "AAPL")], self.test_dir)
         self.assertUsableQuotes(results, "AAPL")
         self.assertTrue(all(row[3] == "USD" for row in results))
 
