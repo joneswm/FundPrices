@@ -4,6 +4,7 @@ import csv
 import math
 import os
 import numpy as np
+import requests
 import yfinance as yf
 import argparse
 import re
@@ -127,6 +128,79 @@ def fetch_yahoo_quotes(symbol, start, end=None):
         quotes.append(
             Quote(timestamp.date().isoformat(), format_yahoo_price(close), currency)
         )
+    return quotes
+
+
+FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
+FT_HISTORICAL_AJAX = (
+    "https://markets.ft.com/data/equities/ajax/get-historical-prices"
+    "?startDate={start}&endDate={end}&symbol={xid}"
+)
+FT_REQUEST_TIMEOUT = 30
+
+
+def fetch_ft_quotes(isin, start, end=None):
+    """Fetch dated daily quotes for a fund from Financial Times.
+
+    Uses the historical-prices endpoint rather than scraping the summary
+    page, so quotes carry the price date FT reports. Two plain HTTP requests,
+    no browser: the first resolves FT's internal numeric id for the fund, the
+    second returns the rows.
+
+    Args:
+        isin: Fund ISIN as used in funds.txt
+        start: Inclusive ISO start date
+        end: Inclusive ISO end date, or None for today
+
+    Returns:
+        list[Quote], oldest first
+
+    Raises:
+        ValueError: the internal id could not be found, or no rows were
+            returned. Callers fall back to scraping the summary page.
+    """
+    end = end or datetime.date.today().isoformat()
+
+    page = requests.get(
+        FT_HISTORICAL_PAGE.format(isin=isin), timeout=FT_REQUEST_TIMEOUT
+    )
+    page.raise_for_status()
+
+    ids = re.findall(r"&quot;symbol&quot;:&quot;(\d+)&quot;", page.text)
+    if not ids:
+        raise ValueError(f"FT internal id not found for {isin}")
+
+    currency_match = re.search(r"Price \(([A-Za-z]{3})\)", page.text)
+    currency = currency_match.group(1) if currency_match else ""
+
+    response = requests.get(
+        FT_HISTORICAL_AJAX.format(
+            start=start.replace("-", "/"), end=end.replace("-", "/"), xid=ids[0]
+        ),
+        timeout=FT_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    quotes = []
+    for row in re.findall(r"<tr>(.*?)</tr>", response.json().get("html", ""), re.S):
+        date_match = re.search(r"<span[^>]*>([A-Za-z]+, [A-Za-z]+ \d{1,2}, \d{4})</span>", row)
+        # Only Open/High/Low/Close are plain cells; the date and volume cells
+        # wrap their contents in spans.
+        cells = re.findall(r"<td[^>]*>([^<]*)</td>", row)
+        if not date_match or len(cells) < 4:
+            continue
+        price_date = datetime.datetime.strptime(
+            date_match.group(1), "%A, %B %d, %Y"
+        ).date()
+        # FT prices are text; keep the digits exactly as published.
+        quotes.append(
+            Quote(price_date.isoformat(), normalize_price(cells[3].strip()), currency)
+        )
+
+    if not quotes:
+        raise ValueError(f"FT returned no historical rows for {isin}")
+
+    quotes.sort(key=lambda quote: quote.date)
     return quotes
 
 
