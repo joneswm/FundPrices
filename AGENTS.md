@@ -16,7 +16,7 @@ Python application for scraping fund prices from multiple financial data sources
 ## Common Commands
 
 ### Testing
-- `python test_scrape_fund_price.py` - Run full test suite (42 tests)
+- `python test_scrape_fund_price.py` - Run full test suite (55 tests)
 - `python -m unittest test_scrape_fund_price.TestFundPriceScraper -v` - Run unit tests only
 - `python -m coverage run test_scrape_fund_price.py && python -m coverage report` - Run with coverage report
 - `./run_tests.sh` - Run tests with coverage (if script exists)
@@ -41,8 +41,8 @@ Python application for scraping fund prices from multiple financial data sources
 ## Project Structure
 
 ### Key Files
-- `scrape_fund_price.py` - Main scraping logic (215 statements, 92% coverage)
-- `test_scrape_fund_price.py` - Comprehensive test suite (462 statements, 98% coverage)
+- `scrape_fund_price.py` - Main scraping logic (215 statements, 99% coverage)
+- `test_scrape_fund_price.py` - Comprehensive test suite (535 statements, 98% coverage)
 - `funds.txt` - Configuration file for fund identifiers
 - `requirements.txt` - Python dependencies
 
@@ -69,7 +69,7 @@ Python application for scraping fund prices from multiple financial data sources
 ### Testing Requirements
 - **MANDATORY**: Follow Test-Driven Development (TDD) workflow
 - **RED-GREEN-REFACTOR** cycle for all changes
-- Maintain code coverage above 90% overall; `constitution.md` additionally requires 95% for `scrape_fund_price.py`
+- Maintain code coverage above 90% overall and 95% for `scrape_fund_price.py` (both enforced in CI)
 - Write tests BEFORE implementation
 - All tests must pass before committing
 
@@ -127,9 +127,9 @@ GF,AAPL            # Yahoo Finance API (for stocks)
 - **This already exists - do not reimplement retry logic**
 
 ### Test Coverage
-- Overall: 96% coverage
-- Main code (scrape_fund_price.py): 92% coverage
-- 42 total tests: 30 core unit tests + 7 historical-data tests + 5 functional tests
+- Overall: 98% coverage
+- Main code (scrape_fund_price.py): 99% coverage (constitution requires >=95%, enforced in CI)
+- 55 total tests: 30 core + 9 historical-data + 8 price-fallback + 5 functional + 3 entry-point
 
 Run `make test-coverage` for current figures rather than relying on this snapshot.
 
@@ -217,7 +217,7 @@ cannot drift out of sync with the actual requirements.
 
 ## Notes for Ona Agent
 
-- This project has high test coverage (96% overall) - maintain it!
+- This project has high test coverage (98% overall) - maintain it!
 - Always run tests after making changes
 - **Use Spec Kit workflow for new features** (SPECIFY → PLAN → TASKS → IMPLEMENT)
 - **Follow TDD for all implementation** (RED-GREEN-REFACTOR mandatory)

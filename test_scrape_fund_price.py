@@ -14,7 +14,10 @@ from scrape_fund_price import (
     fetch_price_api,
     fetch_historical_data,
     parse_arguments,
-    main
+    main,
+    read_latest_csv_price,
+    read_history_price,
+    get_last_known_price
 )
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -830,6 +833,20 @@ class TestHistoricalData(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"))
         self.assertIn("date", result.lower())
     
+    def test_fetch_historical_data_invalid_end_date_format(self):
+        """Test fetching historical data with a malformed end date."""
+        result = fetch_historical_data("AAPL", "2024-01-01", "31-12-2024")
+        self.assertEqual(result, "Error: Invalid end date format. Use YYYY-MM-DD")
+
+    @patch('scrape_fund_price.yf.Ticker')
+    def test_fetch_historical_data_empty_range_returns_error(self, mock_ticker):
+        """Test a date range yielding no rows reports no data found."""
+        mock_hist = MagicMock()
+        mock_hist.empty = True
+        mock_ticker.return_value.history.return_value = mock_hist
+        result = fetch_historical_data("AAPL", "2024-01-01", "2024-01-02")
+        self.assertEqual(result, "Error: No data found for symbol AAPL")
+
     def test_fetch_historical_data_start_after_end(self):
         """Test fetching historical data with start date after end date."""
         result = fetch_historical_data('AAPL', '2024-12-31', '2024-01-01', self.test_dir)
@@ -838,6 +855,116 @@ class TestHistoricalData(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"))
         self.assertIn("start", result.lower())
 
+
+
+class TestPriceFallbackSources(unittest.TestCase):
+    """Test the last-known-price fallback chain used when fetches fail."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.test_dir)
+
+    def _write_csv(self, name, rows):
+        path = os.path.join(self.test_dir, name)
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Fund", "Date", "Price"])
+            writer.writerows(rows)
+        return path
+
+    def test_read_latest_csv_price_returns_usable_price(self):
+        """Test latest_prices.csv supplies a fallback price for a known fund."""
+        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.assertEqual(read_latest_csv_price("AAPL", self.test_dir), "150.25")
+
+    def test_read_latest_csv_price_skips_unusable_values(self):
+        """Test error and N/A entries are not reused as prices."""
+        self._write_csv("latest_prices.csv", [
+            ["AAPL", "2026-01-01", "Error: timeout"],
+            ["MSFT", "2026-01-01", "N/A"],
+        ])
+        self.assertIsNone(read_latest_csv_price("AAPL", self.test_dir))
+        self.assertIsNone(read_latest_csv_price("MSFT", self.test_dir))
+
+    def test_read_latest_csv_price_unknown_fund_returns_none(self):
+        """Test a fund absent from latest_prices.csv yields no fallback."""
+        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.assertIsNone(read_latest_csv_price("TSLA", self.test_dir))
+
+    def test_read_history_price_returns_most_recent_usable(self):
+        """Test history fallback prefers the last usable row for the fund."""
+        self._write_csv("prices_history.csv", [
+            ["AAPL", "2026-01-01", "100.00"],
+            ["AAPL", "2026-01-02", "110.00"],
+            ["MSFT", "2026-01-02", "200.00"],
+        ])
+        self.assertEqual(read_history_price("AAPL", self.test_dir), "110.00")
+
+    def test_read_history_price_all_unusable_returns_none(self):
+        """Test history with only error rows provides no fallback price."""
+        self._write_csv("prices_history.csv", [
+            ["AAPL", "2026-01-01", "Error: timeout"],
+            ["AAPL", "2026-01-02", "N/A"],
+        ])
+        self.assertIsNone(read_history_price("AAPL", self.test_dir))
+
+    def test_get_last_known_price_prefers_price_file_over_csv(self):
+        """Test the fallback chain checks the per-fund price file first."""
+        with open(os.path.join(self.test_dir, "latest_AAPL.price"), "w") as f:
+            f.write("999.99\n")
+        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "999.99")
+
+    def test_get_last_known_price_falls_through_to_history(self):
+        """Test the chain reaches prices_history.csv when earlier sources are unusable."""
+        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "Error: timeout"]])
+        self._write_csv("prices_history.csv", [["AAPL", "2025-12-31", "123.45"]])
+        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "123.45")
+
+    def test_get_last_known_price_returns_none_when_nothing_stored(self):
+        """Test an unknown fund with no stored data has no fallback."""
+        self.assertIsNone(get_last_known_price("AAPL", self.test_dir))
+
+
+class TestMainEntryPoint(unittest.TestCase):
+    """Test the main() command-line entry point."""
+
+    @patch('builtins.print')
+    @patch('scrape_fund_price.parse_arguments')
+    def test_main_history_without_start_date_errors(self, mock_args, mock_print):
+        """Test --history without --start reports an error and stops."""
+        mock_args.return_value = MagicMock(history="AAPL", start=None, end=None)
+        main()
+        mock_print.assert_called_once_with(
+            "Error: --start date is required when using --history"
+        )
+
+    @patch('builtins.print')
+    @patch('scrape_fund_price.fetch_historical_data')
+    @patch('scrape_fund_price.parse_arguments')
+    def test_main_history_success_prints_path(self, mock_args, mock_fetch, mock_print):
+        """Test successful historical retrieval reports the saved file."""
+        mock_args.return_value = MagicMock(history="AAPL", start="2024-01-01", end=None)
+        mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
+        main()
+        mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
+        mock_print.assert_called_once_with(
+            "Historical data saved to: data/history_AAPL_2024-01-01_2024-12-31.csv"
+        )
+
+    @patch('builtins.print')
+    @patch('scrape_fund_price.fetch_historical_data')
+    @patch('scrape_fund_price.parse_arguments')
+    def test_main_history_error_is_reported(self, mock_args, mock_fetch, mock_print):
+        """Test a failed historical retrieval surfaces the error message."""
+        mock_args.return_value = MagicMock(history="BADSYM", start="2024-01-01", end=None)
+        mock_fetch.return_value = "Error: No data found for symbol BADSYM"
+        main()
+        mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
 
 if __name__ == '__main__':
     unittest.main() 

@@ -198,7 +198,7 @@ Ona caches Dev Container images for faster subsequent launches.
 
 ### 3. Parallel Testing
 
-Tests run quickly (42 tests in ~20 seconds). No need for parallel execution.
+Tests run quickly (55 tests in ~12 seconds). No need for parallel execution.
 
 ## Additional Resources
 

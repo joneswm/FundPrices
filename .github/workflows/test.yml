@@ -46,7 +46,14 @@ jobs:
         coverage run -m unittest test_scrape_fund_price.py
         coverage report -m
         
-    - name: Check test coverage threshold
+    - name: Check overall coverage threshold
       run: |
         coverage run -m unittest test_scrape_fund_price.py
-        coverage report --fail-under=90 
+        coverage report --fail-under=90
+
+    - name: Check main application code coverage
+      # constitution.md section 2 requires 95% minimum for main application code.
+      # The combined figure can mask a gap here, because the test file scores higher.
+      run: |
+        coverage report --include=scrape_fund_price.py --fail-under=95
+
