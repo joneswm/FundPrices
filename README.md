@@ -66,6 +66,21 @@ and is a misnomer.
 
 ### Usage
 
+#### Rebuild History (Backfill)
+
+Rebuild stored history from source data, e.g. after changing a fund's source:
+
+```bash
+python scrape_fund_price.py --backfill --from 2023-01-01
+```
+
+This replaces stored rows from that date onward with what the sources report, and
+prints a reconciliation report. It can also be run from the Actions tab via the
+**Rebuild Price History** workflow. It is manual only and never scheduled.
+
+Rows the sources omit are kept if they were themselves source-derived, so an
+intermittent gap in a source cannot delete real trading days.
+
 #### Normal Mode (Scrape Current Prices)
 ```bash
 # Run once to scrape current prices from configured funds

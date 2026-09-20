@@ -21,6 +21,12 @@ Python application for scraping fund prices from multiple financial data sources
 - `python -m coverage run test_scrape_fund_price.py && python -m coverage report` - Run with coverage report
 - `./run_tests.sh` - Run tests with coverage (if script exists)
 
+### Rebuilding History
+- `python scrape_fund_price.py --backfill --from 2023-01-01` - rebuild stored history
+  from source data. Manual only; also available as the **Rebuild Price History**
+  workflow. Shares a concurrency group with the daily scrape so the two cannot push
+  at the same time.
+
 ### Running the Scraper
 - `python scrape_fund_price.py` - Run the fund price scraper once
 - Results are saved to `data/latest_prices.csv`, `data/prices_history.csv` and
