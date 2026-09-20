@@ -3,6 +3,7 @@ import datetime
 import csv
 import math
 import os
+import time
 import numpy as np
 import requests
 import yfinance as yf
@@ -610,6 +611,73 @@ def read_history_rows(history_csv):
     return rows
 
 
+HISTORY_HEADER = ["Fund", "Date", "Price", "Currency"]
+
+
+def latest_rows_by_fund(rows):
+    """Return each fund's row with the newest price date."""
+    latest = {}
+    for row in rows:
+        current = latest.get(row[0])
+        if current is None or row[1] > current[1]:
+            latest[row[0]] = list(row)
+    return latest
+
+
+def write_history_files(rows, data_dir, latest=None):
+    """Write the history, latest-price and rolling-window CSVs.
+
+    Shared by the daily run and the backfill so both produce byte-identical
+    output for the same data.
+
+    Args:
+        rows: Every [fund_id, date, price, currency] row to store
+        data_dir: Output directory
+        latest: Optional fund -> row mapping for latest_prices.csv; computed
+            from `rows` when omitted
+    """
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+
+    with open(os.path.join(data_dir, "prices_history.csv"), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(HISTORY_HEADER)
+        writer.writerows(ordered)
+
+    if latest is None:
+        latest = latest_rows_by_fund(ordered)
+
+    with open(os.path.join(data_dir, "latest_prices.csv"), "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(HISTORY_HEADER)
+        writer.writerows(latest[fund] for fund in sorted(latest))
+
+    reference_date = (
+        max((row[1] for row in latest.values()), default=None)
+        or datetime.date.today().isoformat()
+    )
+    try:
+        reference = datetime.date.fromisoformat(reference_date)
+    except ValueError:
+        reference = datetime.date.today()
+    cutoff = reference - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
+
+    rolling_rows = []
+    for row in ordered:
+        try:
+            row_date = datetime.date.fromisoformat(row[1])
+        except ValueError:
+            continue
+        if cutoff <= row_date <= reference:
+            rolling_rows.append(row)
+
+    with open(
+        os.path.join(data_dir, "prices_history_90_days.csv"), "w", newline=""
+    ) as file:
+        writer = csv.writer(file)
+        writer.writerow(HISTORY_HEADER)
+        writer.writerows(rolling_rows)
+
+
 def write_results(results, data_dir=None):
     """Write dated results to CSV files.
 
@@ -626,10 +694,6 @@ def write_results(results, data_dir=None):
         data_dir = DATA_DIR
 
     os.makedirs(data_dir, exist_ok=True)
-    latest_csv = os.path.join(data_dir, "latest_prices.csv")
-    history_csv = os.path.join(data_dir, "prices_history.csv")
-    rolling_history_csv = os.path.join(data_dir, "prices_history_90_days.csv")
-    header = ["Fund", "Date", "Price", "Currency"]
 
     incoming = []
     for row in results:
@@ -638,52 +702,204 @@ def write_results(results, data_dir=None):
         if is_usable_price(price):
             incoming.append([fund, date_text, price, currency])
 
-    history_rows = read_history_rows(history_csv)
+    history_rows = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
     for row in incoming:
         history_rows[(row[0], row[1])] = row
 
-    ordered = sorted(history_rows.values(), key=lambda row: (row[1], row[0]))
-
-    with open(history_csv, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(header)
-        writer.writerows(ordered)
-
-    latest_by_fund = {}
-    for row in incoming:
-        current = latest_by_fund.get(row[0])
-        if current is None or row[1] > current[1]:
-            latest_by_fund[row[0]] = row
-
+    latest = latest_rows_by_fund(incoming)
+    # A fund that could not be fetched still reports its last real price.
     for row in getattr(results, "carried", []):
-        latest_by_fund.setdefault(row[0], list(row))
+        latest.setdefault(row[0], list(row))
 
-    with open(latest_csv, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(header)
-        writer.writerows(latest_by_fund[fund] for fund in sorted(latest_by_fund))
+    write_history_files(list(history_rows.values()), data_dir, latest=latest)
 
-    reference_date = (
-        max(row[1] for row in incoming)
-        if incoming
-        else datetime.date.today().isoformat()
-    )
-    reference = datetime.date.fromisoformat(reference_date)
-    cutoff = reference - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
 
-    rolling_rows = []
-    for row in ordered:
+QUOTING_UNIT_FACTOR = 50
+FT_BACKFILL_PAUSE_SECONDS = 1
+
+
+class BackfillReport:
+    """Reconciliation of what a rebuild changed, per identifier."""
+
+    def __init__(self):
+        self.entries = []
+        self.failures = []
+        self.warnings = []
+
+    def to_markdown(self):
+        """Render the report for stdout and the Actions job summary."""
+        lines = [
+            "| Identifier | Before | Deleted | Inserted | First | Last | Ccy | Status |",
+            "|---|---:|---:|---:|---|---|---|---|",
+        ]
+        for entry in self.entries:
+            lines.append(
+                "| {identifier} | {before} | {deleted} | {inserted} | {first} | "
+                "{last} | {currency} | {status} |".format(**entry)
+            )
+
+        if self.warnings:
+            lines += ["", "**Warnings**", ""]
+            lines += [f"- {warning}" for warning in self.warnings]
+
+        if self.failures:
+            lines += ["", "**Failures**", ""]
+            lines += [f"- {failure}" for failure in self.failures]
+
+        return "\n".join(lines)
+
+
+def validate_backfill_args(args):
+    """Return an error message for an invalid backfill invocation, else None."""
+    if not getattr(args, "backfill", False):
+        return None
+
+    if getattr(args, "history", None):
+        return "--backfill cannot be combined with --history"
+
+    if not args.start:
+        return "--from is required when using --backfill"
+
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.start):
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    try:
+        start = datetime.date.fromisoformat(args.start)
+    except ValueError:
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    if start > datetime.date.today():
+        return "--from date is in the future"
+
+    return None
+
+
+def check_quoting_unit(identifier, quotes):
+    """Return a warning when a series looks like it changed quoting unit.
+
+    A switch between pence and pounds is a factor of 100. Flagging anything
+    above 50 catches it without firing on genuine daily moves, which do not
+    come close.
+    """
+    previous = None
+    for quote in quotes:
         try:
-            row_date = datetime.date.fromisoformat(row[1])
+            value = float(quote.price)
         except ValueError:
             continue
-        if cutoff <= row_date <= reference:
-            rolling_rows.append(row)
+        if (
+            previous
+            and value
+            and max(previous, value) / min(previous, value) > (QUOTING_UNIT_FACTOR)
+        ):
+            return (
+                f"{identifier}: price moved from {previous} to {value} on "
+                f"{quote.date}; check for a quoting unit change"
+            )
+        previous = value or previous
+    return None
 
-    with open(rolling_history_csv, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(header)
-        writer.writerows(rolling_rows)
+
+def backfill_history(specs, start, data_dir=None):
+    """Rebuild stored history from source data, from `start` onwards.
+
+    Deletes rather than upserting: carry-forward and scrape-dated rows sit on
+    dates the sources never report, so they have no incoming row to replace
+    them and an upsert alone would leave them in place.
+
+    An instrument whose fetch fails keeps every row it already had. Rows
+    earlier than `start`, and rows for identifiers no longer configured, are
+    preserved either way.
+
+    Args:
+        specs: FundSpec instances to rebuild
+        start: Inclusive ISO start date
+        data_dir: Directory for output files (default: DATA_DIR)
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    history_csv = os.path.join(data_dir, "prices_history.csv")
+    stored = read_history_rows(history_csv)
+    report = BackfillReport()
+    browser = LazyBrowser()
+
+    try:
+        for index, spec in enumerate(specs):
+            quotes, error = fetch_with_retries(
+                lambda: scrape_fund_quotes(
+                    spec.source, spec.lookup_id, start, browser=browser
+                )
+            )
+
+            if error:
+                report.failures.append(f"{spec.lookup_id}: {error}")
+                for identifier in spec.publish_ids:
+                    kept = [key for key in stored if key[0] == identifier]
+                    report.entries.append(
+                        {
+                            "identifier": identifier,
+                            "before": len(kept),
+                            "deleted": 0,
+                            "inserted": 0,
+                            "first": min((k[1] for k in kept), default="-"),
+                            "last": max((k[1] for k in kept), default="-"),
+                            "currency": "-",
+                            "status": "failed, kept existing",
+                        }
+                    )
+                continue
+
+            warning = check_quoting_unit(spec.lookup_id, quotes)
+            if warning:
+                report.warnings.append(warning)
+
+            for identifier in spec.publish_ids:
+                existing = [key for key in stored if key[0] == identifier]
+                doomed = [key for key in existing if key[1] >= start]
+                for key in doomed:
+                    del stored[key]
+
+                for quote in quotes:
+                    if not is_usable_price(quote.price):
+                        continue
+                    stored[(identifier, quote.date)] = [
+                        identifier,
+                        quote.date,
+                        quote.price,
+                        quote.currency,
+                    ]
+
+                report.entries.append(
+                    {
+                        "identifier": identifier,
+                        "before": len(existing),
+                        "deleted": len(doomed),
+                        "inserted": len(quotes),
+                        "first": quotes[0].date if quotes else "-",
+                        "last": quotes[-1].date if quotes else "-",
+                        "currency": quotes[0].currency if quotes else "-",
+                        "status": "rebuilt",
+                    }
+                )
+
+            # The FT endpoint is unofficial; do not hammer it across 26 funds.
+            if spec.source.upper() == "FT" and index < len(specs) - 1:
+                time.sleep(FT_BACKFILL_PAUSE_SECONDS)
+    finally:
+        browser.close()
+
+    rows = [row for row in stored.values() if is_usable_price(row[2])]
+    write_history_files(rows, data_dir)
+
+    for row in latest_rows_by_fund(rows).values():
+        write_latest_price_file(row[0], row[2], data_dir)
+
+    return report
 
 
 def parse_arguments(args=None):
@@ -699,7 +915,8 @@ def parse_arguments(args=None):
         description="Fund Price Scraper with Historical Data Support",
         epilog="Examples:\n"
         "  Normal mode: python scrape_fund_price.py\n"
-        "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31",
+        "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
+        "  Backfill:   python scrape_fund_price.py --backfill --from 2023-01-01",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -719,6 +936,18 @@ def parse_arguments(args=None):
         type=str,
         metavar="YYYY-MM-DD",
         help="End date in YYYY-MM-DD format (optional, defaults to today)",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Rebuild stored history from source data (requires --from)",
+    )
+    parser.add_argument(
+        "--from",
+        dest="start",
+        type=str,
+        metavar="YYYY-MM-DD",
+        help="Alias for --start; the date to rebuild history from",
     )
 
     return parser.parse_args(args)
@@ -777,6 +1006,27 @@ def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
 def main():
     """Main function to run the fund price scraper."""
     args = parse_arguments()
+
+    if args.backfill:
+        error = validate_backfill_args(args)
+        if error:
+            print(f"Error: {error}")
+            raise SystemExit(2)
+
+        specs = read_fund_specs(FUNDS_FILE)
+        report = backfill_history(specs, args.start)
+        summary = report.to_markdown()
+        print(summary)
+
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+            with open(step_summary, "a", encoding="utf-8") as f:
+                f.write(f"## Backfill from {args.start}\n\n{summary}\n")
+
+        # Everything obtainable has been written before signalling failure.
+        if report.failures:
+            raise SystemExit(1)
+        return
 
     # Check if historical data mode
     if args.history:

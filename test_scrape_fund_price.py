@@ -28,6 +28,8 @@ from scrape_fund_price import (
     read_fund_specs,
     backfill_history,
     validate_backfill_args,
+    BackfillReport,
+    check_quoting_unit,
 )
 
 
@@ -608,6 +610,7 @@ class TestFundPriceScraper(unittest.TestCase):
         # Mock the arguments to return normal mode (no history)
         mock_args = MagicMock()
         mock_args.history = None
+        mock_args.backfill = False
         mock_parse.return_value = mock_args
 
         # Mock the functions
@@ -633,6 +636,7 @@ class TestFundPriceScraper(unittest.TestCase):
         """Test main exits non-zero when fallback prices were used after failures."""
         mock_args = MagicMock()
         mock_args.history = None
+        mock_args.backfill = False
         mock_parse.return_value = mock_args
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
 
@@ -911,7 +915,9 @@ class TestMainEntryPoint(unittest.TestCase):
     @patch("scrape_fund_price.parse_arguments")
     def test_main_history_without_start_date_errors(self, mock_args, mock_print):
         """Test --history without --start reports an error and stops."""
-        mock_args.return_value = MagicMock(history="AAPL", start=None, end=None)
+        mock_args.return_value = MagicMock(
+            history="AAPL", start=None, end=None, backfill=False
+        )
         main()
         mock_print.assert_called_once_with(
             "Error: --start date is required when using --history"
@@ -922,7 +928,9 @@ class TestMainEntryPoint(unittest.TestCase):
     @patch("scrape_fund_price.parse_arguments")
     def test_main_history_success_prints_path(self, mock_args, mock_fetch, mock_print):
         """Test successful historical retrieval reports the saved file."""
-        mock_args.return_value = MagicMock(history="AAPL", start="2024-01-01", end=None)
+        mock_args.return_value = MagicMock(
+            history="AAPL", start="2024-01-01", end=None, backfill=False
+        )
         mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
         main()
         mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
@@ -936,7 +944,7 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_history_error_is_reported(self, mock_args, mock_fetch, mock_print):
         """Test a failed historical retrieval surfaces the error message."""
         mock_args.return_value = MagicMock(
-            history="BADSYM", start="2024-01-01", end=None
+            history="BADSYM", start="2024-01-01", end=None, backfill=False
         )
         mock_fetch.return_value = "Error: No data found for symbol BADSYM"
         main()
@@ -1356,7 +1364,9 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self, mock_args, mock_read, mock_scrape, mock_write
     ):
         """Test output is written even when some funds failed."""
-        mock_args.return_value = MagicMock(history=None, start=None, end=None)
+        mock_args.return_value = MagicMock(
+            history=None, start=None, end=None, backfill=False
+        )
         mock_read.return_value = [("GF", "QQQ"), ("GF", "GRAB")]
         results = ScrapeResults(
             [["QQQ", "2026-09-18", "721.45", "USD"]],
@@ -1379,7 +1389,9 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self, mock_args, mock_read, mock_scrape, mock_write
     ):
         """Test a run with no failures completes normally."""
-        mock_args.return_value = MagicMock(history=None, start=None, end=None)
+        mock_args.return_value = MagicMock(
+            history=None, start=None, end=None, backfill=False
+        )
         mock_read.return_value = [("GF", "QQQ")]
         mock_scrape.return_value = ScrapeResults(
             [["QQQ", "2026-09-18", "721.45", "USD"]]
@@ -1572,7 +1584,6 @@ class TestAliasPublishing(unittest.TestCase):
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
 
-
 class TestBackfillArguments(unittest.TestCase):
     """Test the backfill command-line mode."""
 
@@ -1590,9 +1601,7 @@ class TestBackfillArguments(unittest.TestCase):
 
     def test_validate_rejects_missing_start(self):
         """Test the missing start date is reported, not assumed."""
-        self.assertIn(
-            "--from", validate_backfill_args(parse_arguments(["--backfill"]))
-        )
+        self.assertIn("--from", validate_backfill_args(parse_arguments(["--backfill"])))
 
     def test_validate_rejects_malformed_start(self):
         """Test a non-ISO date is rejected."""
@@ -1782,9 +1791,7 @@ class TestBackfillRebuild(unittest.TestCase):
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_legacy_three_column_history_is_rebuilt(self, mock_quotes):
         """Test a pre-SPEC-003 file is readable and comes out with currencies."""
-        self._seed(
-            [["QQQ", "2026-09-19", "700.00"]], header=("Fund", "Date", "Price")
-        )
+        self._seed([["QQQ", "2026-09-19", "700.00"]], header=("Fund", "Date", "Price"))
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
         backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
@@ -1826,7 +1833,10 @@ class TestBackfillReporting(unittest.TestCase):
             writer = csv.writer(f)
             writer.writerow(["Fund", "Date", "Price", "Currency"])
             writer.writerows(
-                [["QQQ", "2026-09-19", "700.00", ""], ["QQQ", "2026-09-20", "700.00", ""]]
+                [
+                    ["QQQ", "2026-09-19", "700.00", ""],
+                    ["QQQ", "2026-09-20", "700.00", ""],
+                ]
             )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
@@ -1876,6 +1886,225 @@ class TestBackfillReporting(unittest.TestCase):
             [FundSpec("GF", "AAA", ())], "2023-01-01", self.test_dir
         )
         self.assertEqual(report.warnings, [])
+
+
+class TestBackfillMainMode(unittest.TestCase):
+    """Test the --backfill entry point."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_invalid_invocation_exits_two_without_fetching(self, mock_args, mock_print):
+        """Test a bad invocation is rejected before any network call."""
+        mock_args.return_value = MagicMock(backfill=True, start=None, history=None)
+
+        with self.assertRaises(SystemExit) as error:
+            main()
+
+        self.assertEqual(error.exception.code, 2)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_successful_backfill_prints_the_report(
+        self, mock_args, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the reconciliation report reaches stdout."""
+        mock_args.return_value = MagicMock(
+            backfill=True, start="2023-01-01", history=None
+        )
+        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "QQQ",
+                "before": 1,
+                "deleted": 1,
+                "inserted": 2,
+                "first": "2023-01-03",
+                "last": "2026-09-18",
+                "currency": "USD",
+                "status": "rebuilt",
+            }
+        )
+        mock_backfill.return_value = report
+
+        main()
+
+        self.assertTrue(any("QQQ" in str(c) for c in mock_print.call_args_list))
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_failures_exit_non_zero_after_writing(
+        self, mock_args, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the job fails loudly, but only after the report is produced."""
+        mock_args.return_value = MagicMock(
+            backfill=True, start="2023-01-01", history=None
+        )
+        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        report = BackfillReport()
+        report.failures.append("QQQ: Error: Timeout")
+        mock_backfill.return_value = report
+
+        with self.assertRaises(SystemExit) as error:
+            main()
+
+        self.assertEqual(error.exception.code, 1)
+        self.assertTrue(mock_print.called)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_report_is_added_to_the_actions_job_summary(
+        self, mock_args, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the report appears on the workflow run page when in Actions."""
+        mock_args.return_value = MagicMock(
+            backfill=True, start="2023-01-01", history=None
+        )
+        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "QQQ",
+                "before": 0,
+                "deleted": 0,
+                "inserted": 1,
+                "first": "2026-09-18",
+                "last": "2026-09-18",
+                "currency": "USD",
+                "status": "rebuilt",
+            }
+        )
+        mock_backfill.return_value = report
+
+        summary_path = os.path.join(self.test_dir, "summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            main()
+
+        with open(summary_path, encoding="utf-8") as f:
+            written = f.read()
+        self.assertIn("Backfill from 2023-01-01", written)
+        self.assertIn("QQQ", written)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_no_summary_written_outside_actions(
+        self, mock_args, mock_specs, mock_backfill, mock_print
+    ):
+        """Test a local run does not require the Actions environment."""
+        mock_args.return_value = MagicMock(
+            backfill=True, start="2023-01-01", history=None
+        )
+        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        mock_backfill.return_value = BackfillReport()
+
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+        with patch.dict(os.environ, env, clear=True):
+            main()
+
+        self.assertTrue(mock_print.called)
+
+
+class TestBackfillReportRendering(unittest.TestCase):
+    """Test report rendering details."""
+
+    def test_warnings_and_failures_are_listed(self):
+        """Test problems are visible in the rendered report."""
+        report = BackfillReport()
+        report.warnings.append("DPYG.L: possible quoting unit change")
+        report.failures.append("QQQ: Error: Timeout")
+        text = report.to_markdown()
+        self.assertIn("**Warnings**", text)
+        self.assertIn("DPYG.L", text)
+        self.assertIn("**Failures**", text)
+        self.assertIn("QQQ", text)
+
+    def test_clean_report_has_no_problem_sections(self):
+        """Test a clean rebuild does not print empty sections."""
+        text = BackfillReport().to_markdown()
+        self.assertNotIn("**Warnings**", text)
+        self.assertNotIn("**Failures**", text)
+
+    def test_validate_ignores_non_backfill_runs(self):
+        """Test the daily run is not subject to backfill validation."""
+        args = parse_arguments([])
+        self.assertIsNone(validate_backfill_args(args))
+
+    def test_quoting_unit_check_skips_non_numeric_prices(self):
+        """Test a stray non-numeric value does not crash the check."""
+        quotes = [
+            Quote("2026-09-17", "not-a-number", "GBP"),
+            Quote("2026-09-18", "5.06", "GBP"),
+        ]
+        self.assertIsNone(check_quoting_unit("AAA", quotes))
+
+
+class TestBackfillPacing(unittest.TestCase):
+    """Test the rebuild is polite to the unofficial FT endpoint."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @patch("scrape_fund_price.time.sleep")
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_pauses_between_ft_funds(self, mock_quotes, mock_sleep):
+        """Test consecutive FT fetches are spaced out."""
+        mock_quotes.return_value = [Quote("2026-09-18", "7.15", "GBP")]
+        backfill_history(
+            [FundSpec("FT", "ISIN1", ()), FundSpec("FT", "ISIN2", ())],
+            "2023-01-01",
+            self.test_dir,
+        )
+        self.assertTrue(mock_sleep.called)
+
+    @patch("scrape_fund_price.time.sleep")
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_does_not_pause_for_api_funds(self, mock_quotes, mock_sleep):
+        """Test the API route is not slowed down unnecessarily."""
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+        backfill_history(
+            [FundSpec("GF", "QQQ", ()), FundSpec("GF", "GRAB", ())],
+            "2023-01-01",
+            self.test_dir,
+        )
+        mock_sleep.assert_not_called()
+
+    @patch("scrape_fund_price.time.sleep")
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_failed_instrument_appears_in_the_report(self, mock_quotes, mock_sleep):
+        """Test a failure is reported per identifier with its kept row count."""
+        history = os.path.join(self.test_dir, "prices_history.csv")
+        with open(history, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Fund", "Date", "Price", "Currency"])
+            writer.writerow(["QQQ", "2026-09-18", "721.45", "USD"])
+
+        mock_quotes.side_effect = Exception("Network error")
+        report = backfill_history(
+            [FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir
+        )
+
+        entry = next(e for e in report.entries if e["identifier"] == "QQQ")
+        self.assertEqual(entry["status"], "failed, kept existing")
+        self.assertEqual(entry["before"], 1)
+        self.assertEqual(entry["deleted"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
