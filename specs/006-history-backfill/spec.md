@@ -51,7 +51,7 @@ sit on dates the source never reports, so an upsert would leave them behind.
 - Every instrument in `funds.txt` rebuilt from its source, under all of its identifiers
 - An instrument whose fetch fails keeps its existing data and is reported
 - Rows before the start date, and rows for identifiers no longer configured, are preserved
-- The run is idempotent
+- The run never loses rows: repeated rebuilds converge, and are byte-identical when the source answers consistently
 - `latest_prices.csv`, `prices_history_90_days.csv` and the `.price` files are regenerated
 - FX pairs are rebuilt by the same mechanism once SPEC-005 exists
 - A reconciliation report is printed and added to the Actions job summary
@@ -78,7 +78,7 @@ sit on dates the source never reports, so an upsert would leave them behind.
 - [ ] Every row carries a currency
 - [ ] `JFM0003373` and `0P00000YAN` hold identical series
 - [ ] `JFM0003373` on 2026-09-17 reads 192.43, having been stored against 2026-09-18
-- [ ] A second run produces no diff
+- [ ] A repeated run loses no rows (FT intermittently omits rows, so the file converges upward rather than being byte-identical every time)
 - [ ] `backfill.yml` runs from the Actions tab and commits the result
 - [ ] CI green on all three Python versions
 
@@ -90,6 +90,7 @@ sit on dates the source never reports, so an upsert would leave them behind.
 | An instrument that changed quoting unit would be mislabelled throughout | Warn when a day-on-day move exceeds a factor of 50 |
 | A split inside the window would distort the series | Warn if the split column is non-zero in range |
 | FT's unofficial endpoint could rate-limit a 26-fund run | Sequential, with a pause between funds |
+| FT intermittently omits rows, so a rebuild could delete real trading days | Keep stored rows the source omits when they already carry a currency, i.e. were themselves source-derived |
 | The rebuild replaces a committed data file | Git history retains the previous version |
 
 ## Constraints

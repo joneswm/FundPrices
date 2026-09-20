@@ -1926,6 +1926,7 @@ class TestBackfillMainMode(unittest.TestCase):
                 "identifier": "QQQ",
                 "before": 1,
                 "deleted": 1,
+                "retained": 0,
                 "inserted": 2,
                 "first": "2023-01-03",
                 "last": "2026-09-18",
@@ -1979,6 +1980,7 @@ class TestBackfillMainMode(unittest.TestCase):
                 "identifier": "QQQ",
                 "before": 0,
                 "deleted": 0,
+                "retained": 0,
                 "inserted": 1,
                 "first": "2026-09-18",
                 "last": "2026-09-18",
@@ -2104,6 +2106,80 @@ class TestBackfillPacing(unittest.TestCase):
         self.assertEqual(entry["status"], "failed, kept existing")
         self.assertEqual(entry["before"], 1)
         self.assertEqual(entry["deleted"], 0)
+
+
+class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
+    """Test a flaky source cannot silently delete real trading days.
+
+    FT's historical endpoint intermittently omits a row or two from the same
+    request (893 vs 895 rows for identical queries, verified against the live
+    endpoint). Delete-then-insert would drop those days on the next rebuild.
+    Rows that already carry a currency were themselves source-derived, so they
+    are kept when the source omits them; legacy rows, which predate the
+    currency column, are still removed.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.history = os.path.join(self.test_dir, "prices_history.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _seed(self, rows):
+        with open(self.history, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Fund", "Date", "Price", "Currency"])
+            writer.writerows(rows)
+
+    def _rows(self):
+        with open(self.history, newline="") as f:
+            return [r for r in csv.reader(f)][1:]
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_previously_sourced_row_survives_an_omission(self, mock_quotes):
+        """Test a day the source skipped this run is not lost."""
+        self._seed(
+            [
+                ["ISIN1", "2025-08-14", "8.29", "GBP"],
+                ["ISIN1", "2025-08-18", "8.48", "GBP"],
+            ]
+        )
+        mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
+
+        report = backfill_history(
+            [FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir
+        )
+
+        self.assertIn(["ISIN1", "2025-08-14", "8.29", "GBP"], self._rows())
+        entry = next(e for e in report.entries if e["identifier"] == "ISIN1")
+        self.assertEqual(entry["retained"], 1)
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_legacy_rows_without_currency_are_still_removed(self, mock_quotes):
+        """Test pre-SPEC-003 rows are not protected by the retention rule."""
+        self._seed([["ISIN1", "2025-08-14", "8.29", ""]])
+        mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
+
+        backfill_history([FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir)
+
+        self.assertEqual(self._rows(), [["ISIN1", "2025-08-18", "8.48", "GBP"]])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_weekend_rows_are_never_retained(self, mock_quotes):
+        """Test a carry-forward is removed even if it carries a currency."""
+        self._seed(
+            [
+                ["QQQ", "2026-09-18", "721.45", "USD"],
+                ["QQQ", "2026-09-19", "721.45", "USD"],  # Saturday
+                ["QQQ", "2026-09-20", "721.45", "USD"],  # Sunday
+            ]
+        )
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+
+        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+
+        self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
 
 if __name__ == "__main__":

@@ -1,17 +1,22 @@
-name: Daily Fund Price Scraper
+name: Rebuild Price History
 
+# Manual only. This rewrites stored history from source data, so it must never
+# run on a schedule, and must never run while the daily scrape is pushing.
 on:
-  schedule:
-    - cron: '30 22 * * *'  # 22:30 UTC, after the US close year-round (21:00 UTC in winter, 20:00 UTC in summer)
-  workflow_dispatch:     # Allows manual trigger
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: 'Rebuild history from this date (YYYY-MM-DD)'
+        required: true
+        default: '2023-01-01'
 
-# Shared with backfill.yml so a daily scrape and a rebuild cannot push at once.
+# Shared with scrape.yml so a rebuild and a daily scrape cannot push at once.
 concurrency:
   group: fundprices-data
   cancel-in-progress: false
 
 jobs:
-  scrape:
+  backfill:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,8 +33,8 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run scraper
-        run: python scrape_fund_price.py
+      - name: Rebuild history
+        run: python scrape_fund_price.py --backfill --from "${{ inputs.from_date }}"
 
       - name: Set up Git user
         if: always()
@@ -42,9 +47,9 @@ jobs:
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
 
-      - name: Commit and push results
+      - name: Commit and push rebuilt history
         if: always()
         run: |
           git add -f data/*.csv data/*.price
-          git commit -m "Update fund prices" || echo "No changes to commit"
+          git commit -m "Rebuild price history from ${{ inputs.from_date }}" || echo "No changes to commit"
           git push

@@ -729,13 +729,14 @@ class BackfillReport:
     def to_markdown(self):
         """Render the report for stdout and the Actions job summary."""
         lines = [
-            "| Identifier | Before | Deleted | Inserted | First | Last | Ccy | Status |",
-            "|---|---:|---:|---:|---|---|---|---|",
+            "| Identifier | Before | Deleted | Kept | Inserted | First | Last "
+            "| Ccy | Status |",
+            "|---|---:|---:|---:|---:|---|---|---|---|",
         ]
         for entry in self.entries:
             lines.append(
-                "| {identifier} | {before} | {deleted} | {inserted} | {first} | "
-                "{last} | {currency} | {status} |".format(**entry)
+                "| {identifier} | {before} | {deleted} | {retained} | {inserted} "
+                "| {first} | {last} | {currency} | {status} |".format(**entry)
             )
 
         if self.warnings:
@@ -800,6 +801,32 @@ def check_quoting_unit(identifier, quotes):
     return None
 
 
+def is_removable_row(row):
+    """Return True when a stored row may be deleted during a rebuild.
+
+    A rebuild replaces what the source reports, but sources are not perfectly
+    reliable: FT's historical endpoint intermittently omits a row or two from
+    an identical request (893 vs 895 rows, observed against the live endpoint,
+    with a narrow-window query confirming the omitted days are real). Deleting
+    every row the source did not return this time would silently lose real
+    trading days.
+
+    A row that already carries a currency came from a dated source fetch, so it
+    is kept when the source omits it. Rows with no currency predate the
+    currency column and are exactly the scrape-dated, carry-forward data the
+    rebuild exists to remove. A weekend row is never legitimate for these
+    sources, so it is always removable.
+    """
+    row_date = row[1]
+    currency = row[3] if len(row) > 3 else ""
+    try:
+        if datetime.date.fromisoformat(row_date).weekday() >= 5:
+            return True
+    except ValueError:
+        return True
+    return not currency
+
+
 def backfill_history(specs, start, data_dir=None):
     """Rebuild stored history from source data, from `start` onwards.
 
@@ -845,6 +872,7 @@ def backfill_history(specs, start, data_dir=None):
                             "identifier": identifier,
                             "before": len(kept),
                             "deleted": 0,
+                            "retained": len(kept),
                             "inserted": 0,
                             "first": min((k[1] for k in kept), default="-"),
                             "last": max((k[1] for k in kept), default="-"),
@@ -858,9 +886,18 @@ def backfill_history(specs, start, data_dir=None):
             if warning:
                 report.warnings.append(warning)
 
+            fetched_dates = {quote.date for quote in quotes}
             for identifier in spec.publish_ids:
                 existing = [key for key in stored if key[0] == identifier]
-                doomed = [key for key in existing if key[1] >= start]
+                doomed, retained = [], []
+                for key in existing:
+                    if key[1] < start or key[1] in fetched_dates:
+                        continue
+                    if is_removable_row(stored[key]):
+                        doomed.append(key)
+                    else:
+                        retained.append(key)
+
                 for key in doomed:
                     del stored[key]
 
@@ -879,6 +916,7 @@ def backfill_history(specs, start, data_dir=None):
                         "identifier": identifier,
                         "before": len(existing),
                         "deleted": len(doomed),
+                        "retained": len(retained),
                         "inserted": len(quotes),
                         "first": quotes[0].date if quotes else "-",
                         "last": quotes[-1].date if quotes else "-",
