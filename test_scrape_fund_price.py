@@ -298,7 +298,13 @@ class TestFundPriceScraper(unittest.TestCase):
             self.assertEqual(list(csv.reader(f)), expected)
 
     def test_write_results_limits_rolling_history_to_90_calendar_days(self):
-        """Test rolling history uses an inclusive 90-calendar-day window."""
+        """Test rolling history uses an inclusive 90-calendar-day window.
+
+        TOO_OLD and AT_CUTOFF are fetched this run so that the only thing
+        separating them is the date: the window also covers currently priced
+        funds only, and excluding them for both reasons at once would stop
+        this testing the cutoff at all.
+        """
         history_csv = os.path.join(self.test_dir, "prices_history.csv")
         with open(history_csv, "w", newline="") as file:
             writer = csv.writer(file)
@@ -312,7 +318,14 @@ class TestFundPriceScraper(unittest.TestCase):
                 ]
             )
 
-        write_results([["TODAY", "2025-04-01", "5.00", "GBP"]], self.test_dir)
+        write_results(
+            [
+                ["TODAY", "2025-04-01", "5.00", "GBP"],
+                ["AT_CUTOFF", "2025-01-02", "2.00", ""],
+                ["TOO_OLD", "2025-01-01", "1.00", ""],
+            ],
+            self.test_dir,
+        )
 
         with open(history_csv, "r") as file:
             full_history_rows = list(csv.reader(file))
@@ -3520,7 +3533,6 @@ class TestInvestingEmptyPayloads(unittest.TestCase):
             shutil.rmtree(test_dir)
 
 
-
 class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
     """Test the 90-day window tracks latest_prices.csv, not raw history.
 
@@ -3563,9 +3575,7 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         write_history_files(
             rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
         )
-        with open(
-            os.path.join(self.test_dir, "prices_history.csv"), newline=""
-        ) as f:
+        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
             stored = [row for row in csv.reader(f)][1:]
         self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
 

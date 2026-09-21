@@ -877,6 +877,10 @@ def write_history_files(rows, data_dir, latest=None):
     """
     ordered = write_history_csv(rows, data_dir)
 
+    # A caller that supplies `latest` is naming the funds it currently
+    # prices, and the rolling window follows that set: a closed holding can
+    # have real prices inside the last 90 days without being priced now.
+    current = None if latest is None else set(latest)
     if latest is None:
         latest = latest_rows_by_fund(ordered)
 
@@ -900,6 +904,8 @@ def write_history_files(rows, data_dir, latest=None):
         try:
             row_date = datetime.date.fromisoformat(row[1])
         except ValueError:
+            continue
+        if current is not None and row[0] not in current:
             continue
         if cutoff <= row_date <= reference:
             rolling_rows.append(row)

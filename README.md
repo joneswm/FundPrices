@@ -206,8 +206,10 @@ The application creates the following files in the `data/` directory:
 - `latest_prices.csv`: Most recent prices for each fund (overwritten each run)
 - `prices_history.csv`: Complete historical price data, including closed
   holdings imported once from `closed_holdings.txt`
-- `prices_history_90_days.csv`: Rolling window of the most recent 90 calendar days,
-  derived from the full history on every run
+- `prices_history_90_days.csv`: Rolling window of the most recent 90 calendar days
+  for the funds currently being priced, derived from the full history on every run.
+  A closed holding can have real prices inside that window without being priced now,
+  so it is excluded, as it is from `latest_prices.csv`
 - `fx_history.csv`: Exchange rates, GBP per 1 unit of the foreign currency
 - `latest_fx.csv`: Most recent rate per currency pair
 - `latest_<identifier>.price`: Individual price files for each fund
