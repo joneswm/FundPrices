@@ -39,6 +39,8 @@ from scrape_fund_price import (
     build_fx_summary,
     render_summary_markdown,
     write_summary,
+    canonical_source,
+    scrape_fund_quotes,
 )
 
 
@@ -2747,6 +2749,81 @@ class TestSummaryRendering(unittest.TestCase):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
         self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
 
+
+
+class TestSourceCodeCanonicalisation(unittest.TestCase):
+    """Test the GF -> YA rename and its deprecation alias."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _write(self, text):
+        path = os.path.join(self.test_dir, "funds.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_current_codes_pass_through_unchanged(self):
+        """Test canonical codes are left alone."""
+        for code in ("YA", "FT", "YH", "MS"):
+            self.assertEqual(canonical_source(code), code)
+
+    def test_deprecated_gf_maps_to_ya(self):
+        """Test GF still resolves, to the Yahoo API."""
+        self.assertEqual(canonical_source("GF"), "YA")
+
+    def test_yh_is_not_swept_into_the_alias(self):
+        """Test the Yahoo scraping code keeps its own meaning.
+
+        Reusing YH for the API would silently change which handler a stale
+        funds.txt line selects, which is why the rename chose YA.
+        """
+        self.assertEqual(canonical_source("YH"), "YH")
+        url, selector = get_source_config("YH", "IDTG.L")
+        self.assertTrue(url and selector)
+
+    @patch("builtins.print")
+    def test_deprecated_code_warns_naming_the_line(self, mock_print):
+        """Test the warning says where to fix the configuration."""
+        read_fund_specs(self._write("YA,QQQ\nGF,GRAB\n"))
+        warned = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("GF", warned)
+        self.assertIn("YA", warned)
+        self.assertIn("line 2", warned)
+
+    def test_parser_returns_canonical_sources(self):
+        """Test downstream code only ever sees one spelling."""
+        specs = read_fund_specs(self._write("GF,QQQ\nYA,GRAB\nFT,ISIN1\n"))
+        self.assertEqual([s.source for s in specs], ["YA", "YA", "FT"])
+
+    def test_ya_uses_the_api_and_needs_no_browser(self):
+        """Test the renamed code routes exactly as GF did."""
+        self.assertFalse(source_requires_browser("YA", "QQQ"))
+        with patch(
+            "scrape_fund_price.fetch_yahoo_quotes",
+            return_value=[Quote("2026-09-18", "721.45", "USD")],
+        ) as mock_quotes:
+            quotes = scrape_fund_quotes("YA", "QQQ", "2026-09-10")
+        self.assertEqual(quotes[0].price, "721.45")
+        mock_quotes.assert_called_once()
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_deprecated_code_still_scrapes_correctly(self, mock_quotes, mock_pw):
+        """Test an unmigrated funds.txt keeps producing prices."""
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+        results = scrape_funds(read_fund_specs(self._write("GF,QQQ\n")), self.test_dir)
+        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        mock_pw.assert_not_called()
+
+    def test_committed_funds_file_uses_only_current_codes(self):
+        """Test the repository's own configuration has been migrated."""
+        specs = read_fund_specs("funds.txt")
+        self.assertEqual({s.source for s in specs}, {"YA", "FT"})
+        self.assertEqual(len(specs), 26)
 
 if __name__ == "__main__":
     unittest.main()
