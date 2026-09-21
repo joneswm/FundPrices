@@ -18,6 +18,7 @@ DATA_DIR = "data"
 LATEST_CSV = os.path.join(DATA_DIR, "latest_prices.csv")
 HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
+CLOSED_HOLDINGS_FILE = "closed_holdings.txt"
 MAX_PRICE_ATTEMPTS = 3
 ROLLING_HISTORY_DAYS = 90
 SNAP_WINDOW_DAYS = 10
@@ -198,6 +199,97 @@ def read_fund_ids(filename):
     return [(spec.source, spec.lookup_id) for spec in read_fund_specs(filename)]
 
 
+class ClosedHolding(NamedTuple):
+    """One instrument imported once and then left alone.
+
+    A closed holding is no longer priced daily, so it is configured apart from
+    funds.txt: the daily run reads only that file and can never pick up a fund
+    that stopped trading. `identifier` is what the history is published under
+    and `lookup_id` is what the source is asked for; for these they differ,
+    because a SEDOL outlives the ticker its fund traded under.
+    """
+
+    identifier: str
+    source: str
+    lookup_id: str
+    currency: str
+    start: str
+    end: str
+
+
+def read_closed_holdings(filename=None):
+    """Read one-off import configuration.
+
+    Each line is `<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`,
+    with `#` comments and blank lines ignored.
+
+    The currency is configured rather than taken from the source, so the
+    import can check the two agree. That check exists because FT's ISIN lookup
+    silently resolved one of these funds to its German EUR listing and
+    returned a full window of plausible quotes for a holding priced in USD.
+
+    Raises:
+        ValueError: naming the offending line, for malformed lines, unparseable
+            or reversed dates, and repeated identifiers.
+    """
+    if filename is None:
+        filename = CLOSED_HOLDINGS_FILE
+
+    holdings = []
+    seen = {}
+
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) != 6 or not all(fields):
+                raise ValueError(
+                    f"closed holdings line {number}: expected "
+                    f"'<identifier>,<source>,<lookup_id>,<currency>,"
+                    f"<start>,<end>', got {line!r}"
+                )
+
+            identifier, source, lookup_id, currency, start, end = fields
+
+            for label, value in (("start", start), ("end", end)):
+                try:
+                    datetime.date.fromisoformat(value)
+                except ValueError:
+                    raise ValueError(
+                        f"closed holdings line {number}: {label} date "
+                        f"{value!r} is not a valid YYYY-MM-DD date"
+                    ) from None
+
+            if end < start:
+                raise ValueError(
+                    f"closed holdings line {number}: end {end!r} is before "
+                    f"start {start!r}"
+                )
+
+            if identifier in seen:
+                raise ValueError(
+                    f"closed holdings line {number}: identifier "
+                    f"{identifier!r} already used on line {seen[identifier]}"
+                )
+            seen[identifier] = number
+
+            holdings.append(
+                ClosedHolding(
+                    identifier,
+                    canonical_source(source, number),
+                    lookup_id,
+                    currency,
+                    start,
+                    end,
+                )
+            )
+
+    return holdings
+
+
 def as_fund_spec(entry):
     """Accept a FundSpec or a plain (source, identifier) pair.
 
@@ -362,6 +454,75 @@ def fetch_ft_quotes(isin, start, end=None):
     return quotes
 
 
+INVESTING_HISTORICAL_URL = (
+    "https://api.investing.com/api/financialdata/historical/{pair_id}"
+    "?start-date={start}&end-date={end}&time-frame=Daily&add-missing-rows=false"
+)
+INVESTING_HEADERS = {
+    # A bare "Mozilla/5.0" is refused with a 403; the endpoint wants a
+    # realistic browser string.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "domain-id": "uk",
+    "Accept": "application/json",
+}
+INVESTING_REQUEST_TIMEOUT = 30
+
+
+def fetch_investing_quotes(pair_id, start, end=None):
+    """Fetch dated daily closes for a delisted line from investing.com.
+
+    Used for a fund that was liquidated and has since disappeared from Yahoo
+    and FT entirely. justETF still carries it, but serves a converted and
+    rounded series that measured a median 1.6% away from the real closes when
+    checked against a fund both sources cover, so it is not a substitute.
+
+    Args:
+        pair_id: investing.com's internal numeric id for the listing
+        start: Inclusive ISO start date
+        end: Inclusive ISO end date, or None for today
+
+    Returns:
+        list[Quote], oldest first, with no currency: the endpoint does not
+        report one, so the caller supplies it from configuration.
+
+    Raises:
+        ValueError: no usable rows were returned for the window.
+    """
+    end = end or datetime.date.today().isoformat()
+
+    response = requests.get(
+        INVESTING_HISTORICAL_URL.format(pair_id=pair_id, start=start, end=end),
+        headers=INVESTING_HEADERS,
+        timeout=INVESTING_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    quotes = []
+    for row in response.json().get("data", []):
+        date_text = str(row.get("rowDateTimestamp", ""))[:10]
+        raw = str(row.get("last_closeRaw", "")).strip()
+        if not date_text:
+            continue
+        try:
+            # The endpoint stores float32, same as Yahoo, so the raw value
+            # carries the usual noise. Round-tripping it keeps a genuine half
+            # penny that the displayed two decimals would round away.
+            price = format_yahoo_price(float(raw))
+        except ValueError:
+            continue
+        quotes.append(Quote(date_text, price, ""))
+
+    quotes.sort(key=lambda quote: quote.date)
+
+    if not quotes:
+        raise ValueError(f"investing.com returned no rows for {pair_id}")
+
+    return quotes
+
+
 def fetch_price_api(symbol):
     """Fetch the latest price for a symbol using Yahoo Finance.
 
@@ -511,11 +672,11 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
 def source_requires_browser(source, fund_id):
     """Return True when a fund source needs Playwright scraping.
 
-    YA uses the Yahoo API and FT uses a plain HTTP endpoint, so neither needs
-    a browser on its normal path. FT can still fall back to scraping, which
-    starts the browser lazily at that point.
+    YA, FT and IV all reach dated HTTP endpoints, so none needs a browser on
+    its normal path. FT can still fall back to scraping, which starts the
+    browser lazily at that point.
     """
-    if source.upper() in ("YA", "FT"):
+    if source.upper() in ("YA", "FT", "IV"):
         return False
 
     url, selector = get_source_config(source, fund_id)
@@ -552,14 +713,17 @@ class LazyBrowser:
 def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
     """Return dated quotes for one fund from its configured source.
 
-    FT and GF use dated HTTP routes. YH and MS scrape a page that shows only
-    the current price, so their quotes carry the run date and no currency.
-    An FT failure falls back to scraping rather than losing the fund.
+    YA, FT and IV use dated HTTP routes. YH and MS scrape a page that shows
+    only the current price, so their quotes carry the run date and no
+    currency. An FT failure falls back to scraping rather than losing the fund.
     """
     code = source.upper()
 
     if code == "YA":
         return fetch_yahoo_quotes(fund_id, start, end)
+
+    if code == "IV":
+        return fetch_investing_quotes(fund_id, start, end)
 
     if code == "FT":
         try:
@@ -678,6 +842,25 @@ def latest_rows_by_fund(rows):
     return latest
 
 
+def write_history_csv(rows, data_dir):
+    """Write prices_history.csv, sorted by date then fund.
+
+    Split out so the closed-holding import can add to history without
+    touching the files that describe the current day.
+
+    Returns:
+        The rows as written, in order.
+    """
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+
+    with open_for_write(os.path.join(data_dir, "prices_history.csv")) as file:
+        writer = csv_writer(file)
+        writer.writerow(HISTORY_HEADER)
+        writer.writerows(ordered)
+
+    return ordered
+
+
 def write_history_files(rows, data_dir, latest=None):
     """Write the history, latest-price and rolling-window CSVs.
 
@@ -690,12 +873,7 @@ def write_history_files(rows, data_dir, latest=None):
         latest: Optional fund -> row mapping for latest_prices.csv; computed
             from `rows` when omitted
     """
-    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
-
-    with open_for_write(os.path.join(data_dir, "prices_history.csv")) as file:
-        writer = csv_writer(file)
-        writer.writerow(HISTORY_HEADER)
-        writer.writerows(ordered)
+    ordered = write_history_csv(rows, data_dir)
 
     if latest is None:
         latest = latest_rows_by_fund(ordered)
@@ -1513,15 +1691,124 @@ def backfill_history(specs, start, data_dir=None):
         browser.close()
 
     rows = [row for row in stored.values() if is_usable_price(row[2])]
-    write_history_files(rows, data_dir)
+    # latest_prices.csv and the .price files describe what a fund is worth
+    # now, so they cover configured funds only. History keeps everything,
+    # including closed holdings, which are imported separately and have no
+    # current value to report.
+    configured = {
+        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
+    }
+    latest = {
+        fund: row
+        for fund, row in latest_rows_by_fund(rows).items()
+        if fund in configured
+    }
+    write_history_files(rows, data_dir, latest=latest)
 
-    for row in latest_rows_by_fund(rows).values():
+    for row in latest.values():
         write_latest_price_file(row[0], row[2], data_dir)
 
     pairs = read_fx_pairs()
     if pairs:
         backfill_fx(pairs, start, data_dir, report=report)
 
+    return report
+
+
+def import_closed_holdings(holdings, data_dir=None):
+    """Import one-off history for instruments that are no longer held.
+
+    Writes prices_history.csv and nothing else. latest_prices.csv, the 90-day
+    window and the .price files all answer "what is this worth now"; a fund
+    that stopped trading has no answer, and writing one would churn against
+    the next daily run, which rebuilds those files from what it just fetched.
+
+    Upserts and never deletes. The daily run and the rebuild own the
+    identifiers in funds.txt; this owns identifiers that appear in neither, so
+    the two cannot tread on each other.
+
+    Args:
+        holdings: ClosedHolding instances to import
+        data_dir: Directory for output files (default: DATA_DIR)
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
+    report = BackfillReport()
+
+    for holding in holdings:
+        existing = [key for key in stored if key[0] == holding.identifier]
+        entry = {
+            "identifier": holding.identifier,
+            "before": len(existing),
+            "deleted": 0,
+            "retained": len(existing),
+            "inserted": 0,
+            "first": "-",
+            "last": "-",
+            "currency": holding.currency,
+            "status": "imported",
+        }
+
+        try:
+            quotes = scrape_fund_quotes(
+                holding.source, holding.lookup_id, holding.start, holding.end
+            )
+        except Exception as error:
+            report.failures.append(f"{holding.identifier}: {error}")
+            entry["status"] = "failed, kept existing"
+            report.entries.append(entry)
+            continue
+
+        wanted = sorted(
+            (
+                quote
+                for quote in quotes
+                if holding.start <= quote.date <= holding.end
+                and is_usable_price(quote.price)
+            ),
+            key=lambda quote: quote.date,
+        )
+
+        reported = {
+            quote.currency
+            for quote in wanted
+            if quote.currency and quote.currency != holding.currency
+        }
+        if reported:
+            report.failures.append(
+                f"{holding.identifier}: expected {holding.currency} but "
+                f"{holding.lookup_id} reported {', '.join(sorted(reported))}; "
+                f"the source may have resolved to a different listing"
+            )
+            entry["status"] = "skipped, currency mismatch"
+            report.entries.append(entry)
+            continue
+
+        warning = check_quoting_unit(holding.identifier, wanted)
+        if warning:
+            report.warnings.append(warning)
+
+        for quote in wanted:
+            stored[(holding.identifier, quote.date)] = [
+                holding.identifier,
+                quote.date,
+                quote.price,
+                holding.currency,
+            ]
+
+        entry["inserted"] = len(wanted)
+        if wanted:
+            entry["first"] = wanted[0].date
+            entry["last"] = wanted[-1].date
+        report.entries.append(entry)
+
+    write_history_csv(list(stored.values()), data_dir)
     return report
 
 
@@ -1564,6 +1851,11 @@ def parse_arguments(args=None):
         "--backfill",
         action="store_true",
         help="Rebuild stored history from source data (requires --from)",
+    )
+    parser.add_argument(
+        "--import-closed",
+        action="store_true",
+        help="Import one-off history for the instruments in closed_holdings.txt",
     )
     parser.add_argument(
         "--from",
@@ -1647,6 +1939,20 @@ def main():
                 f.write(f"## Backfill from {args.start}\n\n{summary}\n")
 
         # Everything obtainable has been written before signalling failure.
+        if report.failures:
+            raise SystemExit(1)
+        return
+
+    if args.import_closed:
+        report = import_closed_holdings(read_closed_holdings(CLOSED_HOLDINGS_FILE))
+        summary = report.to_markdown()
+        print(summary)
+
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+            with open(step_summary, "a", encoding="utf-8") as f:
+                f.write(f"## Closed-holding import\n\n{summary}\n")
+
         if report.failures:
             raise SystemExit(1)
         return

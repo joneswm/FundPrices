@@ -1,0 +1,42 @@
+# Closed holdings: instruments that were held once and are not priced daily.
+#
+# Deliberately separate from funds.txt. The daily scrape reads only funds.txt,
+# so nothing here is ever fetched on a schedule; these windows are imported
+# once with `python scrape_fund_price.py --import-closed` and then left alone.
+# A rebuild preserves them, because backfill_history only touches identifiers
+# it was given.
+#
+# Format: <identifier>,<source>,<lookup_id>,<currency>,<start>,<end>
+#
+# The identifier is what the history is published under; the lookup_id is what
+# the source is asked for. They differ here because a SEDOL outlives the
+# ticker its fund traded under. The currency is asserted against what the
+# source reports, so a lookup that resolves to a different listing fails
+# loudly instead of importing a full window of plausible wrong prices.
+
+# Global X Blockchain UCITS ETF, LSE USD line (IE000XAGSCY5).
+BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16
+
+# HANetf ICAV sub-fund IE000KDY10O3, LSE GBX line. One sub-fund under three
+# names: Global Metaverse until 2024-07-01, Web 3.0 until 2026-07-15, Future
+# of US Defence (SEAL) since. FT keys off the instrument, so SEAL:LSE:GBX
+# returns the whole continuous series.
+#
+# Not sourced from Yahoo: SEAL.L repeats 862.70 with zero volume for the 60
+# trading days from 2024-07-01, the transition date, then resumes at 774.40.
+# FT moves daily across that stretch and joins up with Yahoo's resumption.
+BMV7ZZ3,FT,SEAL:LSE:GBX,GBX,2024-03-21,2024-10-25
+
+# ETC Group Digital Assets & Blockchain Equity UCITS ETF, LSE GBX line
+# (IE00BMQ8YK98). Closed 2024-03-14, final NAV 3.0724 USD, merged into the
+# Metaverse ETF at a ratio of 0.290842 -- which is the holding above.
+#
+# The window ends 2024-03-13, the last day the line traded: volume runs at
+# ~50k to that date and then stops. There is no market price for 14-21 March,
+# and a flat carry-forward would be exactly the synthetic data this import
+# exists to replace.
+#
+# Yahoo and FT dropped the fund on liquidation. justETF still serves it, but
+# as a converted and rounded series that measured a median 1.6% (max 13.6%)
+# away from real closes when checked against a fund both sources cover.
+BN4MYX3,IV,1182866,GBX,2024-01-04,2024-03-13

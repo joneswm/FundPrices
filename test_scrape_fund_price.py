@@ -654,6 +654,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_args = MagicMock()
         mock_args.history = None
         mock_args.backfill = False
+        mock_args.import_closed = False
         mock_parse.return_value = mock_args
 
         # Mock the functions
@@ -682,6 +683,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_args = MagicMock()
         mock_args.history = None
         mock_args.backfill = False
+        mock_args.import_closed = False
         mock_parse.return_value = mock_args
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
 
@@ -970,7 +972,7 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_history_without_start_date_errors(self, mock_args, mock_print):
         """Test --history without --start reports an error and stops."""
         mock_args.return_value = MagicMock(
-            history="AAPL", start=None, end=None, backfill=False
+            history="AAPL", start=None, end=None, backfill=False, import_closed=False
         )
         main()
         mock_print.assert_called_once_with(
@@ -983,7 +985,11 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_history_success_prints_path(self, mock_args, mock_fetch, mock_print):
         """Test successful historical retrieval reports the saved file."""
         mock_args.return_value = MagicMock(
-            history="AAPL", start="2024-01-01", end=None, backfill=False
+            history="AAPL",
+            start="2024-01-01",
+            end=None,
+            backfill=False,
+            import_closed=False,
         )
         mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
         main()
@@ -998,7 +1004,11 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_history_error_is_reported(self, mock_args, mock_fetch, mock_print):
         """Test a failed historical retrieval surfaces the error message."""
         mock_args.return_value = MagicMock(
-            history="BADSYM", start="2024-01-01", end=None, backfill=False
+            history="BADSYM",
+            start="2024-01-01",
+            end=None,
+            backfill=False,
+            import_closed=False,
         )
         mock_fetch.return_value = "Error: No data found for symbol BADSYM"
         main()
@@ -1421,7 +1431,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     ):
         """Test output is written even when some funds failed."""
         mock_args.return_value = MagicMock(
-            history=None, start=None, end=None, backfill=False
+            history=None, start=None, end=None, backfill=False, import_closed=False
         )
         mock_read.return_value = [("GF", "QQQ"), ("GF", "GRAB")]
         results = ScrapeResults(
@@ -1448,7 +1458,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     ):
         """Test a run with no failures completes normally."""
         mock_args.return_value = MagicMock(
-            history=None, start=None, end=None, backfill=False
+            history=None, start=None, end=None, backfill=False, import_closed=False
         )
         mock_read.return_value = [("GF", "QQQ")]
         mock_scrape.return_value = ScrapeResults(
@@ -2944,7 +2954,6 @@ class TestLineEndings(unittest.TestCase):
         self.assertNoCarriageReturns("latest_AAA.price")
 
 
-
 class TestClosedHoldingConfiguration(unittest.TestCase):
     """Test the closed-holdings config, which is deliberately not funds.txt.
 
@@ -3381,6 +3390,7 @@ class TestClosedImportMainMode(unittest.TestCase):
         mock_import.return_value = report
         with self.assertRaises(SystemExit):
             main()
+
 
 if __name__ == "__main__":
     unittest.main()
