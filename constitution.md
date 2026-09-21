@@ -259,20 +259,24 @@ def test_api(self):
 File: `funds.txt`
 
 ```
-<SOURCE>,<IDENTIFIER>    # Comment
+<SOURCE>,<IDENTIFIER>[,<ALIAS>]    # Comment
 
 # Examples:
 FT,GB00B1FXTF86    # Financial Times
+YA,AAPL            # Yahoo Finance API
 YH,IDTG.L          # Yahoo Finance (web scraping)
-MS,LU0196696453    # Morningstar
-GF,AAPL            # Yahoo Finance API (for stocks)
 ```
 
 ### Source Codes
-- `FT` - Financial Times (web scraping)
+- `YA` - Yahoo Finance API (uses yfinance library)
+- `FT` - Financial Times (HTTP endpoint, scraping fallback)
+- `IV` - investing.com (HTTP endpoint; one-off imports only)
 - `YH` - Yahoo Finance (web scraping)
 - `MS` - Morningstar (web scraping)
-- `GF` - Yahoo Finance API (uses yfinance library)
+- `GF` - deprecated alias for `YA`; warns and still resolves
+
+Closed holdings use the same source codes but a separate file,
+`closed_holdings.txt`, so the daily run cannot pick them up.
 
 ### Configuration Validation
 - Validate source codes on read

@@ -8,7 +8,7 @@ This document provides detailed API documentation for the Fund Price Scraping pr
 
 One configured instrument.
 
-- `source` (str): canonical source code (`YA`, `FT`, `YH`, `MS`). `GF` is accepted on input and canonicalised to `YA`
+- `source` (str): canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`). `GF` is accepted on input and canonicalised to `YA`
 - `lookup_id` (str): the identifier sent to the source
 - `aliases` (tuple): extra identifiers to publish under
 - `publish_ids` (property): `lookup_id` followed by each alias
@@ -288,6 +288,58 @@ Returns the most recent usable price for a fund, checked in order:
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
 - `source_requires_browser(source, fund_id)` - False for `YA` (API) and `FT` (HTTP), so
   Playwright is only launched when genuinely needed
+
+## Closed Holdings
+
+Instruments held once and no longer priced daily. Configured in
+`closed_holdings.txt`, separate from `funds.txt` so the daily run cannot reach
+them, and imported once with `--import-closed`.
+
+### `ClosedHolding(identifier, source, lookup_id, currency, start, end)`
+
+One instrument imported once and then left alone.
+
+- `identifier` (str): what the history is published under
+- `source` (str): canonical source code, as for `FundSpec`
+- `lookup_id` (str): the identifier sent to the source, which may differ from
+  `identifier` when a SEDOL outlives the ticker its fund traded under
+- `currency` (str): asserted against what the source reports
+- `start`, `end` (str): inclusive ISO window actually held
+
+### `read_closed_holdings(filename=None)`
+
+Reads one-off import configuration, defaulting to `CLOSED_HOLDINGS_FILE`.
+
+**Line grammar:** `<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`.
+Blank lines and `#` comments are ignored.
+
+**Raises** `ValueError` naming the line for a malformed line, an unparseable or
+reversed date, or a repeated identifier.
+
+### `fetch_investing_quotes(pair_id, start, end=None)`
+
+Dated daily closes from investing.com, for a delisted line that Yahoo and FT no
+longer carry. Returns `list[Quote]` oldest first with **no currency**: the
+endpoint does not report one, so the caller supplies it from configuration.
+Prices are float32 round-tripped, keeping a genuine half penny that the
+displayed two decimals would round away.
+
+**Raises** `ValueError` when no usable rows are returned.
+
+### `import_closed_holdings(holdings, data_dir=None)`
+
+Imports each window and returns a `BackfillReport`.
+
+Writes `prices_history.csv` and nothing else: `latest_prices.csv`, the 90-day
+window and the `.price` files describe a current value that a closed holding
+does not have. Upserts and never deletes, so it cannot tread on the identifiers
+owned by the daily run or a rebuild.
+
+A holding whose source reports a currency other than the configured one is
+skipped with a failure recorded, rather than importing a window of prices for
+the wrong listing. Sources are asked one day past `end`, because Yahoo treats
+the end date as exclusive while FT and investing.com treat it as inclusive; the
+window filter clips the extra day.
 
 ## Daily Summary
 

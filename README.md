@@ -64,6 +64,43 @@ fails immediately with the line number.
 symbols (e.g. `AAPL`, `IDTG.L`, `0P00000YAN`). The older code `GF` still works and
 warns; it dated from a brief spell using Google Finance.
 
+### Closed Holdings
+
+Instruments that were held once and are no longer priced daily live in
+`closed_holdings.txt`, deliberately apart from `funds.txt`. Each line is
+`<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`.
+
+```
+BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16
+BMV7ZZ3,FT,SEAL:LSE:GBX,GBX,2024-03-21,2024-10-25
+```
+
+The daily scrape reads only `funds.txt`, so nothing here is ever fetched on a
+schedule. The windows are imported once:
+
+```bash
+python scrape_fund_price.py --import-closed
+```
+
+The import writes `prices_history.csv` and nothing else. `latest_prices.csv`, the
+90-day window and the `.price` files all answer "what is this worth now", and a
+fund that stopped trading has no answer; writing one would churn against the next
+daily run. A rebuild leaves these rows alone, because `--backfill` only touches
+the identifiers it is given.
+
+`identifier` is what the history is published under and `lookup_id` is what the
+source is asked for. The two differ when a SEDOL outlives the ticker its fund
+traded under: `BMV7ZZ3` is one HANetf sub-fund that has traded under three names.
+
+`currency` is asserted against what the source reports, so a lookup that resolves
+to a different listing fails loudly instead of importing a full window of
+plausible wrong prices. That check exists because FT's ISIN lookup silently
+redirected one of these funds to its German EUR line and returned 288 quotes for
+a holding priced in USD.
+
+The end date is inclusive for every source. Yahoo's daily bars treat it as
+exclusive, so the import asks for one day more and clips the result.
+
 ### Usage
 
 #### Rebuild History (Backfill)
@@ -151,10 +188,15 @@ final value on the next run. Weekend bars are never stored.
 
 | Source | Code | Method | Example | Status |
 |--------|------|--------|---------|--------|
-| Financial Times | FT | Web Scraping | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | ✅ Implemented |
-| Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | ✅ Implemented |
-| Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | ✅ Implemented |
-| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | ✅ Implemented |
+| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 20 funds + 2 closed holdings |
+| Financial Times | FT | HTTP endpoint, scraping fallback | `https://markets.ft.com/data/funds/tearsheet/historical?s=GB00B1FXTF86` | 6 funds + 1 closed holding |
+| investing.com | IV | HTTP endpoint (undocumented) | `https://api.investing.com/api/financialdata/historical/1182866` | 1 closed holding |
+| Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | supported, unused |
+| Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | supported, unused |
+
+`IV` exists for one liquidated fund that has since disappeared from both Yahoo
+and FT. Like the FT historical route it is an undocumented endpoint, so it is
+used only for one-off imports and never on a schedule.
 
 ## Output Files
 
@@ -162,7 +204,8 @@ The application creates the following files in the `data/` directory:
 
 ### Normal Mode
 - `latest_prices.csv`: Most recent prices for each fund (overwritten each run)
-- `prices_history.csv`: Complete historical price data
+- `prices_history.csv`: Complete historical price data, including closed
+  holdings imported once from `closed_holdings.txt`
 - `prices_history_90_days.csv`: Rolling window of the most recent 90 calendar days,
   derived from the full history on every run
 - `fx_history.csv`: Exchange rates, GBP per 1 unit of the foreign currency
