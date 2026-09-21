@@ -48,7 +48,7 @@ class DevEnvValidator:
     def check_dependencies(self):
         """Check if required dependencies are installed."""
         print("\n📦 Checking dependencies...")
-        required_packages = ['playwright', 'coverage']
+        required_packages = ['playwright', 'coverage', 'yfinance', 'requests', 'numpy']
         
         for package in required_packages:
             try:

@@ -772,9 +772,9 @@ class TestFunctionalScraping(unittest.TestCase):
         results = scrape_funds([("MS", "JFM0003373")], self.test_dir)
         self.assertUsableQuotes(results, "JFM0003373", expect_dated=False)
 
-    def test_functional_google_finance_scraping(self):
+    def test_functional_yahoo_api(self):
         """Functional test for the Yahoo Finance API (requires internet)."""
-        results = scrape_funds([("GF", "AAPL")], self.test_dir)
+        results = scrape_funds([("YA", "AAPL")], self.test_dir)
         self.assertUsableQuotes(results, "AAPL")
         self.assertTrue(all(row[3] == "USD" for row in results))
 
@@ -3591,6 +3591,154 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         ]
         write_history_files(rows, self.test_dir)
         self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
+
+
+class TestClosedHoldingCoverageGaps(unittest.TestCase):
+    """Test the closed-holding paths the first round of tests left unexercised.
+
+    The constitution asks for every line of a new feature to be tested; a
+    coverage review found four that were not.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_default_filename_is_the_committed_config(self):
+        """Test calling with no argument reads closed_holdings.txt."""
+        self.assertEqual(
+            read_closed_holdings(),
+            read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE),
+        )
+
+    @patch("scrape_fund_price.requests.get")
+    def test_investing_row_without_a_date_is_skipped(self, mock_get):
+        """Test a row that cannot be dated is dropped, not stored under ''."""
+        response = MagicMock()
+        response.json.return_value = {
+            "data": [
+                {"last_closeRaw": "200.00"},
+                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
+            ]
+        }
+        mock_get.return_value = response
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
+        """Test a pence/pounds switch inside a window is flagged for review.
+
+        An import runs once and is then trusted, so a source that changes
+        quoting unit mid-window has to be visible in the report.
+        """
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "8.49", "GBX"),
+            Quote("2023-01-04", "849.00", "GBX"),
+        ]
+        holding = ClosedHolding(
+            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
+        )
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(any("quoting unit" in w for w in report.warnings))
+
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
+    @patch("scrape_fund_price.parse_arguments")
+    def test_import_mode_writes_the_actions_job_summary(
+        self, mock_args, _read, mock_import
+    ):
+        """Test the reconciliation table reaches the Actions run page."""
+        mock_args.return_value = MagicMock(
+            backfill=False, history=None, import_closed=True
+        )
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "BKCH",
+                "before": 0,
+                "deleted": 0,
+                "retained": 0,
+                "inserted": 285,
+                "first": "2023-01-03",
+                "last": "2024-02-16",
+                "currency": "USD",
+                "status": "imported",
+            }
+        )
+        mock_import.return_value = report
+        summary_path = os.path.join(self.test_dir, "step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            main()
+        with open(summary_path, encoding="utf-8") as f:
+            written = f.read()
+        self.assertIn("Closed-holding import", written)
+        self.assertIn("BKCH", written)
+
+
+class TestSummaryRowMarkers(unittest.TestCase):
+    """Test the name column carries aliases and the failure marker.
+
+    The documentation promises that a failed instrument is marked `!` and that
+    an aliased fund shows both identifiers; neither was asserted anywhere.
+    """
+
+    def _row(self, **overrides):
+        values = dict(
+            name="0P00000YAN",
+            aliases=(),
+            currency="USD",
+            new_date="2026-09-18",
+            new="192.43",
+            old_date="2026-09-17",
+            old="193.03",
+            delta="-0.60",
+            pct_delta="-0.31",
+            age_days=0,
+            stale=False,
+            failed=False,
+        )
+        values.update(overrides)
+        return scrape_fund_price.SummaryRow(**values)
+
+    def test_aliases_are_shown_beside_the_lookup_identifier(self):
+        """Test a fund published under two identifiers names both."""
+        markdown = render_summary_markdown(
+            [self._row(aliases=("JFM0003373",))], [], "2026-09-18"
+        )
+        self.assertIn("0P00000YAN (JFM0003373)", markdown)
+
+    def test_a_failed_fetch_is_marked(self):
+        """Test a failure is not mistaken for a flat day."""
+        markdown = render_summary_markdown([self._row(failed=True)], [], "2026-09-18")
+        self.assertIn("0P00000YAN !", markdown)
+
+    def test_failure_takes_precedence_over_staleness(self):
+        """Test a fund that is both failed and stale shows the failure."""
+        markdown = render_summary_markdown(
+            [self._row(failed=True, stale=True)], [], "2026-09-18"
+        )
+        self.assertIn("0P00000YAN !", markdown)
+        self.assertNotIn("0P00000YAN ~", markdown)
+
+
+class TestFunctionalClosedHoldingSources(unittest.TestCase):
+    """Functional test for the source only closed holdings use (optional)."""
+
+    def test_functional_investing_history(self):
+        """Functional test for investing.com (requires internet connection).
+
+        Uses a liquidated fund, so the window is fixed and the values cannot
+        change; an outage or a block skips rather than fails.
+        """
+        try:
+            quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-10")
+        except Exception as error:
+            self.skipTest(f"source unavailable: {error}")
+        self.assertEqual(quotes[0], Quote("2024-01-04", "218.95", ""))
+        self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
 if __name__ == "__main__":

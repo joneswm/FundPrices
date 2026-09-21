@@ -396,7 +396,10 @@ def fetch_ft_quotes(isin, start, end=None):
     second returns the rows.
 
     Args:
-        isin: Fund ISIN as used in funds.txt
+        isin: Fund ISIN as used in funds.txt, or an explicit FT symbol such
+            as "SEAL:LSE:GBX". Prefer the symbol for anything exchange-listed:
+            an ISIN lookup lets FT choose the listing, and it has resolved an
+            LSE USD holding to its German EUR line.
         start: Inclusive ISO start date
         end: Inclusive ISO end date, or None for today
 
@@ -1842,7 +1845,8 @@ def parse_arguments(args=None):
         epilog="Examples:\n"
         "  Normal mode: python scrape_fund_price.py\n"
         "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
-        "  Backfill:   python scrape_fund_price.py --backfill --from 2023-01-01",
+        "  Backfill:   python scrape_fund_price.py --backfill --from 2023-01-01\n"
+        "  Closed:     python scrape_fund_price.py --import-closed",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
