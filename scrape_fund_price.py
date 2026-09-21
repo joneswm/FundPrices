@@ -1755,9 +1755,17 @@ def import_closed_holdings(holdings, data_dir=None):
             "status": "imported",
         }
 
+        # Sources disagree on the end date: Yahoo's daily bars treat it as
+        # exclusive, FT and investing.com as inclusive. Asking for one day
+        # more and letting the window filter clip it makes the convention
+        # irrelevant, rather than losing the last day from Yahoo alone.
+        fetch_end = (
+            datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
+        ).isoformat()
+
         try:
             quotes = scrape_fund_quotes(
-                holding.source, holding.lookup_id, holding.start, holding.end
+                holding.source, holding.lookup_id, holding.start, fetch_end
             )
         except Exception as error:
             report.failures.append(f"{holding.identifier}: {error}")

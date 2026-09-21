@@ -50,6 +50,7 @@ from scrape_fund_price import (
     read_closed_holdings,
     fetch_investing_quotes,
     import_closed_holdings,
+    read_history_rows,
 )
 
 # Point the module's default output directory at a scratch location for the
@@ -3048,13 +3049,27 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
         )[0]
         self.assertEqual(holding.source, "YA")
 
-    def test_committed_file_holds_the_three_closed_holdings(self):
+    def test_committed_file_holds_the_closed_holdings(self):
         """Test the repository's own configuration matches what was researched."""
         holdings = read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE)
         self.assertEqual(
             {h.identifier: h.source for h in holdings},
-            {"BKCH": "YA", "BMV7ZZ3": "FT", "BN4MYX3": "IV"},
+            {"BKCH": "YA", "BMV7ZZ3": "FT", "BN4MYX3": "IV", "SPOG": "YA"},
         )
+
+    def test_committed_windows_are_fully_present_in_history(self):
+        """Test the committed history actually covers every configured window.
+
+        The import is a one-off, so nothing re-runs to catch a window that
+        silently came back short: Yahoo treats the end date as exclusive and
+        BKCH first imported 284 rows for a 285-day window.
+        """
+        stored = read_history_rows(os.path.join("data", "prices_history.csv"))
+        for holding in read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE):
+            dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
+            self.assertTrue(dates, f"{holding.identifier} has no stored history")
+            self.assertEqual(dates[0], holding.start, holding.identifier)
+            self.assertEqual(dates[-1], holding.end, holding.identifier)
 
     def test_closed_holdings_are_absent_from_the_daily_configuration(self):
         """Test the daily run cannot pick up an instrument that stopped trading."""
@@ -3392,7 +3407,6 @@ class TestClosedImportMainMode(unittest.TestCase):
             main()
 
 
-
 class TestClosedHoldingWindowEnds(unittest.TestCase):
     """Test the last day of a window survives, whatever the source's convention.
 
@@ -3429,9 +3443,7 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
             "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
         )
         import_closed_holdings([holding], self.test_dir)
-        with open(
-            os.path.join(self.test_dir, "prices_history.csv"), newline=""
-        ) as f:
+        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
             rows = [row for row in csv.reader(f)][1:]
         self.assertEqual([row[1] for row in rows], ["2024-02-15", "2024-02-16"])
 
@@ -3446,9 +3458,7 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
             "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
         )
         import_closed_holdings([holding], self.test_dir)
-        with open(
-            os.path.join(self.test_dir, "prices_history.csv"), newline=""
-        ) as f:
+        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
             rows = [row for row in csv.reader(f)][1:]
         self.assertEqual([row[1] for row in rows], ["2024-02-16"])
 

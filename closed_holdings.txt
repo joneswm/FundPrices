@@ -40,3 +40,10 @@ BMV7ZZ3,FT,SEAL:LSE:GBX,GBX,2024-03-21,2024-10-25
 # as a converted and rounded series that measured a median 1.6% (max 13.6%)
 # away from real closes when checked against a fund both sources cover.
 BN4MYX3,IV,1182866,GBX,2024-01-04,2024-03-13
+
+# iShares Oil & Gas Exploration & Production UCITS ETF (IE00B6R51Z18).
+# SPOG is the LSE GBX line; IOGP is the USD line of the same share class, and
+# FT's ISIN lookup resolves to that one, so the symbol is used directly.
+# Yahoo's series is healthy here: 141 rows, no zero-volume days, no flat run
+# longer than one day.
+SPOG,YA,SPOG.L,GBp,2023-01-03,2023-07-25
