@@ -501,7 +501,9 @@ def fetch_investing_quotes(pair_id, start, end=None):
     response.raise_for_status()
 
     quotes = []
-    for row in response.json().get("data", []):
+    # A window after the fund stopped publishing comes back with "data"
+    # present but null, which is no rows rather than a crash.
+    for row in response.json().get("data") or []:
         date_text = str(row.get("rowDateTimestamp", ""))[:10]
         raw = str(row.get("last_closeRaw", "")).strip()
         if not date_text:

@@ -3054,7 +3054,14 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
         holdings = read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE)
         self.assertEqual(
             {h.identifier: h.source for h in holdings},
-            {"BKCH": "YA", "BMV7ZZ3": "FT", "BN4MYX3": "IV", "SPOG": "YA"},
+            {
+                "BKCH": "YA",
+                "BMV7ZZ3": "FT",
+                "BN4MYX3": "IV",
+                "SPOG": "YA",
+                "R2SC": "YA",
+                "CNDX": "YA",
+            },
         )
 
     def test_committed_windows_are_fully_present_in_history(self):
@@ -3461,7 +3468,6 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
         with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
             rows = [row for row in csv.reader(f)][1:]
         self.assertEqual([row[1] for row in rows], ["2024-02-16"])
-
 
 
 class TestInvestingEmptyPayloads(unittest.TestCase):

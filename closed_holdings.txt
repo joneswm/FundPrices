@@ -47,3 +47,16 @@ BN4MYX3,IV,1182866,GBX,2024-01-04,2024-03-13
 # Yahoo's series is healthy here: 141 rows, no zero-volume days, no flat run
 # longer than one day.
 SPOG,YA,SPOG.L,GBp,2023-01-03,2023-07-25
+
+# SPDR Russell 2000 US Small Cap UCITS ETF, LSE GBP line. Yahoo and FT agree
+# to within 0.011% across all 92 days.
+R2SC,YA,R2SC.L,GBP,2024-07-17,2024-11-22
+
+# iShares NASDAQ 100 UCITS ETF USD (Acc), LSE USD line (IE00B53SZB19). CNX1,
+# already in funds.txt, is the GBp line of the same share class.
+#
+# Not sourced from FT, which returns four extra rows dated 2023-05-08,
+# 2023-08-28, 2024-05-06 and 2024-05-27 -- all UK bank holidays, when the LSE
+# was shut. No other LSE instrument in this repository has a row on those
+# dates. Yahoo's 381 days agree with FT to within 0.0008% everywhere else.
+CNDX,YA,CNDX.L,USD,2023-01-03,2024-07-05
