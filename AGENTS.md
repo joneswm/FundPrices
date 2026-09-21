@@ -9,7 +9,10 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 
 - Open work: https://github.com/joneswm/FundPrices/issues
 - File new work as an issue — do **not** add to-do checkboxes to markdown files
-- Reference the issue number in branches, commits and PRs (e.g. `Fixes #12`)
+- Reference the issue number in commits (e.g. `Fixes #12`)
+- The maintainer's work, AI-assisted work included, is committed directly to `main`;
+  branches and pull requests are for outside contributors, Dependabot and experiments
+  (constitution section 7). Commit only when asked, and keep `main` green
 - Checkboxes remaining in `docs/` and `specs/` are either historical records of completed
   work, reusable process checklists, or template placeholders — none are open tasks
 

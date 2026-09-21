@@ -352,6 +352,9 @@ AI coding agents should read `AGENTS.md` for project-specific instructions inclu
 
 **🚨 MANDATORY: All contributions MUST follow Test-Driven Development (TDD)**
 
+The maintainer commits directly to `main` (see the [constitution](constitution.md),
+section 7). Everyone else:
+
 1. Fork the repository
 2. Create a feature branch
 3. **Follow TDD workflow**: RED-GREEN-REFACTOR cycle

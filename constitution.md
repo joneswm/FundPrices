@@ -1,6 +1,6 @@
 # FundPrices Project Constitution
 
-**Version**: 1.1  
+**Version**: 1.2  
 **Last Updated**: 2026-09-21  
 **Status**: Active
 
@@ -199,10 +199,19 @@ feat(api): Add Yahoo Finance API integration (SPEC-001)
 ```
 
 ### Branching Strategy
-- **Main branch**: Production-ready code
-- **Spec branches**: `spec/<spec-id>-<description>`
-- **Feature branches**: `feature/<description>`
-- **Bug fix branches**: `fix/<description>`
+- **Main branch**: Production-ready code, and where the maintainer works
+- **The maintainer commits directly to `main`**, including work done with an AI
+  assistant under the maintainer's direction. This is a single-maintainer project, and
+  a pull request with no second reviewer adds ceremony without adding a check
+- **What stands in for a merge gate**: a GitHub issue before the work starts, TDD
+  commits that show the failing test before the fix, and CI on every push. A red run on
+  `main` is fixed or reverted before anything else is done
+- **Branches and pull requests are for**: outside contributors, Dependabot, and any
+  change the maintainer wants to try without landing it, such as a large refactor or an
+  experiment. Name them `feature/<description>`, `fix/<description>` or
+  `spec/<spec-id>-<description>`
+- **Data and code are committed separately.** Files under `data/` are tracked, so stage
+  code by filename rather than with `git add -A`
 
 ---
 
@@ -215,9 +224,12 @@ feat(api): Add Yahoo Finance API integration (SPEC-001)
 - **Tasks provide** manageable units for AI
 
 ### Human Oversight
-- **Human review required** for all AI-generated code
+- **The maintainer directs and reviews** AI-assisted work: the assistant researches and
+  reports back before implementing anything that involves a judgement call, and reports
+  what it did, what it verified and what it got wrong
 - **Tests validate** AI implementations
-- **Code review** before merging
+- **Review happens in the session and on `main`**, not in a pull request; contributions
+  from anyone else are reviewed in a pull request before merging
 - **Verify alignment** with spec and constitution
 
 ### AI Collaboration Guidelines
@@ -294,7 +306,7 @@ Closed holdings use the same source codes but a separate file,
 ### GitHub Actions Requirements
 - **Test workflow**: Runs on every push/PR
 - **Scrape workflow**: Scheduled daily at 22:30 UTC, after the US close all year round
-- **All tests must pass** before merge
+- **All tests must pass** on every push to `main`, and before any pull request is merged
 - **Coverage reports** generated automatically
 
 ### Workflow Standards
@@ -377,21 +389,23 @@ cannot drift out of sync with the actual requirements.
 ## Enforcement
 
 ### Automated Enforcement
-- Pre-commit hooks check formatting
-- CI/CD enforces test coverage
-- Linting runs automatically
-- Tests must pass to merge
+- CI runs the tests on Python 3.10, 3.12 and 3.14 and enforces both coverage gates on
+  every push and pull request
+- Pre-commit hooks (`.pre-commit-config.yaml`) check formatting and linting where they
+  are installed; CI does not lint, so run Black before committing
+- A failing run on `main` is fixed or reverted before other work continues
 
 ### Manual Review
-- Code review required for all changes
+- The maintainer reviews every change: their own as they make it, AI-assisted work in
+  the session that produced it, and outside contributions in a pull request
 - Spec review before implementation
 - Architecture review for major changes
 - Documentation review for completeness
 
 ### Violations
-- **Minor violations**: Fix before merge
-- **Major violations**: Reject PR, request rework
-- **Repeated violations**: Team discussion and training
+- **Minor violations**: Fix in the next commit, or before merge for a pull request
+- **Major violations**: Revert from `main`, or reject the pull request and request rework
+- **Repeated violations**: Amend this constitution or the tooling so it cannot recur
 
 ---
 
@@ -412,6 +426,12 @@ This constitution is a living document. Amendments require:
   current source codes (`YA`, `IV`, `GF` as a deprecated alias) and the separate
   closed-holdings file; section 11 gives the real schedule (22:30 UTC); section 12
   names every runtime dependency
+- v1.2 (2026-09-21): Branching and review rewritten to match how the project is run.
+  v1.0 required feature branches and reviewed pull requests for every change, but every
+  feature since the Spec Kit migration was committed directly to `main` by a single
+  maintainer, with pull requests used only by Dependabot. Section 7 now makes direct
+  commits the rule for the maintainer and names what replaces the merge gate; sections
+  8 and Enforcement describe review as it actually happens and stop claiming CI lints
 
 ---
 

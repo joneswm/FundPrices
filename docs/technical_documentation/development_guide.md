@@ -221,6 +221,11 @@ FundPrices/
 ## Development Workflow
 
 ### 1. Feature Development
+
+The maintainer works directly on `main`, one RED/GREEN/REFACTOR commit at a time, with
+CI on every push as the gate (constitution, section 7). Outside contributors use a
+branch and a pull request:
+
 ```bash
 # Create feature branch
 git checkout -b feature/new-fund-source
@@ -232,9 +237,10 @@ git checkout -b feature/new-fund-source
 # Test changes
 python test_scrape_fund_price.py
 
-# Commit changes
-git add .
-git commit -m "Add new fund source support"
+# Commit changes. Stage by filename: files under data/ are tracked, and
+# `git add .` would sweep data changes into a code commit
+git add scrape_fund_price.py test_scrape_fund_price.py
+git commit -m "GREEN: Add new fund source support"
 
 # Push branch
 git push origin feature/new-fund-source
@@ -255,6 +261,9 @@ coverage html  # Generate HTML report
 ```
 
 ### 3. Code Review Process
+
+For pull requests from outside contributors:
+
 1. Create pull request
 2. Ensure all tests pass
 3. Request review from maintainers
@@ -431,10 +440,10 @@ test: add integration tests for new sources
 ```
 
 ### Branch Naming
+For contributors and experiments; the maintainer otherwise commits to `main`.
 - `feature/description`: New features
-- `bugfix/description`: Bug fixes
-- `hotfix/description`: Critical fixes
-- `docs/description`: Documentation updates
+- `fix/description`: Bug fixes
+- `spec/<spec-id>-description`: Work on a spec
 
 ### Pull Request Guidelines
 1. Keep PRs focused and small
