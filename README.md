@@ -47,8 +47,8 @@ Create or edit `funds.txt`. Each line is `<source>,<lookup_id>[,<alias>[;<alias>
 Blank lines and `#` comments are ignored.
 ```
 FT,GB00B1FXTF86             # Financial Times
-GF,AAPL                     # Yahoo Finance API
-GF,0P00000YAN,JFM0003373    # fetched once, published under both identifiers
+YA,AAPL                     # Yahoo Finance API
+YA,0P00000YAN,JFM0003373    # fetched once, published under both identifiers
 ```
 
 **Identifier aliases**: the optional third field lists extra identifiers to publish
@@ -60,9 +60,9 @@ The configuration is validated before any network call, so a malformed line, an
 empty or self-referencing alias, or an identifier repeated anywhere in the file
 fails immediately with the line number.
 
-**Note**: `GF` uses the Yahoo Finance API and requires standard ticker symbols
-(e.g. `AAPL`, `IDTG.L`, `0P00000YAN`). The name is a leftover from Google Finance
-and is a misnomer.
+**Note**: `YA` uses the Yahoo Finance API and takes that service's own ticker
+symbols (e.g. `AAPL`, `IDTG.L`, `0P00000YAN`). The older code `GF` still works and
+warns; it dated from a brief spell using Google Finance.
 
 ### Usage
 
@@ -154,7 +154,7 @@ final value on the next run. Weekend bars are never stored.
 | Financial Times | FT | Web Scraping | `https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86` | ✅ Implemented |
 | Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | ✅ Implemented |
 | Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | ✅ Implemented |
-| Yahoo Finance API | GF | API (yfinance) | `yf.Ticker("AAPL").info['currentPrice']` | ✅ Implemented |
+| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | ✅ Implemented |
 
 ## Output Files
 

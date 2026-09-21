@@ -61,6 +61,32 @@ class ScrapeResults(list):
         self.carried = carried or []
 
 
+# GF stood for Google Finance, which the project scraped for about eleven
+# minutes on 2025-10-19 before replacing it with the Yahoo API. It has meant
+# Yahoo ever since, so it is kept only as a deprecated spelling of YA.
+SOURCE_ALIASES = {"GF": "YA"}
+
+
+def canonical_source(code, line_number=None):
+    """Return the current name for a source code, warning on a deprecated one.
+
+    Canonicalising at the parser means every other call site knows exactly one
+    spelling, rather than each having to remember the alias.
+    """
+    upper = code.upper()
+    canonical = SOURCE_ALIASES.get(upper)
+    if canonical is None:
+        return upper
+
+    where = f" on line {line_number}" if line_number else ""
+    print(
+        f"Warning: source code {upper!r}{where} is deprecated; use "
+        f"{canonical!r} (Yahoo API). {upper!r} named Google Finance, which "
+        f"this project no longer uses."
+    )
+    return canonical
+
+
 class FundSpec(NamedTuple):
     """One configured instrument.
 
@@ -108,7 +134,8 @@ def read_fund_specs(filename):
                     f"'<source>,<identifier>[,<alias>]', got {line!r}"
                 )
 
-            source, lookup_id = fields[0], fields[1]
+            source = canonical_source(fields[0], number)
+            lookup_id = fields[1]
             aliases = []
             if len(fields) > 2 and fields[2]:
                 aliases = [alias.strip() for alias in fields[2].split(";")]
@@ -153,18 +180,25 @@ def read_fund_ids(filename):
 
 
 def as_fund_spec(entry):
-    """Accept a FundSpec or a plain (source, identifier) pair."""
+    """Accept a FundSpec or a plain (source, identifier) pair.
+
+    Also canonicalises the source code, so a spec built in code rather than
+    parsed from funds.txt cannot smuggle a deprecated spelling past the
+    dispatch points. Silent here: the parser already warns for file config.
+    """
     if isinstance(entry, FundSpec):
-        return entry
-    source, lookup_id = entry
-    return FundSpec(source, lookup_id, ())
+        source, lookup_id, aliases = entry.source, entry.lookup_id, entry.aliases
+    else:
+        source, lookup_id = entry
+        aliases = ()
+    return FundSpec(SOURCE_ALIASES.get(source.upper(), source), lookup_id, aliases)
 
 
 def get_source_config(source, fund_id):
     """Get URL and CSS selector configuration for web scraping sources.
 
-    Note: GF (Google Finance) source uses API instead of scraping,
-    so it's not included in this configuration.
+    Note: YA (Yahoo API) fetches rather than scrapes, so it has no entry
+    here. FT has one only as a fallback for when its HTTP endpoint fails.
 
     Args:
         source: Two-character source code (FT, YH, MS)
@@ -458,11 +492,11 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
 def source_requires_browser(source, fund_id):
     """Return True when a fund source needs Playwright scraping.
 
-    GF uses the Yahoo API and FT uses a plain HTTP endpoint, so neither needs
+    YA uses the Yahoo API and FT uses a plain HTTP endpoint, so neither needs
     a browser on its normal path. FT can still fall back to scraping, which
     starts the browser lazily at that point.
     """
-    if source.upper() in ("GF", "FT"):
+    if source.upper() in ("YA", "FT"):
         return False
 
     url, selector = get_source_config(source, fund_id)
@@ -505,7 +539,7 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
     """
     code = source.upper()
 
-    if code == "GF":
+    if code == "YA":
         return fetch_yahoo_quotes(fund_id, start, end)
 
     if code == "FT":
@@ -1385,7 +1419,8 @@ def backfill_history(specs, start, data_dir=None):
     browser = LazyBrowser()
 
     try:
-        for index, spec in enumerate(specs):
+        for index, entry in enumerate(specs):
+            spec = as_fund_spec(entry)
             quotes, error = fetch_with_retries(
                 lambda: scrape_fund_quotes(
                     spec.source, spec.lookup_id, start, browser=browser

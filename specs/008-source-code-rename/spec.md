@@ -1,6 +1,6 @@
 # SPEC-008: Rename the GF Source Code to YA
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-21
 **Type**: Maintenance
 **Tracking**: [#70](https://github.com/joneswm/FundPrices/issues/70)
@@ -57,11 +57,11 @@ as a deprecated alias that warns, so an existing configuration keeps running.
 
 ## Acceptance Criteria
 
-- [ ] `funds.txt` uses `YA` for all 20 Yahoo API instruments
-- [ ] A file still using `GF` parses, runs, and warns
-- [ ] `YH` still resolves to the scraping configuration
-- [ ] Docs no longer describe `GF`, and the Google URL note is gone
-- [ ] CI green on all three Python versions
+- [x] `funds.txt` uses `YA` for all 20 Yahoo API instruments
+- [x] A file still using `GF` parses, runs, and warns
+- [x] `YH` still resolves to the scraping configuration
+- [x] Docs no longer describe `GF`, and the Google URL note is gone
+- [x] CI green on all three Python versions
 
 ## Risks and Mitigations
 

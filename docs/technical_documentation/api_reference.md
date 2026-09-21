@@ -8,7 +8,7 @@ This document provides detailed API documentation for the Fund Price Scraping pr
 
 One configured instrument.
 
-- `source` (str): source code (`FT`, `GF`, `YH`, `MS`)
+- `source` (str): canonical source code (`YA`, `FT`, `YH`, `MS`). `GF` is accepted on input and canonicalised to `YA`
 - `lookup_id` (str): the identifier sent to the source
 - `aliases` (tuple): extra identifiers to publish under
 - `publish_ids` (property): `lookup_id` followed by each alias
@@ -28,7 +28,7 @@ before any network call, so a bad config cannot fail half way through a run.
 
 ```python
 read_fund_specs("funds.txt")
-# [FundSpec(source="GF", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
+# [FundSpec(source="YA", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
 ```
 
 ### `read_fund_ids(filename)`
@@ -44,7 +44,7 @@ for callers that do not need aliases.
 
 **File Format:**
 Each line should contain: `<source>,<identifier>`
-- `source`: Data source identifier (FT, YH, MS, GF)
+- `source`: Data source identifier (YA, FT, YH, MS)
 - `identifier`: Fund identifier for the specific source
 
 **Example:**
@@ -65,7 +65,7 @@ Gets URL and CSS selector configuration for a given source and fund ID.
 - `tuple`: (url, selector) or (None, None) if source not supported
 
 **Supported Sources:**
-- **GF**: Yahoo Finance API via `fetch_price_api()` - no scraping, returns `(None, None)` here
+- **YA**: Yahoo Finance API via `fetch_yahoo_quotes()` - no scraping, returns `(None, None)` here
 - **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`)
 - **YH**: Yahoo Finance (`https://sg.finance.yahoo.com/quote/{fund_id}/`)
 - **MS**: Morningstar (`https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}`)
@@ -160,7 +160,7 @@ against the date that price belongs to, instead of a row invented for today.
 
 ### `fetch_price_api(symbol)`
 
-Fetches a price via the Yahoo Finance API instead of scraping. Used for the `GF` source.
+Fetches a price via the Yahoo Finance API instead of scraping. Used for the `YA` source.
 
 **Parameters:**
 - `symbol` (str): Ticker symbol (e.g. `AAPL`, `MSFT`) with no exchange prefix
@@ -192,7 +192,7 @@ only if at least one fund actually needs scraping (see `source_requires_browser`
 
 **Result Format:**
 ```python
-results = scrape_funds([("GF", "AAPL"), ("FT", "GB00B1FXTF86")])
+results = scrape_funds([("YA", "AAPL"), ("FT", "GB00B1FXTF86")])
 # [["AAPL", "2026-09-20", "150.25"], ["GB00B1FXTF86", "2026-09-20", "1.2345"]]
 results.failures
 # ["GB00B1FXTF86: Error: Timeout"]   (only for funds that failed all attempts)
@@ -286,7 +286,7 @@ Returns the most recent usable price for a fund, checked in order:
 - `is_error_price(price)` - True when a value is an `"Error: ..."` string
 - `normalize_price(price)` - normalises a price value for storage
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
-- `source_requires_browser(source, fund_id)` - False for `GF` (API) and unknown sources, so
+- `source_requires_browser(source, fund_id)` - False for `YA` (API) and `FT` (HTTP), so
   Playwright is only launched when genuinely needed
 
 ## Daily Summary

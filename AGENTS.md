@@ -96,15 +96,15 @@ Each line is `<source>,<lookup_id>[,<alias>[;<alias>...]]`. Blank lines, full-li
 
 ```
 FT,GB00B1FXTF86             # Financial Times (dated HTTP endpoint)
-GF,AAPL                     # Yahoo Finance API
-GF,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
+YA,AAPL                     # Yahoo Finance API
+YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 ```
 
 **Source Codes:**
 - `FT` - Financial Times (dated HTTP endpoint; falls back to scraping)
-- `GF` - **Yahoo Finance API** via yfinance. The name is a leftover from Google
-  Finance and is a misnomer; it has nothing to do with Google
-- `YH` - Yahoo Finance (web scraping). Undated, so prefer `GF`
+- `YA` - **Yahoo Finance API** via yfinance daily bars. Used by 20 of 26 instruments
+- `GF` - deprecated spelling of `YA`; still accepted, warns, and names the line
+- `YH` - Yahoo Finance (web scraping). Undated, so prefer `YA`. Currently unused
 - `MS` - Morningstar (web scraping). Supported but unused: the one fund that
   needed it now comes from Yahoo
 

@@ -1,7 +1,7 @@
 # Tasks: Rename the GF Source Code to YA
 
 **Spec**: SPEC-008
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Created**: 2026-09-21
 
 ---
@@ -17,18 +17,18 @@ RED-GREEN-REFACTOR. Tests first.
 ## Task 1: Canonical source codes
 
 ### Acceptance Criteria
-- [ ] `canonical_source()` maps `GF` to `YA` and warns, naming the line
-- [ ] `YA`, `FT`, `YH` and `MS` pass through unchanged
-- [ ] `read_fund_specs()` returns canonical sources
-- [ ] `YA` routes to the API and needs no browser
-- [ ] `YH` still resolves to the scraping configuration
+- [x] `canonical_source()` maps `GF` to `YA` and warns, naming the line
+- [x] `YA`, `FT`, `YH` and `MS` pass through unchanged
+- [x] `read_fund_specs()` returns canonical sources
+- [x] `YA` routes to the API and needs no browser
+- [x] `YH` still resolves to the scraping configuration
 
 ---
 
 ## Task 2: Config and docs
 
 ### Acceptance Criteria
-- [ ] `funds.txt`: 20 `GF,` lines become `YA,`
-- [ ] README, AGENTS.md, api_reference.md updated
-- [ ] The Google URL note removed from the README
-- [ ] Historical specs and the archive left alone
+- [x] `funds.txt`: 20 `GF,` lines become `YA,`
+- [x] README, AGENTS.md, api_reference.md updated
+- [x] The Google URL note removed from the README
+- [x] Historical specs and the archive left alone

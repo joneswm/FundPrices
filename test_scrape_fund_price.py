@@ -1439,8 +1439,8 @@ class TestFundSpecParsing(unittest.TestCase):
 
     def test_two_field_line_has_no_aliases(self):
         """Test existing config lines keep their meaning."""
-        specs = read_fund_specs(self._write("GF,QQQ\n"))
-        self.assertEqual(specs, [FundSpec("GF", "QQQ", ())])
+        specs = read_fund_specs(self._write("YA,QQQ\n"))
+        self.assertEqual(specs, [FundSpec("YA", "QQQ", ())])
         self.assertEqual(specs[0].publish_ids, ("QQQ",))
 
     def test_third_field_adds_an_alias(self):
@@ -1457,9 +1457,9 @@ class TestFundSpecParsing(unittest.TestCase):
 
     def test_whitespace_and_blank_lines_are_ignored(self):
         """Test untidy config files still parse."""
-        specs = read_fund_specs(self._write("\n  GF , QQQ , ALIAS \n\n  \nFT,ISIN1\n"))
+        specs = read_fund_specs(self._write("\n  YA , QQQ , ALIAS \n\n  \nFT,ISIN1\n"))
         self.assertEqual(
-            specs, [FundSpec("GF", "QQQ", ("ALIAS",)), FundSpec("FT", "ISIN1", ())]
+            specs, [FundSpec("YA", "QQQ", ("ALIAS",)), FundSpec("FT", "ISIN1", ())]
         )
 
     def test_comments_are_stripped(self):
@@ -1471,8 +1471,8 @@ class TestFundSpecParsing(unittest.TestCase):
 
     def test_read_fund_ids_still_returns_pairs(self):
         """Test the existing helper keeps its shape for existing callers."""
-        path = self._write("GF,0P00000YAN,JFM0003373\nFT,ISIN1\n")
-        self.assertEqual(read_fund_ids(path), [("GF", "0P00000YAN"), ("FT", "ISIN1")])
+        path = self._write("YA,0P00000YAN,JFM0003373\nFT,ISIN1\n")
+        self.assertEqual(read_fund_ids(path), [("YA", "0P00000YAN"), ("FT", "ISIN1")])
 
     def test_line_with_one_field_is_rejected(self):
         """Test an incomplete line names its line number."""
@@ -2750,7 +2750,6 @@ class TestSummaryRendering(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
 
 
-
 class TestSourceCodeCanonicalisation(unittest.TestCase):
     """Test the GF -> YA rename and its deprecation alias."""
 
@@ -2824,6 +2823,7 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         specs = read_fund_specs("funds.txt")
         self.assertEqual({s.source for s in specs}, {"YA", "FT"})
         self.assertEqual(len(specs), 26)
+
 
 if __name__ == "__main__":
     unittest.main()

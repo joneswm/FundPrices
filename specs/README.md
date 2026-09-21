@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-008: Rename the GF Source Code to YA
+**Status**: ✅ Complete
+**Location**: [008-source-code-rename/](008-source-code-rename/)
+**Description**: Rename the misleading Google Finance source code to YA (Yahoo API), keeping GF as a deprecated alias.
+
 ### SPEC-007: Daily Price-Change Summary
 **Status**: ✅ Complete
 **Location**: [007-daily-summary/](007-daily-summary/)
