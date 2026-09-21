@@ -3392,5 +3392,66 @@ class TestClosedImportMainMode(unittest.TestCase):
             main()
 
 
+
+class TestClosedHoldingWindowEnds(unittest.TestCase):
+    """Test the last day of a window survives, whatever the source's convention.
+
+    Yahoo's daily bars treat the end date as exclusive while FT and investing
+    .com treat it as inclusive, so passing the configured end straight through
+    silently dropped the final day from Yahoo holdings only: BKCH imported 284
+    rows ending 2024-02-15 for a window ending 2024-02-16.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_sources_are_asked_past_the_window_end(self, mock_quotes):
+        """Test the fetch reaches beyond the end so nothing depends on it."""
+        mock_quotes.return_value = [Quote("2024-02-16", "10.115", "USD")]
+        holding = ClosedHolding(
+            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
+        )
+        import_closed_holdings([holding], self.test_dir)
+        self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_configured_end_date_is_imported(self, mock_quotes):
+        """Test a quote on the window's last day is stored, not clipped."""
+        mock_quotes.return_value = [
+            Quote("2024-02-15", "9.943", "USD"),
+            Quote("2024-02-16", "10.115", "USD"),
+        ]
+        holding = ClosedHolding(
+            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
+        )
+        import_closed_holdings([holding], self.test_dir)
+        with open(
+            os.path.join(self.test_dir, "prices_history.csv"), newline=""
+        ) as f:
+            rows = [row for row in csv.reader(f)][1:]
+        self.assertEqual([row[1] for row in rows], ["2024-02-15", "2024-02-16"])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_extra_day_is_still_clipped(self, mock_quotes):
+        """Test over-fetching does not leak a day past the window."""
+        mock_quotes.return_value = [
+            Quote("2024-02-16", "10.115", "USD"),
+            Quote("2024-02-19", "10.50", "USD"),
+        ]
+        holding = ClosedHolding(
+            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
+        )
+        import_closed_holdings([holding], self.test_dir)
+        with open(
+            os.path.join(self.test_dir, "prices_history.csv"), newline=""
+        ) as f:
+            rows = [row for row in csv.reader(f)][1:]
+        self.assertEqual([row[1] for row in rows], ["2024-02-16"])
+
+
 if __name__ == "__main__":
     unittest.main()
