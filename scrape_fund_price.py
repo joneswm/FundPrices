@@ -23,6 +23,25 @@ ROLLING_HISTORY_DAYS = 90
 SNAP_WINDOW_DAYS = 10
 
 
+LINE_ENDING = "\n"
+
+
+def open_for_write(path, **kwargs):
+    """Open a file for writing with LF line endings on every platform.
+
+    Text mode would otherwise translate to CRLF on Windows. Combined with
+    git's autocrlf normalising to LF on staging while a Linux runner stores
+    CRLF as-is, that made every data file flip on each handover between a
+    local commit and a scheduled run.
+    """
+    return open(path, "w", newline=LINE_ENDING, **kwargs)
+
+
+def csv_writer(file):
+    """A csv.writer that uses LF; the module default is CRLF everywhere."""
+    return csv.writer(file, lineterminator=LINE_ENDING)
+
+
 class Quote(NamedTuple):
     """A single dated price as reported by a source."""
 
@@ -558,7 +577,7 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
 
 def write_latest_price_file(fund_id, price, data_dir):
     """Write a fund's single-value price file."""
-    with open(os.path.join(data_dir, f"latest_{fund_id}.price"), "w") as f:
+    with open_for_write(os.path.join(data_dir, f"latest_{fund_id}.price")) as f:
         f.write(price + "\n")
 
 
@@ -673,16 +692,16 @@ def write_history_files(rows, data_dir, latest=None):
     """
     ordered = sorted(rows, key=lambda row: (row[1], row[0]))
 
-    with open(os.path.join(data_dir, "prices_history.csv"), "w", newline="") as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "prices_history.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(HISTORY_HEADER)
         writer.writerows(ordered)
 
     if latest is None:
         latest = latest_rows_by_fund(ordered)
 
-    with open(os.path.join(data_dir, "latest_prices.csv"), "w", newline="") as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "latest_prices.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(HISTORY_HEADER)
         writer.writerows(latest[fund] for fund in sorted(latest))
 
@@ -705,10 +724,8 @@ def write_history_files(rows, data_dir, latest=None):
         if cutoff <= row_date <= reference:
             rolling_rows.append(row)
 
-    with open(
-        os.path.join(data_dir, "prices_history_90_days.csv"), "w", newline=""
-    ) as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "prices_history_90_days.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(HISTORY_HEADER)
         writer.writerows(rolling_rows)
 
@@ -1034,8 +1051,8 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None):
 
     os.makedirs(data_dir, exist_ok=True)
 
-    with open(os.path.join(data_dir, "daily_summary.csv"), "w", newline="") as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "daily_summary.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(SUMMARY_HEADER)
         for row in price_rows + fx_rows:
             writer.writerow(
@@ -1056,8 +1073,8 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None):
             )
 
     markdown = render_summary_markdown(price_rows, fx_rows, run_date)
-    with open(
-        os.path.join(data_dir, "daily_summary.md"), "w", encoding="utf-8"
+    with open_for_write(
+        os.path.join(data_dir, "daily_summary.md"), encoding="utf-8"
     ) as file:
         file.write(markdown)
 
@@ -1258,15 +1275,15 @@ def write_fx_files(rows, data_dir):
     """
     ordered = sorted(rows, key=lambda row: (row[1], row[0]))
 
-    with open(os.path.join(data_dir, "fx_history.csv"), "w", newline="") as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "fx_history.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(FX_HEADER)
         writer.writerows(ordered)
 
     latest = latest_rows_by_fund(ordered)
 
-    with open(os.path.join(data_dir, "latest_fx.csv"), "w", newline="") as file:
-        writer = csv.writer(file)
+    with open_for_write(os.path.join(data_dir, "latest_fx.csv")) as file:
+        writer = csv_writer(file)
         writer.writerow(FX_HEADER)
         writer.writerows(latest[pair] for pair in sorted(latest))
 
@@ -1601,7 +1618,7 @@ def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
         os.makedirs(data_dir, exist_ok=True)
 
         # Save to CSV
-        hist.to_csv(filepath)
+        hist.to_csv(filepath, lineterminator=LINE_ENDING)
 
         return filepath
 

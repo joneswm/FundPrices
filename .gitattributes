@@ -1,0 +1,11 @@
+# Normalise line endings so files do not flip between a local commit and a
+# workflow commit. csv.writer defaults to CRLF and Windows text mode
+# translates LF to CRLF, while a Linux runner stores whatever it wrote; with
+# nothing reconciling them, every data file was rewritten end to end on each
+# handover. The writers now emit LF, and this keeps the repository consistent.
+* text=auto eol=lf
+
+# Binary-ish assets, left untouched
+*.png binary
+*.jpg binary
+*.pdf binary

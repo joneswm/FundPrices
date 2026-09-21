@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 import csv
 from datetime import date, timedelta
 
+import scrape_fund_price
+
 from scrape_fund_price import (
     read_fund_ids,
     get_source_config,
@@ -45,6 +47,25 @@ from scrape_fund_price import (
     write_fx_files,
     write_latest_price_file,
 )
+
+# Point the module's default output directory at a scratch location for the
+# whole suite. A test that forgets to pass data_dir would otherwise write into
+# the repository's committed data/, which is how a stray latest_AAPL.price and
+# live FX rewrites got in before.
+_REAL_DATA_DIR = scrape_fund_price.DATA_DIR
+_SUITE_DATA_DIR = None
+
+
+def setUpModule():
+    global _SUITE_DATA_DIR
+    _SUITE_DATA_DIR = tempfile.mkdtemp(prefix="fundprices-tests-")
+    scrape_fund_price.DATA_DIR = _SUITE_DATA_DIR
+
+
+def tearDownModule():
+    scrape_fund_price.DATA_DIR = _REAL_DATA_DIR
+    if _SUITE_DATA_DIR:
+        shutil.rmtree(_SUITE_DATA_DIR, ignore_errors=True)
 
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -615,11 +636,15 @@ class TestFundPriceScraper(unittest.TestCase):
         finally:
             scrape_fund_price.DATA_DIR = original_data_dir
 
+    @patch("scrape_fund_price.write_summary")
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.parse_arguments")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
-    def test_main_function(self, mock_write, mock_scrape, mock_read, mock_parse):
+    def test_main_function(
+        self, mock_write, mock_scrape, mock_read, mock_parse, mock_pairs, mock_summary
+    ):
         """Test main function orchestration."""
         # Mock the arguments to return normal mode (no history)
         mock_args = MagicMock()
@@ -640,12 +665,14 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_scrape.assert_called_once()
         mock_write.assert_called_once()
 
+    @patch("scrape_fund_price.write_summary")
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.parse_arguments")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
     def test_main_fails_job_when_scrape_failures_remain(
-        self, mock_write, mock_scrape, mock_read, mock_parse
+        self, mock_write, mock_scrape, mock_read, mock_parse, mock_pairs, mock_summary
     ):
         """Test main exits non-zero when fallback prices were used after failures."""
         mock_args = MagicMock()
@@ -1379,12 +1406,14 @@ class TestWindowedScraping(unittest.TestCase):
 class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     """Test a partially failed run still publishes everything it obtained."""
 
+    @patch("scrape_fund_price.write_summary")
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_results_are_written_before_failure_is_signalled(
-        self, mock_args, mock_read, mock_scrape, mock_write
+        self, mock_args, mock_read, mock_scrape, mock_write, mock_pairs, mock_summary
     ):
         """Test output is written even when some funds failed."""
         mock_args.return_value = MagicMock(
@@ -1404,12 +1433,14 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         # discard a whole day of good prices.
         mock_write.assert_called_once_with(results)
 
+    @patch("scrape_fund_price.write_summary")
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_clean_run_does_not_exit_non_zero(
-        self, mock_args, mock_read, mock_scrape, mock_write
+        self, mock_args, mock_read, mock_scrape, mock_write, mock_pairs, mock_summary
     ):
         """Test a run with no failures completes normally."""
         mock_args.return_value = MagicMock(
@@ -2828,7 +2859,6 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         self.assertEqual(len(specs), 26)
 
 
-
 class TestLineEndings(unittest.TestCase):
     """Test every written file uses LF, independent of platform.
 
@@ -2856,7 +2886,10 @@ class TestLineEndings(unittest.TestCase):
     def test_price_files_use_lf(self):
         """Test history, latest and rolling files are LF."""
         write_history_files(
-            [["AAA", "2026-09-18", "1.50", "GBP"], ["BBB", "2026-09-18", "2.50", "USD"]],
+            [
+                ["AAA", "2026-09-18", "1.50", "GBP"],
+                ["BBB", "2026-09-18", "2.50", "USD"],
+            ],
             self.test_dir,
         )
         self.assertNoCarriageReturns(
@@ -2871,7 +2904,10 @@ class TestLineEndings(unittest.TestCase):
     def test_summary_files_use_lf(self):
         """Test the summary CSV and Markdown are LF."""
         rows = build_price_summary(
-            [["AAA", "2026-09-17", "1.00", "GBP"], ["AAA", "2026-09-18", "1.50", "GBP"]],
+            [
+                ["AAA", "2026-09-17", "1.00", "GBP"],
+                ["AAA", "2026-09-18", "1.50", "GBP"],
+            ],
             [FundSpec("YA", "AAA", ())],
             [],
             "2026-09-18",
@@ -2891,7 +2927,9 @@ class TestLineEndings(unittest.TestCase):
         frame.empty  # touch, so the mock returns a real frame
         mock_ticker.return_value.history.return_value = frame
 
-        result = fetch_historical_data("AAPL", "2026-09-01", "2026-09-18", self.test_dir)
+        result = fetch_historical_data(
+            "AAPL", "2026-09-01", "2026-09-18", self.test_dir
+        )
         self.assertFalse(result.startswith("Error:"), result)
         raw = open(result, "rb").read()
         self.assertNotIn(b"\r", raw)
@@ -2900,6 +2938,7 @@ class TestLineEndings(unittest.TestCase):
         """Test the single-value .price files are LF."""
         write_latest_price_file("AAA", "1.50", self.test_dir)
         self.assertNoCarriageReturns("latest_AAA.price")
+
 
 if __name__ == "__main__":
     unittest.main()
