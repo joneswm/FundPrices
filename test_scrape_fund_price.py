@@ -41,6 +41,9 @@ from scrape_fund_price import (
     write_summary,
     canonical_source,
     scrape_fund_quotes,
+    write_history_files,
+    write_fx_files,
+    write_latest_price_file,
 )
 
 
@@ -2824,6 +2827,79 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         self.assertEqual({s.source for s in specs}, {"YA", "FT"})
         self.assertEqual(len(specs), 26)
 
+
+
+class TestLineEndings(unittest.TestCase):
+    """Test every written file uses LF, independent of platform.
+
+    csv.writer defaults to CRLF on every platform. Combined with git's
+    autocrlf on Windows normalising to LF while a Linux runner stores CRLF,
+    that made the data files flip on every handover between a local commit and
+    a scheduled run: one overnight commit showed 3,906 insertions for 4 rows
+    of real data.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def assertNoCarriageReturns(self, *names):
+        for name in names:
+            path = os.path.join(self.test_dir, name)
+            self.assertTrue(os.path.exists(path), f"{name} was not written")
+            raw = open(path, "rb").read()
+            self.assertNotIn(b"\r", raw, f"{name} contains carriage returns")
+            self.assertGreater(raw.count(b"\n"), 0, f"{name} has no line breaks")
+
+    def test_price_files_use_lf(self):
+        """Test history, latest and rolling files are LF."""
+        write_history_files(
+            [["AAA", "2026-09-18", "1.50", "GBP"], ["BBB", "2026-09-18", "2.50", "USD"]],
+            self.test_dir,
+        )
+        self.assertNoCarriageReturns(
+            "prices_history.csv", "latest_prices.csv", "prices_history_90_days.csv"
+        )
+
+    def test_fx_files_use_lf(self):
+        """Test FX history and latest rates are LF."""
+        write_fx_files([["USDGBP", "2026-09-18", "0.748615"]], self.test_dir)
+        self.assertNoCarriageReturns("fx_history.csv", "latest_fx.csv")
+
+    def test_summary_files_use_lf(self):
+        """Test the summary CSV and Markdown are LF."""
+        rows = build_price_summary(
+            [["AAA", "2026-09-17", "1.00", "GBP"], ["AAA", "2026-09-18", "1.50", "GBP"]],
+            [FundSpec("YA", "AAA", ())],
+            [],
+            "2026-09-18",
+        )
+        write_summary(rows, [], "2026-09-18", self.test_dir)
+        self.assertNoCarriageReturns("daily_summary.csv", "daily_summary.md")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_historical_mode_csv_uses_lf(self, mock_ticker):
+        """Test the --history export is LF too."""
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Open": [1.0], "Close": [1.5]},
+            index=pd.to_datetime(["2026-09-18"]),
+        )
+        frame.empty  # touch, so the mock returns a real frame
+        mock_ticker.return_value.history.return_value = frame
+
+        result = fetch_historical_data("AAPL", "2026-09-01", "2026-09-18", self.test_dir)
+        self.assertFalse(result.startswith("Error:"), result)
+        raw = open(result, "rb").read()
+        self.assertNotIn(b"\r", raw)
+
+    def test_price_file_per_fund_uses_lf(self):
+        """Test the single-value .price files are LF."""
+        write_latest_price_file("AAA", "1.50", self.test_dir)
+        self.assertNoCarriageReturns("latest_AAA.price")
 
 if __name__ == "__main__":
     unittest.main()
