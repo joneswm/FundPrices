@@ -47,14 +47,28 @@ jobs:
         key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
     - name: Install Playwright browser
-      # --with-deps installs apt packages outside the cached directory, so on a
-      # cache hit only the OS dependencies are needed, not the ~20s download.
+      # On a cache hit the binary is restored, so only the browser download is
+      # skipped. Whether the apt dependencies are also needed on ubuntu-latest
+      # is measured by the launch check below.
       run: |
         if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
-          playwright install-deps chromium
+          echo "cache hit: skipping download and apt dependencies"
         else
           playwright install --with-deps chromium
         fi
+
+    - name: Verify Chromium can launch
+      # Informational: the FT fallback is the only consumer, and it degrades
+      # gracefully, so this reports rather than fails the build.
+      continue-on-error: true
+      run: |
+        python - <<'PY'
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=True)
+            print("chromium launched:", b.version)
+            b.close()
+        PY
         
     - name: Run unit tests
       run: |
