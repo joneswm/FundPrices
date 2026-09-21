@@ -3463,5 +3463,54 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
         self.assertEqual([row[1] for row in rows], ["2024-02-16"])
 
 
+
+class TestInvestingEmptyPayloads(unittest.TestCase):
+    """Test the IV handler survives the shapes a dead window returns.
+
+    Asking investing.com for a window after a fund stopped publishing returns
+    a body whose `data` key is present but null, which raised TypeError
+    ("'NoneType' object is not iterable") instead of the ValueError callers
+    catch.
+    """
+
+    def _response(self, payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        return response
+
+    @patch("scrape_fund_price.requests.get")
+    def test_null_data_raises_value_error(self, mock_get):
+        """Test a null payload is reported as no rows, not a crash."""
+        mock_get.return_value = self._response({"data": None})
+        with self.assertRaises(ValueError):
+            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
+
+    @patch("scrape_fund_price.requests.get")
+    def test_missing_data_key_raises_value_error(self, mock_get):
+        """Test an unexpected body shape is handled the same way."""
+        mock_get.return_value = self._response({})
+        with self.assertRaises(ValueError):
+            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_import_records_it_as_a_failure(self, mock_quotes):
+        """Test a holding whose window returns nothing is reported, not fatal."""
+        mock_quotes.side_effect = ValueError("investing.com returned no rows")
+        test_dir = tempfile.mkdtemp()
+        try:
+            report = import_closed_holdings(
+                [
+                    ClosedHolding(
+                        "X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21"
+                    )
+                ],
+                test_dir,
+            )
+            self.assertTrue(report.failures)
+        finally:
+            shutil.rmtree(test_dir)
+
+
 if __name__ == "__main__":
     unittest.main()
