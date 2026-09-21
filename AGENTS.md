@@ -1,7 +1,7 @@
 # FundPrices - Agent Guidelines
 
 ## Project Overview
-Python application for scraping fund prices from multiple financial data sources (Financial Times, Yahoo Finance, Morningstar) and Yahoo Finance API for stock quotes.
+Python application that collects dated fund, ETF and stock prices and end-of-day FX rates (Yahoo Finance API, Financial Times and investing.com over HTTP, with Playwright scraping as a fallback), stores them as CSV in this repository, and publishes a daily price-change summary.
 
 ## Task Tracking
 
@@ -19,7 +19,7 @@ Python application for scraping fund prices from multiple financial data sources
 - `python test_scrape_fund_price.py` - Run full test suite
 - `python -m unittest test_scrape_fund_price.TestFundPriceScraper -v` - Run unit tests only
 - `python -m coverage run test_scrape_fund_price.py && python -m coverage report` - Run with coverage report
-- `./run_tests.sh` - Run tests with coverage (if script exists)
+- `./run_tests.sh coverage` - Run tests with coverage
 
 ### Rebuilding History
 - `python scrape_fund_price.py --backfill --from 2023-01-01` - rebuild stored history
@@ -27,11 +27,17 @@ Python application for scraping fund prices from multiple financial data sources
   workflow. Shares a concurrency group with the daily scrape so the two cannot push
   at the same time.
 
+### Importing Closed Holdings
+- `python scrape_fund_price.py --import-closed` - one-off import of the windows in
+  `closed_holdings.txt`. Writes `prices_history.csv` and nothing else. Run locally and
+  commit; there is deliberately no workflow for it.
+
 ### Running the Scraper
 - `python scrape_fund_price.py` - Run the fund price scraper once
 - Results are saved to `data/latest_prices.csv`, `data/prices_history.csv` and
-  `data/prices_history_90_days.csv` (rolling 90-calendar-day window), plus one
-  `data/latest_<identifier>.price` file per fund
+  `data/prices_history_90_days.csv` (rolling 90-calendar-day window, currently priced
+  funds only), plus one `data/latest_<identifier>.price` file per fund, the FX files
+  `data/fx_history.csv` and `data/latest_fx.csv`, and `data/daily_summary.{csv,md}`
 
 ### Code Quality
 - `./format_code.sh` - Format code with Black and isort
@@ -47,13 +53,18 @@ Python application for scraping fund prices from multiple financial data sources
 ## Project Structure
 
 ### Key Files
-- `scrape_fund_price.py` - Main scraping logic (326 statements, 98% coverage)
+- `scrape_fund_price.py` - The whole application, in one module
 - `test_scrape_fund_price.py` - Comprehensive test suite
-- `funds.txt` - Configuration file for fund identifiers
+- `funds.txt` - Instruments priced by the daily run
+- `fx_pairs.txt` - FX pairs snapped by the daily run
+- `closed_holdings.txt` - Instruments imported once and never fetched again
 - `requirements.txt` - Python dependencies
 
 ### Key Directories
-- `data/` - Output directory for CSV files and price files (gitignored)
+- `data/` - Output directory. Gitignored, but its files are **tracked**: stage new ones
+  with `git add -f data/*.csv data/*.price data/*.md`. Because they are tracked, a plain
+  `git add -A` stages data changes too, so stage code by filename when the two should
+  land in separate commits
 - `docs/` - Documentation including user stories and technical docs
 - `.devcontainer/` - Dev Container configuration (VS Code / GitHub Codespaces)
 - `.github/workflows/` - GitHub Actions for CI/CD
@@ -103,6 +114,8 @@ YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 **Source Codes:**
 - `FT` - Financial Times (dated HTTP endpoint; falls back to scraping)
 - `YA` - **Yahoo Finance API** via yfinance daily bars. Used by 20 of 26 instruments
+- `IV` - investing.com (undocumented HTTP endpoint). Used only by closed holdings, for
+  funds Yahoo and FT no longer price; never put it on a schedule
 - `GF` - deprecated spelling of `YA`; still accepted, warns, and names the line
 - `YH` - Yahoo Finance (web scraping). Undated, so prefer `YA`. Currently unused
 - `MS` - Morningstar (web scraping). Supported but unused: the one fund that
@@ -116,6 +129,23 @@ stranding history recorded under its old identifier.
 Configuration is validated before any network call. A malformed line, an empty or
 self-referencing alias, or an identifier repeated anywhere in the file raises an
 error naming the line.
+
+## Closed Holdings
+
+File: `closed_holdings.txt`, one line per instrument:
+`<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>` (dates inclusive).
+
+Instruments held once and no longer priced. The file is separate from `funds.txt`
+precisely so the daily run cannot reach them. The import asserts the configured currency
+against what the source reports and skips the holding on a mismatch, which is how a
+lookup that resolved to the wrong listing gets caught. Imported rows live only in
+`prices_history.csv`; a rebuild preserves them and never promotes them into
+`latest_prices.csv`, the rolling window or the `.price` files.
+
+Before adding one, check the candidate source the hard way: Yahoo can repeat a close
+with zero volume across a ticker change, FT's ISIN lookup can pick a different listing,
+and FT prices LSE-listed ETFs on UK bank holidays. `closed_holdings.txt` records the
+evidence for each choice.
 
 ## Daily Summary
 
@@ -158,34 +188,40 @@ final value on the next run. Weekend bars are never stored.
 
 | Source | Method | Status |
 |--------|--------|--------|
-| Financial Times | Web Scraping (Playwright) | ✅ Implemented |
-| Yahoo Finance | Web Scraping (Playwright) | ✅ Implemented |
-| Morningstar | Web Scraping (Playwright) | ✅ Implemented |
-| Yahoo Finance API | API (yfinance) | ✅ Implemented |
+| Yahoo Finance API (`YA`) | yfinance daily bars | 20 funds, 5 closed holdings |
+| Financial Times (`FT`) | Dated HTTP endpoint; Playwright fallback | 6 funds, 1 closed holding |
+| investing.com (`IV`) | Dated HTTP endpoint | 2 closed holdings |
+| Yahoo Finance (`YH`) | Web Scraping (Playwright) | Supported, unused |
+| Morningstar (`MS`) | Web Scraping (Playwright) | Supported, unused |
 
 ## Important Implementation Details
 
 ### Duplicate Prevention
-- History file prevents duplicates by filtering out today's entries before appending
-- Multiple runs per day are safe - latest prices replace earlier ones
-- Implementation: Simple date-based filtering (no complex dictionaries)
+- History is keyed on `(Fund, Date)`, where the date is the one the **source** reports
+- An incoming row replaces the stored row with the same key, so corrections apply and
+  re-runs cannot duplicate
+- Rows are sorted by date then fund and written with LF endings on every platform, so
+  repeated runs are byte-identical
 
 ### Error Handling
-- Failed scrapes return "Error: <message>" instead of crashing
-- Invalid source codes return "N/A"
-- System continues processing even if individual funds fail
+- A failed fetch is reported on `ScrapeResults.failures`; it never crashes the run and
+  no error text is ever written to a data file
+- An unsupported source code is a failure for that fund like any other
+- System continues processing even if individual funds fail, writes everything it
+  obtained, and only then exits non-zero
 
 ### Retries and Last Known Price
 - Every fetch is retried up to `MAX_PRICE_ATTEMPTS` (3) via `fetch_with_retries()`
-- After exhausting retries, `get_last_known_price()` falls back to the fund's most recent
-  good price: `latest_<id>.price` -> `latest_prices.csv` -> `prices_history.csv`
-- Only when no usable previous price exists is the fund recorded as "N/A"
+- After exhausting retries, `read_last_known_row()` supplies the fund's most recent stored
+  row, which is carried into `latest_prices.csv` under its original date
+  (`ScrapeResults.carried`). No row is invented for today
+- A fund with no stored history simply has no row; nothing is recorded as "N/A"
 - `ScrapeResults.failures` lists the funds that fell back
 - **This already exists - do not reimplement retry logic**
 
 ### Test Coverage
-- Overall: 98% coverage
-- Main code (scrape_fund_price.py): 98% coverage (constitution requires >=95%, enforced in CI)
+- Overall: 99% coverage
+- Main code (scrape_fund_price.py): 97% coverage (constitution requires >=95%, enforced in CI)
 - Unit tests use mocks only and run in seconds; functional tests hit live sources and
   skip when a source is down
 
@@ -256,9 +292,11 @@ When referencing legacy features:
 
 ## Dependencies
 
-- `playwright` - Web scraping and browser automation
+- `yfinance` - Yahoo Finance API for prices, FX rates and historical data
+- `requests` - FT and investing.com HTTP endpoints
+- `numpy` - float32 round-tripping, so prices are stored exactly as quoted
+- `playwright` - Scraping fallback and browser automation
 - `coverage` - Code coverage measurement
-- `yfinance` - Yahoo Finance API for stock/fund prices and historical data
 
 **Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
 The list above names what each dependency is for; it deliberately omits version pins so it
@@ -267,13 +305,16 @@ cannot drift out of sync with the actual requirements.
 
 ## GitHub Actions
 
-- **Test Workflow**: Runs on every push/PR
-- **Scrape Workflow**: Scheduled daily at 22:00 UTC
-- Both workflows automatically commit results
+- **Test Workflow** (`test.yml`): Runs on every push/PR across Python 3.10, 3.12 and
+  3.14 with both coverage gates. Commits nothing
+- **Scrape Workflow** (`scrape.yml`): Scheduled daily at 22:30 UTC, after the US close
+  all year round. Commits its results even when some funds failed
+- **Rebuild Workflow** (`backfill.yml`): Manual only. Shares a concurrency group with
+  the scrape so the two cannot push at once
 
 ## Notes for AI Agents
 
-- This project has high test coverage (98% overall) - maintain it!
+- This project has high test coverage (99% overall) - maintain it!
 - Always run tests after making changes
 - **Use Spec Kit workflow for new features** (SPECIFY → PLAN → TASKS → IMPLEMENT)
 - **Follow TDD for all implementation** (RED-GREEN-REFACTOR mandatory)

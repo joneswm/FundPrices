@@ -2,182 +2,176 @@
 
 ## Overview
 
-The Fund Price Scraping system is designed to collect fund and stock prices from multiple sources, store them in various formats, and provide automated daily collection through GitHub Actions.
+FundPrices collects dated fund, ETF and stock prices and end-of-day FX rates from
+several sources, stores them as CSV in this repository, and publishes a daily summary
+of what moved. GitHub is the only storage: a scheduled Actions workflow fetches,
+writes and commits.
 
-## Architecture Components
+The whole application is one module, `scrape_fund_price.py`, with one test module,
+`test_scrape_fund_price.py`.
 
-### 1. Core Scraping Engine
+## Modes
 
-**Purpose**: Extract price data from financial websites using web scraping techniques.
+One entry point, four modes, selected by command-line flags:
 
-**Components**:
-- **Playwright**: Headless browser automation for JavaScript-heavy websites
-- **Source Handlers**: Specialized handlers for each data source (FT, Yahoo, Morningstar)
-- **Error Handling**: Graceful handling of network issues, timeouts, and parsing errors
+| Mode | Flag | Reads | Writes |
+|------|------|-------|--------|
+| Daily run | *(none)* | `funds.txt`, `fx_pairs.txt` | every output file |
+| Rebuild | `--backfill --from DATE` | `funds.txt`, `fx_pairs.txt` | price and FX files (no summary) |
+| Closed-holding import | `--import-closed` | `closed_holdings.txt` | `prices_history.csv` only |
+| Ad-hoc export | `--history SYMBOL --start DATE` | nothing | `history_<SYMBOL>_<START>_<END>.csv` |
 
-**Design Decisions**:
-- **Playwright over Selenium**: Better performance and reliability for modern websites
-- **Headless Mode**: Reduces resource usage and improves CI/CD compatibility
-- **Common Settings**: Unified timeout, user-agent, and wait strategies across sources
+## Components
 
-### 2. Configuration Management
+### 1. Source handlers
 
-**Purpose**: Manage fund identifiers and source configurations without code changes.
+Every handler returns a list of `Quote(date, price, currency)`, oldest first.
+`scrape_fund_quotes()` is the single dispatch point.
 
-**Components**:
-- **funds.txt**: Simple text-based configuration file
-- **Source Codes**: Two-character identifiers (FT, YH, MS) for easy management
-- **Parser**: Robust parsing with whitespace and empty line handling
+| Code | Source | Route | Reports date | Reports currency |
+|------|--------|-------|:---:|:---:|
+| `YA` | Yahoo Finance | `yfinance` daily bars | yes | yes |
+| `FT` | Financial Times | two plain HTTP requests; falls back to scraping | yes | yes |
+| `IV` | investing.com | one plain HTTP request | yes | no — supplied by config |
+| `YH` | Yahoo Finance | Playwright scrape of the quote page | no — run date | no |
+| `MS` | Morningstar | Playwright scrape | no — run date | no |
 
-**Design Decisions**:
-- **Text-based Configuration**: Simple, version-controllable, human-readable
-- **Two-character Codes**: Balance between readability and brevity
-- **Flexible Format**: Easy to add new sources without code changes
+`GF` is a deprecated alias of `YA`, canonicalised by `canonical_source()` with a
+warning that names the offending line.
 
-### 3. Data Storage Layer
+**Design decisions**
 
-**Purpose**: Store price data in multiple formats for different use cases.
+- **Dated quotes, not "today's price".** The date stored is the date the source
+  reports. Weekends and holidays therefore produce no rows instead of repeating the
+  previous close.
+- **Daily bars over summary endpoints.** Yahoo's summary endpoint carries no price
+  date and is stale for mutual funds.
+- **Prices are stored as quoted.** Yahoo and investing.com both hold float32; values
+  are round-tripped to the shortest exact decimal rather than rounded, so a 4 dp
+  price or a half-penny tick survives. Currencies are kept as the source spells them:
+  `GBp`, `GBX` and `GBP` are distinct and nothing is converted.
+- **The browser is lazy.** `LazyBrowser` starts Chromium only if a fund actually needs
+  scraping. With the current configuration no daily run starts it; it remains as the
+  FT fallback.
 
-**Components**:
-- **Individual Price Files**: `latest_<identifier>.price` for single fund access
-- **Latest Prices CSV**: `latest_prices.csv` for current price overview
-- **Historical Data CSV**: `prices_history.csv` for trend analysis
+### 2. Configuration
 
-**Design Decisions**:
-- **Multiple Formats**: Different formats for different use cases
-- **Append Strategy**: Historical data preserved while latest data overwritten
-- **Standard CSV**: Widely compatible format for data analysis tools
+Three text files, each validated in full before any network call, with errors naming
+the line.
 
-### 4. Automation Layer
+- **`funds.txt`** — `<source>,<lookup_id>[,<alias>[;<alias>...]]`. The instruments
+  priced every day. A fund is fetched once on its lookup id and published under every
+  alias, so it can change source without stranding its history.
+- **`fx_pairs.txt`** — six-letter pairs such as `USDGBP`, meaning GBP per 1 unit of
+  the foreign currency. The slash spelling is rejected so the direction cannot be
+  confused with the market convention.
+- **`closed_holdings.txt`** —
+  `<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`. Instruments held once
+  and no longer priced. Kept apart from `funds.txt` precisely so the daily run cannot
+  reach them.
 
-**Purpose**: Provide reliable, scheduled execution without manual intervention.
+### 3. Storage
 
-**Components**:
-- **GitHub Actions**: Cloud-based CI/CD platform
-- **Cron Scheduling**: Daily execution at 5pm EST (22:00 UTC)
-- **Manual Triggers**: On-demand execution capability
-- **Git Integration**: Automatic data persistence to version control
+All under `data/`, which is gitignored but whose files are tracked: workflows stage
+them with `git add -f`. (Because they are tracked, a plain `git add -A` also stages
+them.)
 
-**Design Decisions**:
-- **GitHub Actions**: Free, reliable, well-integrated with Git
-- **UTC Scheduling**: Avoids daylight saving time complications
-- **Data Persistence**: Version control provides historical record and backup
+| File | Content | Written by |
+|------|---------|------------|
+| `prices_history.csv` | every `Fund,Date,Price,Currency` row, including closed holdings | daily, rebuild, import |
+| `latest_prices.csv` | newest row per currently priced fund | daily, rebuild |
+| `prices_history_90_days.csv` | last 90 calendar days, currently priced funds only | daily, rebuild |
+| `latest_<identifier>.price` | one price, for single-value consumers | daily, rebuild |
+| `fx_history.csv`, `latest_fx.csv` | `Pair,Date,Rate` at 6 dp | daily, rebuild |
+| `daily_summary.csv`, `daily_summary.md` | new, old, delta and percent delta | daily |
 
-## Data Flow
+**Design decisions**
+
+- **Keyed upsert.** History is keyed on `(Fund, Date)`. An incoming row replaces the
+  stored row with the same key, so corrections apply and re-runs cannot duplicate.
+- **Deterministic output.** Rows are sorted by date then fund, and every file is
+  written with LF endings on every platform, so an unchanged day is an empty diff.
+- **Three owners, no overlap.** The daily run and the rebuild own the identifiers in
+  `funds.txt`; the import owns the identifiers in `closed_holdings.txt`. A rebuild
+  only touches identifiers it is given, and only ever promotes configured funds into
+  the "current" files, so none of the three can undo another's work.
+- **A rebuild deletes carefully.** It removes weekend rows and rows with no currency
+  (the scrape-dated legacy data it exists to replace) but keeps currency-bearing rows
+  a source happened to omit, because sources intermittently drop real trading days.
+
+### 4. Automation
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `scrape.yml` | daily at 22:30 UTC, and manual | daily run, then commit and push |
+| `backfill.yml` | manual only | rebuild from a chosen date |
+| `test.yml` | push and pull request | tests on Python 3.10, 3.12 and 3.14 with both coverage gates |
+
+- 22:30 UTC is after the US close all year round.
+- `scrape.yml` and `backfill.yml` share a concurrency group so they cannot push at
+  the same time.
+- Commit steps run with `if: always()`, so a partial run still saves what it fetched.
+- The Playwright browser is cached on the resolved Playwright version; on a hit
+  nothing is downloaded. `test.yml` launches Chromium as a canary for a runner image
+  that drops a needed library.
+- The closed-holding import has no workflow. It is a one-off, run locally and
+  committed.
+
+## Data flow: daily run
 
 ```
-1. Configuration Read
-   ↓
-2. Source Selection
-   ↓
-3. Web Scraping (Playwright)
-   ↓
-4. Price Extraction
-   ↓
-5. Data Storage (Multiple Formats)
-   ↓
-6. Git Commit & Push
+funds.txt ──> read_fund_specs ──> scrape_funds ──> write_results
+                                     │  per fund: fetch_with_retries(scrape_fund_quotes)
+                                     │  on failure: carry the last known row forward
+fx_pairs.txt ─> read_fx_pairs ──> snap_fx_rates ──> write_fx_results
+                                                        │
+history + fx ──> build_price_summary / build_fx_summary ──> write_summary
+                                                        │
+                                   failures? ──> exit 1 (after everything is written)
 ```
 
-## Error Handling Strategy
+Prices, FX and the summary are written independently, so a problem with one never
+costs another its day of data. The process exits non-zero only after every file that
+could be written has been.
 
-### 1. Graceful Degradation
-- Individual fund failures don't stop the entire process
-- Failed funds marked as "N/A" or "Error: <message>"
-- Partial results still saved to output files
+## Error handling
 
-### 2. Network Resilience
-- Timeout handling (30s for page load, 60s for selector wait)
-- Retry logic for transient failures
-- User-agent spoofing to avoid blocking
+- **Per-instrument isolation.** One failing fund, pair or closed holding never stops
+  the others.
+- **Retries, then the last known price.** Each fetch is tried `MAX_PRICE_ATTEMPTS`
+  times. If all fail, the fund's last stored row is carried into `latest_prices.csv`
+  under its original date; no row is invented for today and no error string is ever
+  written to a data file. A fund with no stored history simply has no row.
+- **Failures are loud.** They are listed on `ScrapeResults.failures`, marked `!` in
+  the daily summary, printed, and turn the Actions run red.
+- **Staleness is visible.** An instrument whose newest price is more than
+  `STALE_AFTER_DAYS` old is marked `~` so it is not mistaken for a flat day.
+- **Imports assert the currency.** A closed holding whose source reports a different
+  currency from the one configured is skipped, because that means the lookup
+  resolved to a different listing.
 
-### 3. Data Validation
-- Price format validation (numeric values)
-- Source configuration validation
-- File operation error handling
+## Security and conduct
 
-## Security Considerations
+- Actions authenticate with the built-in `GITHUB_TOKEN`; there are no secrets in code
+  or configuration.
+- Only public price data is collected, and the repository is public by design.
+- FT and investing.com are reached through undocumented endpoints. FT requests are
+  paced during a rebuild, and investing.com is used only for one-off imports, never
+  on a schedule.
 
-### 1. Authentication
-- GitHub Actions uses `GITHUB_TOKEN` for repository access
-- No hardcoded credentials in code
-- Token permissions limited to repository content
+## Technology stack
 
-### 2. Data Privacy
-- Only public price data is collected
-- No personal or sensitive information processed
-- Data stored in public repository (intentional for transparency)
+- **Python 3.10+** (CI covers 3.10, 3.12 and 3.14)
+- **yfinance**, **requests**, **numpy** for fetching and exact price formatting
+- **playwright** for the scraping fallback
+- **unittest** and **coverage**, with gates of 90% overall and 95% on
+  `scrape_fund_price.py`
+- **GitHub Actions** for scheduling, storage and CI
 
-### 3. Rate Limiting
-- Single browser instance processes all funds sequentially
-- Natural delays between requests prevent overwhelming sources
-- Respectful scraping practices (user-agent, reasonable timeouts)
+## Performance
 
-## Scalability Considerations
-
-### 1. Horizontal Scaling
-- Each fund processed independently
-- Easy to parallelize across multiple workers
-- Stateless design allows multiple instances
-
-### 2. Vertical Scaling
-- Memory usage scales with number of funds
-- Browser instance shared across all funds
-- Efficient resource utilization
-
-### 3. Future Extensibility
-- Modular source handler design
-- Configuration-driven fund management
-- Easy to add new data sources
-
-## Monitoring and Observability
-
-### 1. Execution Monitoring
-- GitHub Actions provides execution logs
-- Success/failure status clearly reported
-- Execution time tracked
-
-### 2. Data Quality Monitoring
-- Price validation ensures numeric values
-- Historical data tracking shows trends
-- Missing data clearly identified
-
-### 3. Error Tracking
-- Detailed error messages for debugging
-- Failed fund identification
-- Network and parsing error categorization
-
-## Technology Stack
-
-### Core Technologies
-- **Python 3.10+**: Main programming language
-- **Playwright**: Web scraping and browser automation
-- **GitHub Actions**: CI/CD and automation platform
-
-### Dependencies
-- **playwright**: Browser automation
-- **csv**: Standard library for CSV operations
-- **datetime**: Standard library for date handling
-- **os**: Standard library for file operations
-
-### Development Tools
-- **unittest**: Testing framework
-- **coverage**: Test coverage measurement
-- **VS Code/Cursor**: IDE with test integration
-
-## Performance Characteristics
-
-### Execution Time
-- **Unit Tests**: < 1 second
-- **Functional Tests**: ~15 seconds (including real web scraping)
-- **Production Run**: Varies by number of funds and network conditions
-
-### Resource Usage
-- **Memory**: ~100-200MB (Playwright browser instance)
-- **CPU**: Low (headless browser, sequential processing)
-- **Network**: Moderate (one request per fund)
-
-### Scalability Limits
-- **Funds per Run**: 100+ (limited by execution time)
-- **Concurrent Runs**: Multiple (GitHub Actions limits)
-- **Data Storage**: Limited by repository size (GitHub limits) 
+- **Test suite**: about 10 seconds for ~250 tests, including a handful of live
+  functional tests that skip when a source is down.
+- **Daily run**: dominated by network time; no browser is started on the normal path.
+- **Rebuild from 2023**: a few minutes, paced by the deliberate pause between FT
+  requests.

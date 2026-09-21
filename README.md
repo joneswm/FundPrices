@@ -1,16 +1,20 @@
 # FundPrices
 
-A Python application for scraping fund prices from multiple financial data sources using Playwright for web automation.
+A Python application that collects dated fund, ETF and stock prices and end-of-day FX rates from several sources, stores them as CSV in this repository, and publishes a daily summary of what moved.
 
 ## Features
 
-- **Multi-source support**: Scrapes prices from Financial Times, Yahoo Finance (web + API), Morningstar, and uses Yahoo Finance API for stock quotes
-- **Historical data retrieval**: Fetch historical price data for any stock/fund over a specified date range
-- **Hybrid approach**: Web scraping for funds, API for stocks (faster and more reliable)
-- **Automated execution**: GitHub Actions workflow for scheduled price collection
-- **Data persistence**: Stores latest prices and historical data in CSV format
-- **Robust error handling**: Comprehensive error handling and retry logic
-- **Testing**: Comprehensive unit and functional test suite (98% code coverage)
+- **Multi-source support**: Yahoo Finance API, the Financial Times and investing.com over plain HTTP, with Playwright scraping (Yahoo, Morningstar) kept as a fallback
+- **True price dates and currencies**: every row carries the date and currency the source reports, so weekends and holidays are absent rather than repeated
+- **FX rates**: end-of-day rates for a configured set of currency pairs
+- **Daily summary**: new price, old price, delta and percent delta for every instrument
+- **History rebuild**: stored history can be rebuilt from the sources back to any date
+- **Closed holdings**: one-off imports for instruments no longer held, kept out of the daily run
+- **Identifier aliases**: one fetch published under several identifiers
+- **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
+- **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
+- **Resilience**: retries, then the last known price; one failure never stops the run
+- **Testing**: unit and functional test suite with both coverage gates enforced in CI
 
 ## Quick Start
 
@@ -130,10 +134,11 @@ python test_scrape_fund_price.py
 #### Price Resilience
 
 If a source fails, the scraper does not write an error into your price files. Each fund is
-retried up to 3 times (`MAX_PRICE_ATTEMPTS`), and if every attempt fails it falls back to the
-most recent good price for that fund - checking `latest_<identifier>.price`, then
-`latest_prices.csv`, then `prices_history.csv`. Only if no usable previous price exists is the
-fund recorded as `N/A`. Funds that fell back are listed on the returned results' `.failures`.
+retried up to 3 times (`MAX_PRICE_ATTEMPTS`), and if every attempt fails its most recent
+stored row is carried into `latest_prices.csv` under the date that price really belongs to.
+No row is invented for today, and a fund with no stored history simply has no row. Funds
+that fell back are listed on the returned results' `.failures`, marked `!` in the daily
+summary, and turn the Actions run red once everything else has been written.
 
 ### Historical Data Mode
 ```bash
@@ -188,14 +193,13 @@ final value on the next run. Weekend bars are never stored.
 
 | Source | Code | Method | Example | Status |
 |--------|------|--------|---------|--------|
-| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 20 funds + 2 closed holdings |
+| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 20 funds + 5 closed holdings |
 | Financial Times | FT | HTTP endpoint, scraping fallback | `https://markets.ft.com/data/funds/tearsheet/historical?s=GB00B1FXTF86` | 6 funds + 1 closed holding |
-| investing.com | IV | HTTP endpoint (undocumented) | `https://api.investing.com/api/financialdata/historical/1182866` | 1 closed holding |
+| investing.com | IV | HTTP endpoint (undocumented) | `https://api.investing.com/api/financialdata/historical/1182866` | 2 closed holdings |
 | Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | supported, unused |
 | Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | supported, unused |
 
-`IV` exists for one liquidated fund that has since disappeared from both Yahoo
-and FT. Like the FT historical route it is an undocumented endpoint, so it is
+`IV` exists for two closed funds that Yahoo and FT no longer price. Like the FT historical route it is an undocumented endpoint, so it is
 used only for one-off imports and never on a schedule.
 
 ## Output Files
@@ -246,14 +250,15 @@ Date,Open,High,Low,Close,Volume,Dividends,Stock Splits
 ### GitHub Actions
 The project includes automated execution via GitHub Actions:
 
-- **Schedule**: Configurable cron expression (default: daily at 9 AM UTC)
+- **Schedule**: daily at 22:30 UTC, after the US close all year round (`30 22 * * *` in `scrape.yml`)
 - **Manual triggers**: Run on-demand from GitHub Actions tab
 - **Output**: Automatically commits results to the repository
 
 ### Local Automation
 ```bash
-# Add to crontab for hourly execution
-0 * * * * cd /path/to/FundPrices && python scrape_fund_price.py
+# Add to crontab for a daily run at 22:30 UTC. Prices are end-of-day, so running
+# more often fetches the same rows again.
+30 22 * * * cd /path/to/FundPrices && python scrape_fund_price.py
 ```
 
 ## Documentation
@@ -288,11 +293,11 @@ The project includes automated execution via GitHub Actions:
 **Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
 **New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
-- ✅ **Core Functionality**: Multi-source data collection (FT, Yahoo, Morningstar via scraping; Yahoo Finance API for stocks), configuration management, data export
+- ✅ **Core Functionality**: Multi-source dated price collection (Yahoo Finance API, FT and investing.com over HTTP; scraping fallback), FX rates, daily summary, history rebuild, closed-holding imports
 - ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges
 - ✅ **Data Quality**: Duplicate prevention in price history
 - ✅ **Automation**: GitHub Actions workflows, automated data persistence
-- ✅ **Testing**: Comprehensive unit and functional tests with 92% coverage
+- ✅ **Testing**: Comprehensive unit and functional tests; coverage gates of 90% overall and 95% on the main module enforced in CI
 - ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
 - ✅ **TDD Enforcement**: Mandatory Test-Driven Development workflow
 - ✅ **Code Quality**: Standards, tools, and quality gates implemented
@@ -318,9 +323,11 @@ The test suite includes:
 
 ## Dependencies
 
-- `playwright`: Web scraping and browser automation
+- `yfinance`: Yahoo Finance API for prices, FX rates and historical data
+- `requests`: FT and investing.com HTTP endpoints
+- `numpy`: float32 round-tripping, so prices are stored exactly as quoted
+- `playwright`: Scraping fallback and browser automation
 - `coverage`: Code coverage measurement
-- `yfinance`: Yahoo Finance API for stock/fund prices and historical data
 
 **Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
 The list above names what each dependency is for; it deliberately omits version pins so it

@@ -554,8 +554,8 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ### Overall Status
 
 #### Spec Kit Specifications
-- **Active Specs**: 2
-- **Completed**: 2 (SPEC-001, SPEC-002)
+- **Active Specs**: 9
+- **Completed**: 9 (SPEC-001 to SPEC-009; see [`specs/README.md`](../../specs/README.md))
 - **In Progress**: 0
 - **Planned**: 0
 
@@ -578,10 +578,12 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 - 🔗 Phase 3 remainder — tracked in [issue #6](https://github.com/joneswm/FundPrices/issues/6)
 
 ### Completed Major Features
-- ✅ Multi-source fund price scraping (FT, Yahoo Finance, Morningstar, Yahoo Finance API)
+- ✅ Multi-source dated price collection (Yahoo Finance API, FT, investing.com; scraping fallback)
+- ✅ True price dates and currencies, identifier aliases, FX rates, daily summary
+- ✅ History rebuild from source data, and one-off imports of closed holdings
 - ✅ Historical price data retrieval for any stock/fund
 - ✅ Automated daily collection via GitHub Actions
-- ✅ Comprehensive testing suite with 97% coverage
+- ✅ Comprehensive testing suite with both coverage gates enforced in CI
 - ✅ IDE Integration with VS Code/Cursor test support
 - ✅ **Test-Driven Development (TDD) enforcement**
 - ✅ **Spec-Driven Development (SDD) with Spec Kit**
@@ -604,4 +606,4 @@ See `specs/README.md` for specification guidelines.
 **Note**: This file is no longer updated with per-feature status. Current status lives in
 [GitHub Issues](https://github.com/joneswm/FundPrices/issues).
 
-The project has achieved 100% implementation of legacy user stories and successfully migrated to Spec Kit for future development. All four data sources are operational plus historical data retrieval capability.
+The project has achieved 100% implementation of legacy user stories and successfully migrated to Spec Kit for future development. Everything delivered since is recorded in `specs/` and in closed GitHub issues.

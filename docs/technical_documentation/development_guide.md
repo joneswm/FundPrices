@@ -263,80 +263,75 @@ coverage html  # Generate HTML report
 
 ## Adding New Features
 
+Open a GitHub issue, write a spec under `specs/`, then implement with TDD. The
+sketches below show where each kind of change lands in the current design.
+
 ### 1. New Fund Source
-To add a new fund source (e.g., "Bloomberg"):
+
+Every source is a function returning `list[Quote]`, oldest first, where a `Quote` is
+`(date, price, currency)` with the date **as the source reports it**. Prefer a dated
+HTTP or API route; scraping a page that shows only the current price yields the run
+date and no currency.
 
 ```python
-def get_source_config(source, fund_id):
-    """Get URL and selector for a given source and fund_id."""
-    if source.upper() == "FT":
-        url = f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}"
-        selector = ".mod-ui-data-list__value"
-    elif source.upper() == "YH":
-        url = f"https://sg.finance.yahoo.com/quote/{fund_id}/"
-        selector = 'span[data-testid="qsp-price"]'
-    elif source.upper() == "MS":
-        url = f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}"
-        selector = '#mainContent_quicktakeContent_fvOverview_lblNAV'
-    elif source.upper() == "BB":  # New Bloomberg source
-        url = f"https://www.bloomberg.com/quote/{fund_id}"
-        selector = ".priceText__1853e8a5"
-    else:
-        return None, None
-    return url, selector
+def fetch_example_quotes(identifier, start, end=None):
+    """Fetch dated daily quotes from Example."""
+    end = end or datetime.date.today().isoformat()
+    response = requests.get(EXAMPLE_URL.format(id=identifier, start=start, end=end),
+                            timeout=EXAMPLE_REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    quotes = [
+        Quote(row["date"], normalize_price(row["close"]), row["currency"])
+        for row in response.json().get("rows") or []
+    ]
+    if not quotes:
+        raise ValueError(f"Example returned no rows for {identifier}")
+    return sorted(quotes, key=lambda quote: quote.date)
 ```
+
+Then wire it in, test-first at each step:
+
+1. Add a branch for the new two-letter code in `scrape_fund_quotes()`, the single
+   dispatch point.
+2. Add the code to `source_requires_browser()` if it needs no browser.
+3. Raise `ValueError` for "no rows" so `fetch_with_retries()` and the import treat it
+   as a failure rather than an empty success.
+4. Add a live functional test that **skips** when the source is down.
+5. Document the code in `README.md`, `AGENTS.md`, `constitution.md` and
+   `api_reference.md`.
+
+Before trusting a new source, validate it against a series you can verify another way.
+Sources found wanting so far: Yahoo repeating one close with zero volume across a
+ticker change, FT resolving an ISIN to a different listing and currency, FT pricing
+LSE-listed ETFs on UK bank holidays, and justETF serving a converted series 1.6% away
+from real closes.
 
 ### 2. New Data Fields
-To add new data fields (e.g., fund name):
 
-```python
-def scrape_funds(funds, data_dir=None):
-    """Scrape prices for a list of funds and return results."""
-    # ... existing code ...
-    
-    for source, fund_id in funds:
-        try:
-            url, selector = get_source_config(source, fund_id)
-            if url and selector:
-                price = scrape_price_with_common_settings(page, url, selector)
-                
-                # Add fund name scraping
-                name_selector = ".fund-name"  # Example selector
-                try:
-                    page.wait_for_selector(name_selector, timeout=5000)
-                    fund_name = page.locator(name_selector).first.text_content().strip()
-                except:
-                    fund_name = "Unknown"
-                
-                results.append({
-                    "source": source,
-                    "fund_id": fund_id,
-                    "fund_name": fund_name,  # New field
-                    "price": price,
-                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "success"
-                })
-        except Exception as e:
-            # ... error handling ...
-```
+Stored rows are `[fund, date, price, currency]`, written through `write_history_csv()`
+with `HISTORY_HEADER`. A new field is a new trailing column, as `Currency` was:
+
+- extend `Quote`, `HISTORY_HEADER` and the row built in `scrape_funds()`
+- make `read_history_rows()` tolerate rows written before the column existed
+- keep the first columns in place, so positional readers are unaffected
 
 ### 3. New Output Formats
-To add JSON output support:
+
+Derive new outputs from the rows already in hand, and write them through
+`open_for_write()` so they get LF endings on every platform:
 
 ```python
-import json
-
-def write_results_json(results, data_dir=None):
-    """Write results to JSON file."""
-    if data_dir is None:
-        data_dir = DATA_DIR
-    
-    os.makedirs(data_dir, exist_ok=True)
-    
-    json_file = os.path.join(data_dir, "latest_prices.json")
-    with open(json_file, "w") as f:
-        json.dump(results, f, indent=2)
+def write_results_json(rows, data_dir):
+    """Write the latest row per fund as JSON."""
+    latest = latest_rows_by_fund(rows)
+    with open_for_write(os.path.join(data_dir, "latest_prices.json")) as f:
+        json.dump([latest[fund] for fund in sorted(latest)], f, indent=2)
+        f.write("\n")
 ```
+
+If the file should be committed by the daily run, add its pattern to the `git add -f`
+line in `.github/workflows/scrape.yml`.
 
 ## Testing Guidelines
 
@@ -493,16 +488,21 @@ DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 ### Error Handling
 
 **Retry logic already exists - do not add your own.** `scrape_funds()` wraps every fetch in
-`fetch_with_retries()` (up to `MAX_PRICE_ATTEMPTS`, default 3) and falls back to the fund's
-last known good price via `get_last_known_price()` when all attempts fail:
+`fetch_with_retries()` (up to `MAX_PRICE_ATTEMPTS`, default 3) and, when all attempts
+fail, carries the fund's last stored row forward under its original date. Nothing is
+invented for today and nothing is recorded as "N/A":
 
 ```python
-# scrape_fund_price.py - existing behaviour
-price, error = fetch_with_retries(lambda: fetch_price_api(fund_id))
+# scrape_fund_price.py - existing behaviour, abridged
+quotes, error = fetch_with_retries(
+    lambda: scrape_fund_quotes(spec.source, spec.lookup_id, start, browser=browser)
+)
 if error:
-    fallback_price = get_last_known_price(fund_id, data_dir)
-    price = fallback_price if fallback_price is not None else "N/A"
-    results.failures.append(f"{fund_id}: {error}")
+    results.failures.append(f"{spec.lookup_id}: {error}")
+    last_known = read_last_known_row(identifier, data_dir)
+    if last_known is not None:
+        results.carried.append([identifier] + last_known)
+    continue
 ```
 
 If you need to change retry behaviour, adjust `MAX_PRICE_ATTEMPTS` or `fetch_with_retries()`

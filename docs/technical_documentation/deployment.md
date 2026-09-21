@@ -44,61 +44,70 @@ python test_scrape_fund_price.py
 Create or update `funds.txt` with your fund identifiers:
 ```
 FT,GB00B1FXTF86
-YH,IDTG.L
-MS,LU0196696453
+YA,IDTG.L
+YA,0P00000YAN,JFM0003373
 ```
+
+`fx_pairs.txt` lists the FX rates to snap, and `closed_holdings.txt` lists one-off
+historical imports. See the [README](../../README.md#configuration) for all three
+formats.
 
 ### 2. Data Directory
 The application will create a `data/` directory for storing results:
 - `latest_prices.csv`: Most recent prices
 - `prices_history.csv`: Historical data
+- `prices_history_90_days.csv`, `latest_<identifier>.price`, `fx_history.csv`,
+  `latest_fx.csv`, `daily_summary.csv` and `daily_summary.md`
 
-### 3. Environment Variables (Optional)
-```bash
-export FUNDS_FILE="custom_funds.txt"
-export DATA_DIR="custom_data"
-```
+### 3. File Locations
+The configuration files and the `data/` directory are read from the working
+directory. There are no environment variables or command-line options for relocating
+them; the only environment variable read is `GITHUB_STEP_SUMMARY`, which GitHub
+Actions sets.
 
 ## Deployment Options
 
 ### Local Development
 ```bash
-# Run once
+# Daily run: prices, FX rates and the summary
 python scrape_fund_price.py
 
-# Run with custom configuration
-python scrape_fund_price.py --funds custom_funds.txt --data-dir custom_data
+# Rebuild stored history from the sources
+python scrape_fund_price.py --backfill --from 2023-01-01
+
+# One-off import of closed holdings
+python scrape_fund_price.py --import-closed
 ```
 
 ### Cron Job (Linux/macOS)
 Add to crontab for automated execution:
 ```bash
-# Run every hour
-0 * * * * cd /path/to/FundPrices && python scrape_fund_price.py
-
-# Run every weekday at 9 AM
-0 9 * * 1-5 cd /path/to/FundPrices && python scrape_fund_price.py
+# Run daily at 22:30 UTC, after the US close, matching the GitHub Actions schedule
+30 22 * * * cd /path/to/FundPrices && python scrape_fund_price.py
 ```
+
+Prices are end-of-day, and history is keyed on the source's own price date, so running
+more often than daily fetches the same rows again.
 
 ### GitHub Actions (Recommended)
 The project includes GitHub Actions workflow for automated execution:
 
-1. **Workflow File**: `.github/workflows/scrape-funds.yml`
-2. **Schedule**: Configurable cron expression
+1. **Workflow Files**: `.github/workflows/scrape.yml` (daily run),
+   `backfill.yml` (manual rebuild) and `test.yml` (CI)
+2. **Schedule**: `30 22 * * *` — 22:30 UTC, after the US close all year round
 3. **Triggers**: Manual and scheduled runs
-4. **Output**: Commits results to repository
+4. **Output**: Commits results to repository, even when some funds failed
 
 #### GitHub Actions Setup
 1. Enable GitHub Actions in repository settings
-2. Configure secrets if needed:
-   - `FUNDS_CONFIG`: Custom fund configuration (optional)
+2. No secrets are needed: the workflows push with the built-in `GITHUB_TOKEN`
 3. Modify schedule in workflow file as needed
 
 ### Docker Deployment
 
 #### Dockerfile
 ```dockerfile
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 

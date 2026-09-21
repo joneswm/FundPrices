@@ -142,8 +142,9 @@ preserved exactly.
 
 ### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None)`
 
-Returns dated quotes for one fund from its configured source, falling back from FT's
-endpoint to scraping when needed. `YH` and `MS` scrape a page showing only the current
+Returns dated quotes for one fund from its configured source: `YA` via
+`fetch_yahoo_quotes()`, `IV` via `fetch_investing_quotes()`, and `FT` via
+`fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. `YH` and `MS` scrape a page showing only the current
 price, so their quotes carry the run date and an empty currency.
 
 ### `LazyBrowser`
@@ -186,14 +187,17 @@ only if at least one fund actually needs scraping (see `source_requires_browser`
 - `data_dir` (str, optional): Directory to store results (defaults to `"data"`)
 
 **Returns:**
-- `ScrapeResults`: a `list` subclass of `[fund_id, date, price]` rows, carrying an
-  additional `.failures` attribute listing `"<fund_id>: <error>"` strings for funds
-  that fell back to a last known price
+- `ScrapeResults`: a `list` subclass of `[fund_id, date, price, currency]` rows, one
+  per dated quote in the last `SNAP_WINDOW_DAYS` (10) days, with two extra attributes:
+  - `.failures`: `"<lookup_id>: <error>"` strings for funds whose every attempt failed
+  - `.carried`: the last stored row for each of those funds, under its original date,
+    so `latest_prices.csv` keeps reporting a real price. A fund with no stored
+    history has no carried row and is simply absent
 
 **Result Format:**
 ```python
 results = scrape_funds([("YA", "AAPL"), ("FT", "GB00B1FXTF86")])
-# [["AAPL", "2026-09-20", "150.25"], ["GB00B1FXTF86", "2026-09-20", "1.2345"]]
+# [["AAPL", "2026-09-18", "150.25", "USD"], ["GB00B1FXTF86", "2026-09-18", "7.15", "GBP"], ...]
 results.failures
 # ["GB00B1FXTF86: Error: Timeout"]   (only for funds that failed all attempts)
 ```
@@ -214,7 +218,9 @@ Writes scraping results to CSV files.
   replaces an existing row with the same key, so corrections apply and re-runs
   cannot duplicate
 - `prices_history_90_days.csv`: Derived rolling window containing the latest result
-  date and the preceding 89 calendar days (90 inclusive, `ROLLING_HISTORY_DAYS`)
+  date and the preceding 89 calendar days (90 inclusive, `ROLLING_HISTORY_DAYS`), for
+  the funds in this run's results or carried rows. Closed holdings are excluded even
+  when their dates fall inside the window
 
 **CSV Format:**
 - Headers: `Fund,Date,Price,Currency`
@@ -254,8 +260,13 @@ path = fetch_historical_data("AAPL", "2024-01-01", "2024-12-31")
 
 ### `parse_arguments(args=None)`
 
-Parses the command line. Supports `--history SYMBOL`, `--start YYYY-MM-DD` and
-`--end YYYY-MM-DD`. With no `--history`, the scraper runs in normal mode.
+Parses the command line:
+
+- `--history SYMBOL` with `--start YYYY-MM-DD` and optional `--end YYYY-MM-DD`
+- `--backfill` with `--from YYYY-MM-DD` (`--from` is an alias of `--start`)
+- `--import-closed`
+
+With none of these, the daily run executes.
 
 ## Resilience: Retries and Last Known Price
 
@@ -279,15 +290,18 @@ Returns the most recent usable price for a fund, checked in order:
 3. `read_history_price()` - most recent row in `prices_history.csv`
 
 **Returns:**
-- `str` price, or `None` if no usable historical price exists (the fund is then recorded as `"N/A"`)
+- `str` price, or `None` if no usable historical price exists
+
+`scrape_funds()` itself uses `read_last_known_row()`, which also returns the date and
+currency; this function remains for callers that need only the price.
 
 ### Supporting helpers
 
 - `is_error_price(price)` - True when a value is an `"Error: ..."` string
 - `normalize_price(price)` - normalises a price value for storage
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
-- `source_requires_browser(source, fund_id)` - False for `YA` (API) and `FT` (HTTP), so
-  Playwright is only launched when genuinely needed
+- `source_requires_browser(source, fund_id)` - False for `YA`, `FT` and `IV`, which all
+  reach HTTP endpoints, so Playwright is only launched when genuinely needed
 
 ## Closed Holdings
 
@@ -341,6 +355,106 @@ the wrong listing. Sources are asked one day past `end`, because Yahoo treats
 the end date as exclusive while FT and investing.com treat it as inclusive; the
 window filter clips the extra day.
 
+## History Rebuild
+
+`--backfill --from YYYY-MM-DD` replaces stored history with what the sources report.
+Manual only: locally, or through the **Rebuild Price History** workflow.
+
+### `validate_backfill_args(args)`
+
+Returns an error message for an invalid invocation, else `None`. Rejects `--backfill`
+combined with `--history`, a missing or malformed `--from`, and a date in the future.
+
+### `backfill_history(specs, start, data_dir=None)`
+
+Rebuilds every identifier in `specs` from `start` and returns a `BackfillReport`.
+
+- **Deletes rather than upserts**, because carry-forward rows sit on dates the sources
+  never report and would otherwise survive.
+- An instrument whose fetch fails keeps every row it had.
+- Rows before `start`, and rows for identifiers not in `specs` — including closed
+  holdings — are never touched.
+- `latest_prices.csv`, the rolling window and the `.price` files are rebuilt for the
+  configured identifiers only.
+- FT requests are separated by `FT_BACKFILL_PAUSE_SECONDS`.
+- Finishes by calling `backfill_fx()` when `fx_pairs.txt` has pairs.
+
+### `is_removable_row(row)`
+
+True when a rebuild may delete a stored row the source did not return: always for a
+weekend row, otherwise only when the row has no currency. A currency-bearing row came
+from a dated source fetch and is kept, because FT's endpoint intermittently omits real
+trading days from identical requests.
+
+### `check_quoting_unit(identifier, quotes)`
+
+Returns a warning when consecutive prices differ by more than `QUOTING_UNIT_FACTOR`
+(50), the signature of a pence/pounds switch. Used by both the rebuild and the
+closed-holding import.
+
+### `BackfillReport`
+
+`entries`, `failures` and `warnings`, with `to_markdown()` rendering the reconciliation
+table printed to stdout and appended to the Actions job summary. Shared by the rebuild
+and the closed-holding import.
+
+## Storage Helpers
+
+### `read_history_rows(history_csv)`
+
+Returns stored history as `{(fund, date): [fund, date, price, currency]}`, loading
+legacy three-column rows with an empty currency.
+
+### `write_history_csv(rows, data_dir)`
+
+Writes `prices_history.csv` sorted by date then fund and returns the rows as written.
+Used on its own by the closed-holding import, which must not touch any other file.
+
+### `write_history_files(rows, data_dir, latest=None)`
+
+Writes `prices_history.csv`, `latest_prices.csv` and `prices_history_90_days.csv`.
+Shared by the daily run and the rebuild so both produce byte-identical output.
+
+When `latest` is supplied it names the funds currently being priced, and the rolling
+window is limited to that set. When omitted, `latest` is derived from `rows` and the
+window covers every fund.
+
+### `latest_rows_by_fund(rows)`
+
+Returns `{fund: row}` holding each fund's row with the newest price date.
+
+### `write_latest_price_file(fund_id, price, data_dir)`
+
+Writes `latest_<fund_id>.price`.
+
+### `open_for_write(path, **kwargs)` and `csv_writer(file)`
+
+Every output file goes through these. They force LF line endings on every platform:
+`csv.writer` defaults to CRLF everywhere and Windows text mode translates LF to CRLF,
+which once made a four-row update show as 3,906 changed lines.
+
+## Source Code Helpers
+
+### `canonical_source(code, line_number=None)`
+
+Upper-cases a source code and maps a deprecated one (`GF` → `YA`, via
+`SOURCE_ALIASES`), printing a warning that names the line.
+
+### `as_fund_spec(entry)`
+
+Accepts a `FundSpec` or a plain `(source, identifier)` pair and returns a `FundSpec`
+with a canonical source, so a spec built in code cannot carry a deprecated spelling
+past the dispatch points.
+
+## Entry Point
+
+### `main()`
+
+Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
+`--history`, otherwise the daily run. The daily run writes prices, then FX, then the
+summary, each independently, and exits non-zero only after everything obtainable has
+been written. The rebuild and the import exit non-zero when their report has failures.
+
 ## Daily Summary
 
 ### `build_price_summary(history_rows, specs, failures, run_date)`
@@ -351,6 +465,18 @@ Summarises each configured instrument's latest movement.
 before. An aliased instrument is reported once, under its lookup identifier.
 
 **Returns:** `list[SummaryRow]` in `funds.txt` order.
+
+### `summarise_series(name, aliases, rows, failures, run_date, places=None)`
+
+Builds one `SummaryRow` from a series' stored rows: the newest value against the
+previous **distinct** date, its age in days, and whether it is stale or failed. Shared
+by the price and FX summaries.
+
+### `compare_values(new_text, old_text, places=None)` and `format_decimal(value, places=None)`
+
+Return the delta and percent delta as strings, using `decimal.Decimal` so that
+7.15 - 7.09 is exactly 0.06. An old value of zero yields no percentage rather than a
+division error. `format_decimal()` renders without exponent notation.
 
 ### `build_fx_summary(fx_rows, pairs, failures, run_date)`
 
@@ -404,6 +530,14 @@ Upserts rates on **(Pair, Date)** into `data/fx_history.csv` and regenerates
 The current day's rate is provisional and is replaced once the bar completes; the upsert
 makes this self-correcting, so no flag is stored.
 
+### `read_fx_rows(fx_csv)`, `write_fx_files(rows, data_dir)` and `format_fx_rate(value)`
+
+`read_fx_rows()` returns stored rates keyed on `(Pair, Date)`. `write_fx_files()` writes
+`fx_history.csv` and `latest_fx.csv` from an authoritative row set **without merging**,
+so a rebuild that removed rows really removes them; `write_fx_results()` does the
+merging for the daily run before calling it. `format_fx_rate()` renders a rate at a
+fixed `FX_RATE_DECIMALS` places, unlike prices, which keep the source's own precision.
+
 ### `backfill_fx(pairs, start, data_dir=None, report=None)`
 
 Rebuilds stored rates from the start date using the same rule as the price rebuild.
@@ -417,36 +551,54 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `HISTORY_CSV`: Historical prices file path
 - `FUNDS_FILE`: Default funds configuration file ("funds.txt")
 
+- `CLOSED_HOLDINGS_FILE`: One-off import configuration ("closed_holdings.txt")
+- `FX_PAIRS_FILE`: FX pair configuration ("fx_pairs.txt")
+
 ### Behaviour Settings
 - `MAX_PRICE_ATTEMPTS`: Fetch attempts before falling back to the last known price (3)
 - `ROLLING_HISTORY_DAYS`: Inclusive window for `prices_history_90_days.csv` (90)
+- `SNAP_WINDOW_DAYS`: Days of dated quotes each daily run requests (10), so a late or
+  corrected price is picked up by the upsert
+- `STALE_AFTER_DAYS`: Age beyond which the summary marks an instrument `~` (4)
+- `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning (50)
+- `FT_BACKFILL_PAUSE_SECONDS`: Pause between FT requests during a rebuild (1)
+- `FX_RATE_DECIMALS`: Decimal places stored for FX rates (6)
+- `SOURCE_ALIASES`: Deprecated source codes and their replacements (`{"GF": "YA"}`)
+- `LINE_ENDING`: Line ending for every written file (LF)
+
+### Endpoints and Timeouts
+- `FT_HISTORICAL_PAGE`, `FT_HISTORICAL_AJAX`, `FT_REQUEST_TIMEOUT` (30s)
+- `INVESTING_HISTORICAL_URL`, `INVESTING_HEADERS`, `INVESTING_REQUEST_TIMEOUT` (30s).
+  The headers carry a realistic browser user agent; a bare `Mozilla/5.0` gets a 403
+
+### File Headers
+- `HISTORY_HEADER`: `Fund,Date,Price,Currency`
+- `FX_HEADER`: `Pair,Date,Rate`
+- `SUMMARY_HEADER`: columns of `daily_summary.csv`
 
 ## Error Handling
 
 ### Common Exceptions
-- `FileNotFoundError`: When funds file doesn't exist
-- `TimeoutError`: When page load or selector wait times out
-- `ValueError`: When invalid source is provided
+- `FileNotFoundError`: When a configuration file doesn't exist
+- `ValueError`: A malformed configuration line (the message names the line), an
+  unsupported source, or a source that returned no rows
+- `TimeoutError`: When a scraped page or selector wait times out
 
-### Error Status Values
-- `"success"`: Scraping completed successfully
-- `"error"`: Scraping failed with an exception
-- `"timeout"`: Request timed out
-- `"not_found"`: Price element not found on page
+Inside a run these are caught per instrument and surface on `.failures` or in a
+`BackfillReport`; no error text is ever written to a data file.
 
 ## Usage Examples
 
 ### Basic Usage
 ```python
-from scrape_fund_price import scrape_funds, read_fund_ids
+from scrape_fund_price import scrape_funds, read_fund_ids, write_results
 
 # Read fund configuration
 funds = read_fund_ids("funds.txt")
 
-# Scrape prices
+# Fetch dated quotes, then store them
 results = scrape_funds(funds)
-
-# Results are automatically saved to CSV files
+write_results(results)
 ```
 
 ### Custom Data Directory
@@ -471,7 +623,7 @@ with sync_playwright() as p:
 
 ## Dependencies
 
-- `playwright`: Web scraping and browser automation
-- `datetime`: Timestamp generation
-- `csv`: CSV file operations
-- `os`: File system operations
+- `yfinance`: Yahoo Finance daily bars, FX rates and ad-hoc history
+- `requests`: FT and investing.com HTTP endpoints
+- `numpy`: float32 round-tripping, so prices are stored exactly as quoted
+- `playwright`: Scraping fallback

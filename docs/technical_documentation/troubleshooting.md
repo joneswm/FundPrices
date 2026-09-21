@@ -263,12 +263,34 @@ pkill -f python
 **Solutions:**
 ```bash
 # Check workflow file syntax
-# Verify .github/workflows/scrape-funds.yml exists
+# Verify .github/workflows/scrape.yml exists (backfill.yml and test.yml sit beside it)
 # Check GitHub Actions permissions in repository settings
 
 # Test workflow locally
-act -j scrape-funds
+act -j scrape
 ```
+
+#### Issue: A run is red but the data was committed
+**Symptoms:**
+- The scrape workflow shows as failed
+- `Update fund prices` was still pushed
+
+**Explanation:** this is by design. A fund or FX pair that failed every attempt makes
+the run exit non-zero, but only after everything obtainable has been written, and the
+commit steps run with `if: always()`. Check the run's job summary or
+`data/daily_summary.md`: failed instruments are marked `!`, and stale ones `~`.
+
+#### Issue: A source returns prices that look plausible but are wrong
+**Symptoms:**
+- A long run of identical closes, often with zero volume
+- A currency you did not expect
+- Rows dated on a day the exchange was shut
+
+**Explanation:** all three have happened. Yahoo repeated one close for 60 trading days
+across a fund rename; FT's ISIN lookup resolved a USD holding to its EUR listing; and
+FT prices LSE-listed ETFs on UK bank holidays. Prefer an explicit FT symbol such as
+`SEAL:LSE:GBX` over an ISIN for anything exchange-listed, and compare a new source
+against a second one before relying on it. `closed_holdings.txt` records worked examples.
 
 #### Issue: Workflow runs but fails
 **Symptoms:**

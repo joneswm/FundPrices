@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-009: One-Off Imports for Closed Holdings
+**Status**: ✅ Complete
+**Location**: [009-closed-holdings/](009-closed-holdings/)
+**Description**: Import real price history once for instruments no longer held, from a separate configuration the daily run never reads. Written retrospectively from issue #73.
+
 ### SPEC-008: Rename the GF Source Code to YA
 **Status**: ✅ Complete
 **Location**: [008-source-code-rename/](008-source-code-rename/)

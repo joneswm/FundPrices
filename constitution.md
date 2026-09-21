@@ -1,7 +1,7 @@
 # FundPrices Project Constitution
 
-**Version**: 1.0  
-**Last Updated**: 2024-11-20  
+**Version**: 1.1  
+**Last Updated**: 2026-09-21  
 **Status**: Active
 
 This document defines the non-negotiable principles and standards for the FundPrices project. All contributors (human and AI) must adhere to these rules.
@@ -121,9 +121,12 @@ raise Exception("Something went wrong")
 ## 5. Data Integrity
 
 ### Duplicate Prevention
-- **History file** must prevent duplicate entries for same date
-- **Multiple runs per day** are safe - latest prices replace earlier ones
-- **Implementation**: Date-based filtering before appending
+- **History file** must prevent duplicate entries: it is keyed on `(Fund, Date)`,
+  where the date is the one the source reports
+- **Multiple runs per day** are safe - an incoming row replaces the stored row
+- **Implementation**: Keyed upsert, sorted output, LF line endings on every platform
+- **No synthetic data**: no row is written for a day a source publishes no price, and
+  no error text is ever written to a data file
 
 ### Data Validation
 - Validate all input data before processing
@@ -290,7 +293,7 @@ Closed holdings use the same source codes but a separate file,
 
 ### GitHub Actions Requirements
 - **Test workflow**: Runs on every push/PR
-- **Scrape workflow**: Scheduled daily at 22:00 UTC
+- **Scrape workflow**: Scheduled daily at 22:30 UTC, after the US close all year round
 - **All tests must pass** before merge
 - **Coverage reports** generated automatically
 
@@ -305,9 +308,11 @@ Closed holdings use the same source codes but a separate file,
 ## 12. Dependencies
 
 ### Required Libraries
-- `playwright` - Web scraping and browser automation
+- `yfinance` - Yahoo Finance API for prices, FX rates and historical data
+- `requests` - FT and investing.com HTTP endpoints
+- `numpy` - float32 round-tripping, so prices are stored exactly as quoted
+- `playwright` - Scraping fallback and browser automation
 - `coverage` - Code coverage measurement
-- `yfinance` - Yahoo Finance API for stock/fund prices and historical data
 
 **Versions are defined in [`requirements.txt`](requirements.txt)** and kept current by Dependabot.
 The list above names what each dependency is for; it deliberately omits version pins so it
@@ -401,6 +406,12 @@ This constitution is a living document. Amendments require:
 
 **Amendment History**:
 - v1.0 (2024-11-20): Initial constitution created during Spec Kit migration
+- v1.1 (2026-09-21): Brought into line with the code, with no change of principle.
+  Section 5 describes the keyed upsert that replaced date-based filtering and states
+  the no-synthetic-data rule the implementation already followed; section 10 lists the
+  current source codes (`YA`, `IV`, `GF` as a deprecated alias) and the separate
+  closed-holdings file; section 11 gives the real schedule (22:30 UTC); section 12
+  names every runtime dependency
 
 ---
 
