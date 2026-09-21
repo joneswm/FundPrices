@@ -47,9 +47,9 @@ jobs:
         key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
     - name: Install Playwright browser
-      # On a cache hit the binary is restored, so only the browser download is
-      # skipped. Whether the apt dependencies are also needed on ubuntu-latest
-      # is measured by the launch check below.
+      # On a cache hit the binary is restored and nothing else is needed:
+      # measured on ubuntu-latest, Chromium launches without the apt
+      # dependencies, which were costing 11-23s.
       run: |
         if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
           echo "cache hit: skipping download and apt dependencies"

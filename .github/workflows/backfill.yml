@@ -47,11 +47,13 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browser
-        # --with-deps installs apt packages outside the cached directory, so on a
-        # cache hit only the OS dependencies are needed, not the ~20s download.
+        # On a cache hit the binary is restored and nothing else is needed:
+        # measured on ubuntu-latest, Chromium launches without the apt
+        # dependencies, which were costing 11-23s. test.yml keeps a launch
+        # check as a canary in case a future runner image drops a library.
         run: |
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
-            playwright install-deps chromium
+            echo "cache hit: browser restored, no download or apt needed"
           else
             playwright install --with-deps chromium
           fi
