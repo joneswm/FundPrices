@@ -3061,6 +3061,8 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
                 "SPOG": "YA",
                 "R2SC": "YA",
                 "CNDX": "YA",
+                "FBTC": "YA",
+                "JFM50541951": "IV",
             },
         )
 
@@ -3516,6 +3518,69 @@ class TestInvestingEmptyPayloads(unittest.TestCase):
             self.assertTrue(report.failures)
         finally:
             shutil.rmtree(test_dir)
+
+
+
+class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
+    """Test the 90-day window tracks latest_prices.csv, not raw history.
+
+    A closed holding can have real prices inside the last 90 days: FBTC ran to
+    2026-08-17. Those rows belong in history, but the rolling window answers
+    "what is being priced now" alongside latest_prices.csv, and the daily run
+    would otherwise start emitting rows for an instrument it no longer fetches.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.today = date.today()
+        self.recent = (self.today - timedelta(days=5)).isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _rolling(self):
+        path = os.path.join(self.test_dir, "prices_history_90_days.csv")
+        with open(path, newline="") as f:
+            return [row for row in csv.reader(f)][1:]
+
+    def test_closed_holdings_are_excluded_from_the_window(self):
+        """Test a recent closed-holding row stays out of the rolling file."""
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["FBTC", self.recent, "55.94", "USD"],
+        ]
+        write_history_files(
+            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
+        )
+        self.assertEqual([row[0] for row in self._rolling()], ["QQQ"])
+
+    def test_history_still_keeps_every_row(self):
+        """Test excluding them from the window does not drop them."""
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["FBTC", self.recent, "55.94", "USD"],
+        ]
+        write_history_files(
+            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
+        )
+        with open(
+            os.path.join(self.test_dir, "prices_history.csv"), newline=""
+        ) as f:
+            stored = [row for row in csv.reader(f)][1:]
+        self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
+
+    def test_derived_latest_still_covers_everything(self):
+        """Test the default path is unchanged when no latest is supplied.
+
+        A caller that does not pass `latest` has no notion of a closed
+        holding, so the window must keep its old meaning for it.
+        """
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["AAA", self.recent, "1.50", "GBP"],
+        ]
+        write_history_files(rows, self.test_dir)
+        self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
 
 
 if __name__ == "__main__":

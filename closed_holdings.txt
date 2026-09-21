@@ -60,3 +60,17 @@ R2SC,YA,R2SC.L,GBP,2024-07-17,2024-11-22
 # was shut. No other LSE instrument in this repository has a row on those
 # dates. Yahoo's 381 days agree with FT to within 0.0008% everywhere else.
 CNDX,YA,CNDX.L,USD,2023-01-03,2024-07-05
+
+# Fidelity Wise Origin Bitcoin Fund (BATS:FBTC).
+FBTC,YA,FBTC,USD,2025-08-01,2026-08-17
+
+# JPMorgan Indonesia Fund (acc) USD, Hong Kong unit trust (HK0000055662).
+# Yahoo knows the fund as 0P00007Y4S and reports its name and currency, but
+# serves no price history for it, and FT does not carry it at all.
+#
+# The series ends 2024-09-19, when the fund stopped publishing a NAV. A
+# Morningstar export of the same history matched investing.com on all 385
+# overlapping days exactly; it carries two further days, 2023-12-05 and the
+# final NAV on 2024-09-20, which are left out because that export may not be
+# redistributed and this repository is public.
+JFM50541951,IV,1190399,USD,2023-01-03,2024-09-19
