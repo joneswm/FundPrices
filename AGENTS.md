@@ -25,7 +25,7 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 - `./run_tests.sh coverage` - Run tests with coverage
 
 ### Rebuilding History
-- `python scrape_fund_price.py --backfill --from 2023-01-01` - rebuild stored history
+- `python scrape_fund_price.py --backfill --from 2022-01-01` - rebuild stored history
   from source data. Manual only; also available as the **Rebuild Price History**
   workflow. Shares a concurrency group with the daily scrape so the two cannot push
   at the same time.

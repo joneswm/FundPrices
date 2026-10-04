@@ -112,7 +112,7 @@ exclusive, so the import asks for one day more and clips the result.
 Rebuild stored history from source data, e.g. after changing a fund's source:
 
 ```bash
-python scrape_fund_price.py --backfill --from 2023-01-01
+python scrape_fund_price.py --backfill --from 2022-01-01
 ```
 
 This replaces stored rows from that date onward with what the sources report, and
