@@ -15,7 +15,12 @@
 # loudly instead of importing a full window of plausible wrong prices.
 
 # Global X Blockchain UCITS ETF, LSE USD line (IE000XAGSCY5).
-BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16
+#
+# Starts 2022-01-21, the line's first day on Yahoo. In 2022 the line was thin:
+# 92 of 237 days show zero volume, but the close still moves on each of them
+# (no flat run longer than two days), and the large 2022 moves match the US
+# BKCH listing on the same days (-16% on 2022-05-09, -14% on 2022-06-13).
+BKCH,YA,BKCH.L,USD,2022-01-21,2024-02-16
 
 # HANetf ICAV sub-fund IE000KDY10O3, LSE GBX line. One sub-fund under three
 # names: Global Metaverse until 2024-07-01, Web 3.0 until 2026-07-15, Future
@@ -44,9 +49,9 @@ BN4MYX3,IV,1182866,GBX,2024-01-04,2024-03-13
 # iShares Oil & Gas Exploration & Production UCITS ETF (IE00B6R51Z18).
 # SPOG is the LSE GBX line; IOGP is the USD line of the same share class, and
 # FT's ISIN lookup resolves to that one, so the symbol is used directly.
-# Yahoo's series is healthy here: 141 rows, no zero-volume days, no flat run
-# longer than one day.
-SPOG,YA,SPOG.L,GBp,2023-01-03,2023-07-25
+# Yahoo's series is healthy here: no zero-volume days, and no flat run longer
+# than one day in 2023 or two days in 2022.
+SPOG,YA,SPOG.L,GBp,2022-01-04,2023-07-25
 
 # SPDR Russell 2000 US Small Cap UCITS ETF, LSE GBP line. Yahoo and FT agree
 # to within 0.011% across all 92 days.
@@ -58,8 +63,9 @@ R2SC,YA,R2SC.L,GBP,2024-07-17,2024-11-22
 # Not sourced from FT, which returns four extra rows dated 2023-05-08,
 # 2023-08-28, 2024-05-06 and 2024-05-27 -- all UK bank holidays, when the LSE
 # was shut. No other LSE instrument in this repository has a row on those
-# dates. Yahoo's 381 days agree with FT to within 0.0008% everywhere else.
-CNDX,YA,CNDX.L,USD,2023-01-03,2024-07-05
+# dates. Yahoo's 381 days from 2023 agree with FT to within 0.0008% everywhere
+# else. The 2022 extension is Yahoo too: no zero-volume days, no flat runs.
+CNDX,YA,CNDX.L,USD,2022-01-04,2024-07-05
 
 # Fidelity Wise Origin Bitcoin Fund (BATS:FBTC).
 FBTC,YA,FBTC,USD,2025-08-01,2026-08-17
@@ -69,8 +75,8 @@ FBTC,YA,FBTC,USD,2025-08-01,2026-08-17
 # serves no price history for it, and FT does not carry it at all.
 #
 # The series ends 2024-09-19, when the fund stopped publishing a NAV. A
-# Morningstar export of the same history matched investing.com on all 385
+# Morningstar export of the 2023-2024 history matched investing.com on all 385
 # overlapping days exactly; it carries two further days, 2023-12-05 and the
 # final NAV on 2024-09-20, which are left out because that export may not be
 # redistributed and this repository is public.
-JFM50541951,IV,1190399,USD,2023-01-03,2024-09-19
+JFM50541951,IV,1190399,USD,2022-01-03,2024-09-19
