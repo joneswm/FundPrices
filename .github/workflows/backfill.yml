@@ -8,7 +8,7 @@ on:
       from_date:
         description: 'Rebuild history from this date (YYYY-MM-DD)'
         required: true
-        default: '2022-01-01'
+        default: '2021-12-01'
 
 # Shared with scrape.yml so a rebuild and a daily scrape cannot push at once.
 concurrency:

@@ -1845,7 +1845,7 @@ def parse_arguments(args=None):
         epilog="Examples:\n"
         "  Normal mode: python scrape_fund_price.py\n"
         "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
-        "  Backfill:   python scrape_fund_price.py --backfill --from 2022-01-01\n"
+        "  Backfill:   python scrape_fund_price.py --backfill --from 2021-12-01\n"
         "  Closed:     python scrape_fund_price.py --import-closed",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -73,7 +73,7 @@ Actions sets.
 python scrape_fund_price.py
 
 # Rebuild stored history from the sources
-python scrape_fund_price.py --backfill --from 2022-01-01
+python scrape_fund_price.py --backfill --from 2021-12-01
 
 # One-off import of closed holdings
 python scrape_fund_price.py --import-closed
