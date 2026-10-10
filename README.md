@@ -250,7 +250,9 @@ Date,Open,High,Low,Close,Volume,Dividends,Stock Splits
 ### GitHub Actions
 The project includes automated execution via GitHub Actions:
 
-- **Schedule**: daily at 22:30 UTC, after the US close all year round (`30 22 * * *` in `scrape.yml`)
+- **Schedule**: twice daily, at 21:05 UTC after the US close all year round and at 09:17 UTC for the
+  funds' previous-day NAVs and any close a late evening run missed (`05 21 * * *` and `17 9 * * *`
+  in `scrape.yml`). GitHub starts scheduled runs hours late, so these are "not before" times
 - **Manual triggers**: Run on-demand from GitHub Actions tab
 - **Output**: Automatically commits results to the repository
 

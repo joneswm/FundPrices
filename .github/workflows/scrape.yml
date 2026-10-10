@@ -2,7 +2,9 @@ name: Daily Fund Price Scraper
 
 on:
   schedule:
-    - cron: '05 21 * * *'  # 22:30 UTC, after the US close year-round (21:00 UTC in winter, 20:00 UTC in summer)
+    # Two runs a day. GitHub starts scheduled runs hours late, so each time is a "not before".
+    - cron: '05 21 * * *'  # evening: after the US close year-round (21:00 UTC in winter, 20:00 UTC in summer)
+    - cron: '17 9 * * *'   # morning: the funds' previous-day NAVs, and any close the evening run missed
   workflow_dispatch:     # Allows manual trigger
 
 # Shared with backfill.yml so a daily scrape and a rebuild cannot push at once.

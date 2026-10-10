@@ -320,8 +320,9 @@ cannot drift out of sync with the actual requirements.
 
 - **Test Workflow** (`test.yml`): Runs on every push/PR across Python 3.10, 3.12 and
   3.14 with both coverage gates. Commits nothing
-- **Scrape Workflow** (`scrape.yml`): Scheduled daily at 22:30 UTC, after the US close
-  all year round. Commits its results even when some funds failed
+- **Scrape Workflow** (`scrape.yml`): Scheduled twice daily, at 21:05 UTC (after the US close
+  all year round) and 09:17 UTC (the funds' previous-day NAVs, and any close a late evening run
+  missed). GitHub starts scheduled runs hours late; latest prices never step backwards (#78). Commits its results even when some funds failed
 - **Rebuild Workflow** (`backfill.yml`): Manual only. Shares a concurrency group with
   the scrape so the two cannot push at once
 
