@@ -206,6 +206,16 @@ final value on the next run. Weekend bars are never stored.
 - Rows are sorted by date then fund and written with LF endings on every platform, so
   repeated runs are byte-identical
 
+### Latest Never Goes Backwards (#78)
+- `latest_prices.csv` and `latest_<id>.price` never replace a stored row with an older
+  date: the newest stored row (from `latest_prices.csv` or history) wins and a warning is
+  printed. The same date still replaces, so corrections apply. Without this a stale fetch
+  (Yahoo returns the newest daily bar with a null close for hours after a session) stepped
+  every London ETF back a day, and the 90-day window with it
+- `fetch_yahoo_quotes` fills a null **newest** close from the chart metadata only when that
+  price traded on the bar's date and the regular session is over; any doubt drops the bar
+- Scheduled runs start hours after the cron time, so a run at 00:40 UTC is normal
+
 ### Error Handling
 - A failed fetch is reported on `ScrapeResults.failures`; it never crashes the run and
   no error text is ever written to a data file
