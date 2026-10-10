@@ -369,14 +369,48 @@ def fetch_yahoo_quotes(symbol, start, end=None):
     except Exception:
         currency = ""
 
+    bars = list(history["Close"].items()) if len(history) else []
     quotes = []
-    for timestamp, close in history["Close"].items() if len(history) else []:
+    for index, (timestamp, close) in enumerate(bars):
         if close is None or (isinstance(close, float) and math.isnan(close)):
-            continue
+            # Yahoo sometimes returns the newest daily bar with a null close
+            # for hours after the session ended (London ETFs on 2026-10-10)
+            # while the chart metadata still carries the day's closing price.
+            # Dropping the bar would leave the previous day as the newest
+            # quote, so the finished session's price stands in for it.
+            close = None
+            if index == len(bars) - 1:
+                close = closing_price_from_metadata(ticker, timestamp.date())
+            if close is None:
+                continue
         quotes.append(
             Quote(timestamp.date().isoformat(), format_yahoo_price(close), currency)
         )
     return quotes
+
+
+def closing_price_from_metadata(ticker, bar_date):
+    """Return the finished session's price for `bar_date`, or None.
+
+    Only a price that is provably that day's close is returned: it must have
+    traded on `bar_date` (exchange time) and the regular session must be over,
+    so an intraday price is never stored as a close. Any missing or malformed
+    field gives None, which leaves the bar dropped as before.
+    """
+    try:
+        meta = ticker.get_history_metadata()
+        price = float(meta["regularMarketPrice"])
+        traded = meta["regularMarketTime"]
+        session_end = meta["currentTradingPeriod"]["regular"]["end"]
+        if not math.isfinite(price) or price <= 0:
+            return None
+        if traded.date() != bar_date:
+            return None
+        if session_end.date() <= bar_date and traded < session_end:
+            return None
+        return price
+    except Exception:
+        return None
 
 
 FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
@@ -621,11 +655,11 @@ def read_history_price(fund_id, data_dir):
     return None
 
 
-def read_last_known_row(fund_id, data_dir):
-    """Return a fund's most recent stored [date, price, currency], or None.
+def read_stored_rows(fund_id, data_dir):
+    """Return every stored [date, price, currency] for a fund, unordered.
 
-    Used when every fetch attempt failed, so the fund keeps reporting its real
-    last price against the date that price actually belongs to.
+    Reads latest_prices.csv and prices_history.csv, so a row survives in either
+    file counts.
     """
     candidates = []
     for name in ("latest_prices.csv", "prices_history.csv"):
@@ -638,6 +672,59 @@ def read_last_known_row(fund_id, data_dir):
                     candidates.append(
                         [row.get("Date", ""), row["Price"], row.get("Currency") or ""]
                     )
+    return candidates
+
+
+def newest_stored_rows(data_dir):
+    """Return fund -> newest stored [fund, date, price, currency].
+
+    The floor for "latest" files: a fetch may not publish anything older.
+    """
+    newest = {}
+    for name in ("latest_prices.csv", "prices_history.csv"):
+        path = os.path.join(data_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, mode="r", newline="") as file:
+            for row in csv.DictReader(file):
+                fund = row.get("Fund")
+                if not fund or not is_usable_price(row.get("Price")):
+                    continue
+                current = newest.get(fund)
+                if current is None or row.get("Date", "") > current[1]:
+                    newest[fund] = [
+                        fund,
+                        row.get("Date", ""),
+                        row["Price"],
+                        row.get("Currency") or "",
+                    ]
+    return newest
+
+
+def keep_newer_stored_row(fund, row, stored):
+    """Return `row`, or the stored row when that one has a newer date.
+
+    A later run can fetch an older date than an earlier one stored (Yahoo
+    served no Friday close for London ETFs on 2026-10-10), and "latest" must
+    never go backwards. The same date still replaces, so corrections apply.
+    """
+    current = stored.get(fund)
+    if current is not None and current[1] > row[1]:
+        print(
+            f"Warning: {fund} fetched price dated {row[1]} is older than the "
+            f"stored {current[1]}; keeping the stored row"
+        )
+        return list(current)
+    return row
+
+
+def read_last_known_row(fund_id, data_dir):
+    """Return a fund's most recent stored [date, price, currency], or None.
+
+    Used when every fetch attempt failed, so the fund keeps reporting its real
+    last price against the date that price actually belongs to.
+    """
+    candidates = read_stored_rows(fund_id, data_dir)
 
     if not candidates:
         price = read_latest_price_file(fund_id, data_dir)
@@ -766,6 +853,7 @@ def scrape_funds(funds, data_dir=None):
         datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
     ).isoformat()
     browser = LazyBrowser()
+    stored = newest_stored_rows(data_dir)
 
     try:
         for entry in funds:
@@ -809,7 +897,12 @@ def scrape_funds(funds, data_dir=None):
             latest = max(quotes, key=lambda quote: quote.date, default=None)
             if latest is not None:
                 for identifier in spec.publish_ids:
-                    write_latest_price_file(identifier, latest.price, data_dir)
+                    # Never rewrite the price file from an older bar than the
+                    # stored newest one (see keep_newer_stored_row).
+                    kept = keep_newer_stored_row(
+                        identifier, [identifier, latest.date, latest.price], stored
+                    )
+                    write_latest_price_file(identifier, kept[2], data_dir)
     finally:
         browser.close()
 
@@ -943,6 +1036,7 @@ def write_results(results, data_dir=None):
         if is_usable_price(price):
             incoming.append([fund, date_text, price, currency])
 
+    stored = newest_stored_rows(data_dir)
     history_rows = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
     for row in incoming:
         history_rows[(row[0], row[1])] = row
@@ -951,6 +1045,12 @@ def write_results(results, data_dir=None):
     # A fund that could not be fetched still reports its last real price.
     for row in getattr(results, "carried", []):
         latest.setdefault(row[0], list(row))
+    # A stale fetch must not replace a newer stored row. History is keyed
+    # upsert and never loses one; this keeps the latest files, and the rolling
+    # window measured from them, from stepping back as well.
+    latest = {
+        fund: keep_newer_stored_row(fund, row, stored) for fund, row in latest.items()
+    }
 
     write_history_files(list(history_rows.values()), data_dir, latest=latest)
 

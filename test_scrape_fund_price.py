@@ -3741,7 +3741,6 @@ class TestFunctionalClosedHoldingSources(unittest.TestCase):
         self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
-
 class TestLatestNeverGoesBackwards(unittest.TestCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
 
