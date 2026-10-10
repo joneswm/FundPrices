@@ -3741,5 +3741,251 @@ class TestFunctionalClosedHoldingSources(unittest.TestCase):
         self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
+class TestLatestNeverGoesBackwards(unittest.TestCase):
+    """Regression: a stale fetch replaced newer latest prices with older ones.
+
+    On 2026-10-10 Yahoo served no Friday close for the London ETFs, so the run
+    fetched Thursday as its newest bar and latest_prices.csv (and the per-fund
+    .price files) were rewritten from 2026-10-09 back to 2026-10-08. History
+    kept the Friday rows; only the "latest" views regressed.
+    """
+
+    FRIDAY = [
+        ["CNX1.L", "2026-10-09", "133800", "GBp"],
+        ["IWDG.L", "2026-10-09", "1270.5", "GBp"],
+        ["QQQ", "2026-10-09", "751.27", "USD"],
+        ["SGLN.L", "2026-10-09", "6141", "GBp"],
+    ]
+    THURSDAY = [
+        ["CNX1.L", "2026-10-08", "134720", "GBp"],
+        ["IWDG.L", "2026-10-08", "1263", "GBp"],
+        ["QQQ", "2026-10-08", "747.58", "USD"],
+        ["SGLN.L", "2026-10-08", "6039", "GBp"],
+    ]
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _read(self, name):
+        with open(os.path.join(self.test_dir, name), newline="") as f:
+            return list(csv.reader(f))[1:]
+
+    def _price_file(self, fund):
+        with open(os.path.join(self.test_dir, f"latest_{fund}.price")) as f:
+            return f.read().strip()
+
+    def _stale_run(self):
+        """Friday is stored, then a run whose newest bar is Thursday."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_results(list(self.THURSDAY), self.test_dir)
+
+    def test_latest_prices_keeps_the_newer_row(self):
+        """Test an older fetched date does not replace the stored newer row."""
+        self._stale_run()
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+
+    def test_stale_fetch_is_logged(self):
+        """Test the ignored stale row is reported, not silently dropped."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        with patch("builtins.print") as mock_print:
+            write_results([self.THURSDAY[0]], self.test_dir)
+        output = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("CNX1.L", output)
+        self.assertIn("2026-10-08", output)
+        self.assertIn("2026-10-09", output)
+
+    def test_history_keeps_the_newer_row(self):
+        """Test a stale fetch never costs history its newer rows."""
+        self._stale_run()
+        history = self._read("prices_history.csv")
+        for row in self.FRIDAY + self.THURSDAY:
+            self.assertIn(row, history)
+
+    def test_rolling_window_keeps_the_newer_row(self):
+        """Test the 90-day file also still holds the newer rows."""
+        self._stale_run()
+        rolling = self._read("prices_history_90_days.csv")
+        for row in self.FRIDAY:
+            self.assertIn(row, rolling)
+
+    def test_same_date_still_replaces_the_stored_row(self):
+        """Test a correction to the stored date is still applied."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_results([["CNX1.L", "2026-10-09", "133850", "GBp"]], self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"][2], "133850")
+
+    def test_newer_date_still_advances_the_row(self):
+        """Test the guard does not stop a genuinely newer price."""
+        write_results(list(self.THURSDAY), self.test_dir)
+        write_results(list(self.FRIDAY), self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+
+    def test_fund_with_nothing_stored_takes_what_it_is_given(self):
+        """Test the guard only applies against a stored row."""
+        write_results([self.THURSDAY[0]], self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), [self.THURSDAY[0]])
+
+    def test_stored_latest_row_newer_than_history_is_kept(self):
+        """Test latest_prices.csv itself is a floor, not only the history."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        os.remove(os.path.join(self.test_dir, "prices_history.csv"))
+        write_results([self.THURSDAY[0]], self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
+
+    def test_carried_row_does_not_regress_latest(self):
+        """Test a failed fund keeps its newest stored row."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        results = ScrapeResults(rows=[self.THURSDAY[1]])
+        results.carried.append(list(self.FRIDAY[0]))
+        write_results(results, self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
+        self.assertEqual(latest["IWDG.L"], self.FRIDAY[1])
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_file_keeps_the_newer_price(self, mock_quotes, mock_pw):
+        """Test latest_<id>.price is not rewritten from an older bar."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_latest_price_file("CNX1.L", "133800", self.test_dir)
+        mock_quotes.return_value = [
+            Quote("2026-10-07", "135120", "GBp"),
+            Quote("2026-10-08", "134720", "GBp"),
+        ]
+        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_file_advances_on_a_newer_bar(self, mock_quotes, mock_pw):
+        """Test the price file still follows a newer bar."""
+        write_results(list(self.THURSDAY), self.test_dir)
+        write_latest_price_file("CNX1.L", "134720", self.test_dir)
+        mock_quotes.return_value = [Quote("2026-10-09", "133800", "GBp")]
+        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_whole_daily_run_with_stale_bars(self, mock_quotes, mock_pw):
+        """Test the exact 2026-10-10 sequence end to end."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        for row in self.FRIDAY:
+            write_latest_price_file(row[0], row[2], self.test_dir)
+        quotes = {row[0]: [Quote(row[1], row[2], row[3])] for row in self.THURSDAY}
+        mock_quotes.side_effect = lambda symbol, start, end=None: quotes[symbol]
+        results = scrape_funds([("YA", s) for s in quotes], self.test_dir)
+        write_results(results, self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+        self.assertEqual(self._price_file("IWDG.L"), "1270.5")
+
+    def test_latest_fx_keeps_the_newer_rate(self):
+        """Test latest_fx.csv is derived from history and cannot regress."""
+        write_fx_results([["USDGBP", "2026-10-09", "0.75568"]], self.test_dir)
+        write_fx_results([["USDGBP", "2026-10-08", "0.75672"]], self.test_dir)
+        self.assertEqual(
+            self._read("latest_fx.csv"), [["USDGBP", "2026-10-09", "0.75568"]]
+        )
+
+
+class TestYahooEmptyLatestBar(unittest.TestCase):
+    """Regression: Yahoo can return the newest daily bar with a null close.
+
+    On 2026-10-10 CNX1.L's 2026-10-09 bar existed with Close = NaN, while the
+    chart metadata still carried that day's closing price. Skipping the NaN
+    left Thursday as the newest quote.
+    """
+
+    ROWS = [("2026-10-08", 134720.0), ("2026-10-09", float("nan"))]
+
+    def _ticker(self, mock_ticker, rows, meta):
+        import pandas as pd
+
+        idx = pd.DatetimeIndex([pd.Timestamp(d, tz="Europe/London") for d, _ in rows])
+        frame = pd.DataFrame({"Close": [c for _, c in rows]}, index=idx)
+        inst = MagicMock()
+        inst.history.return_value = frame
+        inst.fast_info = {"currency": "GBp"}
+        if isinstance(meta, Exception):
+            inst.get_history_metadata.side_effect = meta
+        else:
+            inst.get_history_metadata.return_value = meta
+        mock_ticker.return_value = inst
+        return inst
+
+    @staticmethod
+    def _meta(price=133800.0, traded="2026-10-09 16:35", end="2026-10-09 16:30"):
+        import pandas as pd
+
+        def stamp(text):
+            return pd.Timestamp(text, tz="Europe/London")
+
+        return {
+            "regularMarketPrice": price,
+            "regularMarketTime": stamp(traded),
+            "exchangeTimezoneName": "Europe/London",
+            "currentTradingPeriod": {"regular": {"end": stamp(end)}},
+        }
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_closing_price_from_metadata_fills_the_empty_bar(self, mock_ticker):
+        """Test the finished session's price stands in for the null close."""
+        self._ticker(mock_ticker, self.ROWS, self._meta())
+        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        self.assertEqual(
+            quotes,
+            [
+                Quote("2026-10-08", "134720", "GBp"),
+                Quote("2026-10-09", "133800", "GBp"),
+            ],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_session_still_open_is_not_filled(self, mock_ticker):
+        """Test an intraday price is never stored as a close."""
+        meta = self._meta(traded="2026-10-09 15:00", end="2026-10-09 16:30")
+        self._ticker(mock_ticker, self.ROWS, meta)
+        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_metadata_from_another_day_is_not_used(self, mock_ticker):
+        """Test the price must belong to the empty bar's own date."""
+        meta = self._meta(traded="2026-10-08 16:35", end="2026-10-08 16:30")
+        self._ticker(mock_ticker, self.ROWS, meta)
+        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_trading_period_that_moved_on_counts_as_closed(self, mock_ticker):
+        """Test a later session end shows the bar's day is over."""
+        meta = self._meta(end="2026-10-12 16:30")
+        self._ticker(mock_ticker, self.ROWS, meta)
+        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        self.assertEqual(quotes[-1], Quote("2026-10-09", "133800", "GBp"))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_only_the_newest_bar_is_filled(self, mock_ticker):
+        """Test an empty bar in the middle of the window stays dropped."""
+        rows = [("2026-10-07", float("nan")), ("2026-10-08", 134720.0)]
+        self._ticker(mock_ticker, rows, self._meta())
+        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_unusable_metadata_falls_back_to_dropping_the_bar(self, mock_ticker):
+        """Test bad metadata never raises or invents a price."""
+        for meta in (RuntimeError("boom"), {}, self._meta(price=float("nan"))):
+            self._ticker(mock_ticker, self.ROWS, meta)
+            quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+            self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+
 if __name__ == "__main__":
     unittest.main()
