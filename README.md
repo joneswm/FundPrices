@@ -186,8 +186,17 @@ be confused. Rates are stored at 6 decimal places, which `HKDGBP` (about 0.0951)
 
 Output: `data/fx_history.csv` and `data/latest_fx.csv`, both `Pair,Date,Rate`.
 
-FX trades continuously, so the current day's bar is provisional and is replaced by the
-final value on the next run. Weekend bars are never stored.
+**A day's rate is the New York close**: the rate at 17:00 in New York, read from
+Yahoo's hourly bars (the close of the bar starting at 16:00 New York; #80). New York's
+own clock is used, so the cut is 21:00 UTC in summer and 22:00 UTC in winter. A day is
+stored only once its cut has passed, so no rate is provisional, and a run at any time
+afterwards gives the same value; each run re-reads the last 10 days. Weekends have no
+rate. Yahoo's daily FX bar is not used for recent days: its Close is the rate at the
+start of the day (London midnight), not its close.
+
+Yahoo keeps hourly bars for 730 days. Older dates, which only a rebuild reaches, still
+come from the daily bars, so rates before about two years ago are the day's opening
+rate rather than its close.
 
 ## Data Sources
 

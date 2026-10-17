@@ -507,13 +507,24 @@ ignored. A missing file returns `[]`, so FX is optional.
 spelling (`GBP/NZD`) is rejected deliberately: by market convention it means the inverse
 of the stored direction, so accepting it would store plausible but wrong values.
 
-### `fetch_fx_quotes(pair, start, end=None)`
+### `fetch_fx_quotes(pair, start, end=None, today=None, now=None)`
 
 Fetches dated rates as **GBP per 1 unit of the base currency**, via Yahoo's direct
-`<PAIR>=X` ticker. Weekend bars are dropped. Rates are formatted at a fixed 6 decimal
-places, unlike prices, which keep the source's own precision.
+`<PAIR>=X` ticker. A day's rate is its 17:00 New York close, picked from hourly bars
+by `new_york_fx_closes()` (#80). Days older than Yahoo's 730-day hourly history come
+from the daily bars, weekends dropped; that daily Close is the day's opening rate.
+Rates are formatted at a fixed 6 decimal places, unlike prices, which keep the
+source's own precision. `today` and `now` default to the clock and exist for tests.
 
 **Returns:** `list[Quote]`, whose `currency` field carries the pair name.
+
+### `new_york_fx_closes(bars, now=None)` and `fetch_yahoo_hourly(symbol, start, end=None)`
+
+`fetch_yahoo_hourly()` returns `(bar start in UTC, close)` pairs from Yahoo's hourly
+bars; a bar's close is the price at the end of its hour. `new_york_fx_closes()` picks,
+for each weekday, the close of the last bar ending at or before 17:00 New York, and
+returns a day only once that cut has passed, so the result does not depend on when
+the job runs.
 
 ### `snap_fx_rates(pairs, data_dir=None)`
 
@@ -527,8 +538,8 @@ the others.
 Upserts rates on **(Pair, Date)** into `data/fx_history.csv` and regenerates
 `data/latest_fx.csv`. Headers are `Pair,Date,Rate`.
 
-The current day's rate is provisional and is replaced once the bar completes; the upsert
-makes this self-correcting, so no flag is stored.
+A day is fetched only after its 17:00 New York cut, so no rate is provisional; the
+upsert still lets a later run correct the last 10 days if Yahoo revises a bar.
 
 ### `read_fx_rows(fx_csv)`, `write_fx_files(rows, data_dir)` and `format_fx_rate(value)`
 

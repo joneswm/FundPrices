@@ -12,6 +12,7 @@ import argparse
 import re
 from contextlib import nullcontext
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
@@ -411,6 +412,37 @@ def closing_price_from_metadata(ticker, bar_date):
         return price
     except Exception:
         return None
+
+
+def fetch_yahoo_hourly(symbol, start, end=None):
+    """Fetch hourly bars for a symbol from Yahoo Finance.
+
+    Yahoo serves hourly bars for the last 730 days only; a range outside that
+    comes back empty.
+
+    Args:
+        symbol: Yahoo ticker (e.g. "USDGBP=X")
+        start: Inclusive ISO start date
+        end: Exclusive ISO end date, or None for up to the latest bar
+
+    Returns:
+        list of (bar start as an aware UTC datetime, close), oldest first. A
+        bar's close is the price at the end of its hour.
+    """
+    history = yf.Ticker(symbol).history(
+        start=start, end=end, interval="1h", auto_adjust=False
+    )
+    bars = []
+    for timestamp, close in history["Close"].items() if len(history) else []:
+        if close is None or (isinstance(close, float) and math.isnan(close)):
+            continue
+        bars.append(
+            (
+                timestamp.to_pydatetime().astimezone(datetime.timezone.utc),
+                float(close),
+            )
+        )
+    return bars
 
 
 FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
@@ -1427,6 +1459,12 @@ def check_quoting_unit(identifier, quotes):
 FX_PAIRS_FILE = "fx_pairs.txt"
 FX_RATE_DECIMALS = 6
 FX_HEADER = ["Pair", "Date", "Rate"]
+# A day's FX rate is the New York close, 17:00 in New York (#80). Yahoo's daily
+# FX bar is no use for this: its Close is the rate at the start of the day.
+FX_CLOSE_ZONE = ZoneInfo("America/New_York")
+FX_CLOSE_HOUR = 17
+# Yahoo keeps hourly bars for 730 days; one day's margin keeps a request in range.
+FX_HOURLY_HISTORY_DAYS = 729
 
 
 def read_fx_pairs(filename=None):
@@ -1484,29 +1522,83 @@ def format_fx_rate(value):
     return f"{float(value):.{FX_RATE_DECIMALS}f}"
 
 
-def fetch_fx_quotes(pair, start, end=None):
+def new_york_fx_closes(bars, now=None):
+    """Pick each weekday's 17:00 New York close out of hourly bars (#80).
+
+    A day's rate is the close of the last bar that ends at or before 17:00 in
+    New York that day, normally the bar starting at 16:00. New York's own clock
+    is used, so the cut follows the US clock change (21:00 UTC in summer, 22:00
+    UTC in winter). A day is returned only once its cut has passed, so a rate is
+    never provisional and a later run gives the same value. Weekends have no
+    rate: Friday evening's and Sunday's bars fall on a weekend day and are not
+    used, and Monday's rate is Monday's own close.
+
+    Args:
+        bars: (bar start as an aware datetime, close) pairs, in any order
+        now: The current time as an aware datetime (default: now)
+
+    Returns:
+        list of (ISO date, close), oldest first
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    hour = datetime.timedelta(hours=1)
+    best = {}
+    for start, close in bars:
+        end = (start + hour).astimezone(FX_CLOSE_ZONE)
+        day = end.date()
+        cut = datetime.datetime.combine(
+            day, datetime.time(FX_CLOSE_HOUR), tzinfo=FX_CLOSE_ZONE
+        )
+        if end > cut:
+            day += datetime.timedelta(days=1)
+            cut = datetime.datetime.combine(
+                day, datetime.time(FX_CLOSE_HOUR), tzinfo=FX_CLOSE_ZONE
+            )
+        if day.weekday() >= 5 or cut > now:
+            continue
+        if day not in best or end > best[day][0]:
+            best[day] = (end, close)
+    return [(day.isoformat(), best[day][1]) for day in sorted(best)]
+
+
+def fetch_fx_quotes(pair, start, end=None, today=None, now=None):
     """Fetch dated FX rates for a pair, as GBP per 1 unit of the base currency.
 
-    Weekend bars are dropped: FX trades continuously and Yahoo shows a
-    transient Sunday bar when the market reopens, which is not an end-of-day
-    rate for any trading session.
-
-    The current day's bar is still in progress and is stored provisionally;
-    the windowed upsert overwrites it on the next run once it has completed.
+    A day's rate is the 17:00 New York close from Yahoo's hourly bars (#80);
+    see new_york_fx_closes(). Yahoo keeps hourly bars for 730 days, so days
+    older than that come from the daily bars as before, weekends dropped. That
+    daily Close is the rate at the start of the day, not its close: it is kept
+    only because nothing better is available for those dates.
 
     Args:
         pair: Six-letter pair, e.g. "USDGBP"
         start: Inclusive ISO start date
-        end: Exclusive ISO end date, or None for the latest bar
+        end: Exclusive ISO end date, or None for the latest completed day
+        today: The current date (default: today)
+        now: The current time as an aware datetime (default: now)
 
     Returns:
-        list[Quote] whose `currency` carries the pair name
+        list[Quote], oldest first, whose `currency` carries the pair name
     """
+    symbol = f"{pair}=X"
+    today = today or datetime.date.today()
+    hourly_from = (today - datetime.timedelta(days=FX_HOURLY_HISTORY_DAYS)).isoformat()
     quotes = []
-    for quote in fetch_yahoo_quotes(f"{pair}=X", start, end):
-        if datetime.date.fromisoformat(quote.date).weekday() >= 5:
-            continue
-        quotes.append(Quote(quote.date, format_fx_rate(quote.price), pair))
+
+    if start < hourly_from:
+        daily_end = min(end, hourly_from) if end else hourly_from
+        for quote in fetch_yahoo_quotes(symbol, start, daily_end):
+            if datetime.date.fromisoformat(quote.date).weekday() >= 5:
+                continue
+            quotes.append(Quote(quote.date, format_fx_rate(quote.price), pair))
+        start = hourly_from
+
+    if end is None or start < end:
+        for day, close in new_york_fx_closes(
+            fetch_yahoo_hourly(symbol, start, end), now
+        ):
+            if day >= start and (end is None or day < end):
+                quotes.append(Quote(day, format_fx_rate(close), pair))
     return quotes
 
 
