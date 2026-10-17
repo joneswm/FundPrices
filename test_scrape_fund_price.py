@@ -4,6 +4,7 @@ import os
 import shutil
 from unittest.mock import patch, MagicMock
 import csv
+import datetime
 from datetime import date, timedelta
 
 import scrape_fund_price
@@ -34,6 +35,8 @@ from scrape_fund_price import (
     check_quoting_unit,
     read_fx_pairs,
     fetch_fx_quotes,
+    fetch_yahoo_hourly,
+    new_york_fx_closes,
     write_fx_results,
     snap_fx_rates,
     backfill_fx,
@@ -2316,44 +2319,203 @@ class TestFxPairConfiguration(unittest.TestCase):
         self.assertEqual(read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), [])
 
 
+def utc(year, month, day, hour):
+    """A timezone-aware UTC datetime, the shape the hourly bars take."""
+    return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc)
+
+
+class TestNewYorkFxCloses(unittest.TestCase):
+    """Test a day's FX rate is the 17:00 New York close (#80)."""
+
+    AFTER = utc(2026, 10, 19, 12)  # Monday: every day below has closed
+
+    def test_takes_the_bar_that_ends_at_five_pm_new_york(self):
+        """Test the close of the 16:00 New York bar is the day's rate (EDT)."""
+        bars = [
+            (utc(2026, 10, 16, 19), 0.75026),  # 15:00 New York
+            (utc(2026, 10, 16, 20), 0.75023),  # 16:00, ends 17:00
+            (utc(2026, 10, 16, 21), 0.75022),  # 17:00, after the cut
+        ]
+        self.assertEqual(
+            new_york_fx_closes(bars, now=self.AFTER), [("2026-10-16", 0.75023)]
+        )
+
+    def test_follows_the_us_clock_change(self):
+        """Test the cut is 22:00 UTC in winter, when New York is on EST."""
+        bars = [
+            (utc(2026, 1, 16, 20), 0.80100),  # 15:00 New York
+            (utc(2026, 1, 16, 21), 0.80200),  # 16:00, ends 17:00
+            (utc(2026, 1, 16, 22), 0.80300),  # 17:00, after the cut
+        ]
+        self.assertEqual(
+            new_york_fx_closes(bars, now=utc(2026, 1, 19, 12)),
+            [("2026-01-16", 0.80200)],
+        )
+
+    def test_a_day_whose_cut_has_not_passed_is_not_stored(self):
+        """Test there is no provisional rate for a day still trading."""
+        bars = [(utc(2026, 10, 16, 14), 0.75100), (utc(2026, 10, 16, 15), 0.75105)]
+        self.assertEqual(new_york_fx_closes(bars, now=utc(2026, 10, 16, 16)), [])
+
+    def test_the_rate_does_not_depend_on_when_the_job_runs(self):
+        """Test a run hours or days after the cut gives the same rate."""
+        bars = [(utc(2026, 10, 16, 20), 0.75023), (utc(2026, 10, 16, 23), 0.75019)]
+        early = new_york_fx_closes(bars, now=utc(2026, 10, 16, 21))
+        late = new_york_fx_closes(bars, now=utc(2026, 10, 20, 9))
+        self.assertEqual(early, [("2026-10-16", 0.75023)])
+        self.assertEqual(late, early)
+
+    def test_weekend_bars_make_no_rate(self):
+        """Test Friday-evening and weekend bars are not a weekend day's rate."""
+        bars = [
+            (utc(2026, 10, 16, 20), 0.75023),  # Friday close
+            (utc(2026, 10, 17, 10), 0.75019),  # Saturday
+            (utc(2026, 10, 18, 22), 0.75100),  # Sunday reopening, 18:00 New York
+        ]
+        self.assertEqual(
+            new_york_fx_closes(bars, now=utc(2026, 10, 19, 12)),
+            [("2026-10-16", 0.75023)],
+        )
+
+    def test_monday_is_the_monday_close_not_the_reopening(self):
+        """Test Monday's rate is Monday's 17:00 close, not Sunday evening's."""
+        bars = [
+            (utc(2026, 10, 18, 22), 0.75100),  # Sunday 18:00 New York
+            (utc(2026, 10, 19, 20), 0.75400),  # Monday 16:00, ends 17:00
+        ]
+        self.assertEqual(
+            new_york_fx_closes(bars, now=utc(2026, 10, 20, 12)),
+            [("2026-10-19", 0.75400)],
+        )
+
+    def test_a_missing_last_bar_falls_back_to_the_latest_before_the_cut(self):
+        """Test a gap in the hourly data uses the newest earlier bar."""
+        bars = [(utc(2026, 10, 15, 18), 0.75332), (utc(2026, 10, 15, 19), 0.75344)]
+        self.assertEqual(
+            new_york_fx_closes(bars, now=self.AFTER), [("2026-10-15", 0.75344)]
+        )
+
+    def test_days_come_out_oldest_first(self):
+        """Test several days are returned in date order."""
+        bars = [(utc(2026, 10, 16, 20), 0.75023), (utc(2026, 10, 15, 20), 0.75315)]
+        self.assertEqual(
+            [day for day, _ in new_york_fx_closes(bars, now=self.AFTER)],
+            ["2026-10-15", "2026-10-16"],
+        )
+
+
 class TestFxQuoteFetching(unittest.TestCase):
     """Test FX rate retrieval."""
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_requests_the_yahoo_fx_ticker(self, mock_quotes):
-        """Test the pair is turned into Yahoo's FX ticker."""
-        mock_quotes.return_value = [Quote("2026-09-18", "0.7467", "GBP")]
-        fetch_fx_quotes("USDGBP", "2026-09-10")
-        self.assertEqual(mock_quotes.call_args.args[0], "USDGBP=X")
+    TODAY = date(2026, 10, 19)
+    NOW = utc(2026, 10, 19, 12)
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_drops_weekend_bars(self, mock_quotes):
-        """Test the transient weekend bar Yahoo shows is not stored."""
-        mock_quotes.return_value = [
-            Quote("2026-09-18", "0.7467", "GBP"),  # Friday
-            Quote("2026-09-19", "0.7467", "GBP"),  # Saturday
-            Quote("2026-09-20", "0.7470", "GBP"),  # Sunday
+    def fetch(self, pair, start):
+        return fetch_fx_quotes(pair, start, today=self.TODAY, now=self.NOW)
+
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
+    def test_requests_the_yahoo_fx_ticker_hourly(self, mock_hourly):
+        """Test the pair is turned into Yahoo's FX ticker for the hourly bars."""
+        mock_hourly.return_value = []
+        self.fetch("USDGBP", "2026-10-09")
+        self.assertEqual(mock_hourly.call_args.args[:2], ("USDGBP=X", "2026-10-09"))
+
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
+    def test_rate_is_the_new_york_close(self, mock_hourly):
+        """Test a recent day's rate comes from the 17:00 New York bar."""
+        mock_hourly.return_value = [
+            (utc(2026, 10, 16, 20), 0.75023),
+            (utc(2026, 10, 16, 21), 0.75022),
         ]
-        quotes = fetch_fx_quotes("USDGBP", "2026-09-10")
-        self.assertEqual([q.date for q in quotes], ["2026-09-18"])
+        self.assertEqual(
+            self.fetch("USDGBP", "2026-10-09"),
+            [Quote("2026-10-16", "0.750230", "USDGBP")],
+        )
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_rates_are_stored_at_six_decimal_places(self, mock_quotes):
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
+    def test_days_before_the_start_are_not_returned(self, mock_hourly):
+        """Test a bar from before the start date does not leak an earlier day."""
+        mock_hourly.return_value = [
+            (utc(2026, 10, 8, 20), 0.75600),
+            (utc(2026, 10, 9, 20), 0.75568),
+        ]
+        quotes = self.fetch("USDGBP", "2026-10-09")
+        self.assertEqual([q.date for q in quotes], ["2026-10-09"])
+
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
+    def test_rates_are_stored_at_six_decimal_places(self, mock_hourly):
         """Test precision is enough for small rates such as HKDGBP."""
-        mock_quotes.return_value = [Quote("2026-09-18", "0.0951234567", "GBP")]
-        self.assertEqual(fetch_fx_quotes("HKDGBP", "2026-09-10")[0].price, "0.095123")
+        mock_hourly.return_value = [(utc(2026, 10, 16, 20), 0.0951234567)]
+        quote = self.fetch("HKDGBP", "2026-10-09")[0]
+        self.assertEqual((quote.price, quote.currency), ("0.095123", "HKDGBP"))
 
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_rate_carries_the_pair_name(self, mock_quotes):
-        """Test the quote is self-describing."""
-        mock_quotes.return_value = [Quote("2026-09-18", "0.4267", "GBP")]
-        self.assertEqual(fetch_fx_quotes("NZDGBP", "2026-09-10")[0].currency, "NZDGBP")
+    def test_days_older_than_the_hourly_history_keep_the_daily_bars(
+        self, mock_daily, mock_hourly
+    ):
+        """Test a rebuild from 2021 uses daily bars where hourly ones are gone."""
+        mock_daily.return_value = [
+            Quote("2021-12-03", "0.7531", "GBP"),  # Friday
+            Quote("2021-12-04", "0.7531", "GBP"),  # Saturday, dropped
+        ]
+        mock_hourly.return_value = [(utc(2026, 10, 16, 20), 0.75023)]
+        quotes = self.fetch("USDGBP", "2021-12-01")
+        hourly_from = (self.TODAY - timedelta(days=729)).isoformat()
+        self.assertEqual(
+            mock_daily.call_args.args, ("USDGBP=X", "2021-12-01", hourly_from)
+        )
+        self.assertEqual(mock_hourly.call_args.args[1], hourly_from)
+        self.assertEqual(
+            quotes,
+            [
+                Quote("2021-12-03", "0.753100", "USDGBP"),
+                Quote("2026-10-16", "0.750230", "USDGBP"),
+            ],
+        )
 
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_whole_number_rate_keeps_six_places(self, mock_quotes):
+    def test_whole_number_rate_keeps_six_places(self, mock_daily, mock_hourly):
         """Test formatting is fixed width, not shortest representation."""
-        mock_quotes.return_value = [Quote("2026-09-18", "1", "GBP")]
-        self.assertEqual(fetch_fx_quotes("GBPGBP", "2026-09-10")[0].price, "1.000000")
+        mock_daily.return_value = [Quote("2021-12-03", "1", "GBP")]
+        mock_hourly.return_value = []
+        self.assertEqual(self.fetch("GBPGBP", "2021-12-01")[0].price, "1.000000")
+
+    @patch("scrape_fund_price.fetch_yahoo_hourly")
+    def test_defaults_to_today_and_now(self, mock_hourly):
+        """Test the daily run needs no clock arguments."""
+        mock_hourly.return_value = []
+        start = (date.today() - timedelta(days=10)).isoformat()
+        self.assertEqual(fetch_fx_quotes("USDGBP", start), [])
+
+
+class TestYahooHourly(unittest.TestCase):
+    """Test the hourly bar fetch."""
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_asks_for_hourly_bars_and_skips_gaps(self, mock_ticker):
+        """Test interval=1h is requested, bars are UTC and NaN closes dropped."""
+        import pandas as pd
+
+        index = pd.DatetimeIndex(
+            ["2026-10-16 20:00", "2026-10-16 21:00"], tz="Europe/London"
+        )
+        mock_ticker.return_value.history.return_value = pd.DataFrame(
+            {"Close": [0.75023, float("nan")]}, index=index
+        )
+        bars = fetch_yahoo_hourly("USDGBP=X", "2026-10-16")
+        kwargs = mock_ticker.return_value.history.call_args.kwargs
+        self.assertEqual((kwargs["interval"], kwargs["start"]), ("1h", "2026-10-16"))
+        self.assertEqual(bars, [(utc(2026, 10, 16, 19), 0.75023)])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_no_bars_is_an_empty_list(self, mock_ticker):
+        """Test an empty history (e.g. beyond Yahoo's 730 days) is no bars."""
+        import pandas as pd
+
+        mock_ticker.return_value.history.return_value = pd.DataFrame()
+        self.assertEqual(fetch_yahoo_hourly("USDGBP=X", "2024-01-01"), [])
 
 
 class TestFxStorage(unittest.TestCase):
