@@ -23,6 +23,8 @@ CLOSED_HOLDINGS_FILE = "closed_holdings.txt"
 MAX_PRICE_ATTEMPTS = 3
 ROLLING_HISTORY_DAYS = 90
 SNAP_WINDOW_DAYS = 10
+# An untraded Yahoo bar more than 20% from both neighbours is dropped (#83)
+UNTRADED_SPIKE_RATIO = 1.2
 
 
 LINE_ENDING = "\n"
@@ -371,7 +373,8 @@ def fetch_yahoo_quotes(symbol, start, end=None):
         currency = ""
 
     bars = list(history["Close"].items()) if len(history) else []
-    quotes = []
+    volumes = history["Volume"].tolist() if "Volume" in history else [None] * len(bars)
+    priced = []
     for index, (timestamp, close) in enumerate(bars):
         if close is None or (isinstance(close, float) and math.isnan(close)):
             # Yahoo sometimes returns the newest daily bar with a null close
@@ -384,10 +387,41 @@ def fetch_yahoo_quotes(symbol, start, end=None):
                 close = closing_price_from_metadata(ticker, timestamp.date())
             if close is None:
                 continue
+        priced.append((timestamp, close, volumes[index]))
+
+    quotes = []
+    for index, (timestamp, close, volume) in enumerate(priced):
+        if 0 < index < len(priced) - 1 and is_untraded_spike(
+            close, volume, priced[index - 1][1], priced[index + 1][1]
+        ):
+            print(
+                f"Warning: {symbol} {timestamp.date()}: dropped untraded close "
+                f"{format_yahoo_price(close)}, far from both neighbouring closes"
+            )
+            continue
         quotes.append(
             Quote(timestamp.date().isoformat(), format_yahoo_price(close), currency)
         )
     return quotes
+
+
+def is_untraded_spike(close, volume, previous, following):
+    """Return True when a bar is an isolated, untraded outlier (#83).
+
+    Yahoo occasionally fills a London line's bar with another listing's price:
+    SWDA.L on 2025-10-24 carried its USD line's 128.64 as 12837.81p, between
+    9564p and 9720p, with zero volume. Such a bar sits far from the bars on
+    both sides, in the same direction. A real move either traded or persists
+    into the next bar; funds report no volume at all, so zero volume alone
+    proves nothing.
+    """
+    if volume != 0:
+        return False
+    rises = close > previous * UNTRADED_SPIKE_RATIO
+    rises = rises and close > following * UNTRADED_SPIKE_RATIO
+    falls = close * UNTRADED_SPIKE_RATIO < previous
+    falls = falls and close * UNTRADED_SPIKE_RATIO < following
+    return rises or falls
 
 
 def closing_price_from_metadata(ticker, bar_date):
