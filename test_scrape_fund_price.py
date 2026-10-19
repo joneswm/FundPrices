@@ -1064,18 +1064,101 @@ class TestPriceFormatting(unittest.TestCase):
 class TestYahooQuoteFetching(unittest.TestCase):
     """Test dated quote retrieval from the Yahoo daily-bar route."""
 
-    def _frame(self, rows):
+    def _frame(self, rows, volumes=None):
         import pandas as pd
 
         idx = pd.to_datetime([d for d, _ in rows])
-        return pd.DataFrame({"Close": [c for _, c in rows]}, index=idx)
+        columns = {"Close": [c for _, c in rows]}
+        if volumes is not None:
+            columns["Volume"] = volumes
+        return pd.DataFrame(columns, index=idx)
 
-    def _ticker(self, mock_ticker, rows, currency="GBP"):
+    def _ticker(self, mock_ticker, rows, currency="GBP", volumes=None):
         inst = MagicMock()
-        inst.history.return_value = self._frame(rows)
+        inst.history.return_value = self._frame(rows, volumes)
         inst.fast_info = {"currency": currency}
         mock_ticker.return_value = inst
         return inst
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_zero_volume_spike_quoted_in_wrong_currency(self, mock_ticker):
+        """Test an untraded bar far above both neighbours is not stored (#83).
+
+        Yahoo's SWDA.L bar for 2025-10-24 carried the USD listing's price
+        (128.64) in the GBp line, with zero volume.
+        """
+        self._ticker(
+            mock_ticker,
+            [
+                ("2025-10-23", 9564.0),
+                ("2025-10-24", 12837.80957),
+                ("2025-10-27", 9720.0),
+            ],
+            currency="GBp",
+            volumes=[127553, 0, 62649],
+        )
+        quotes = fetch_yahoo_quotes("SWDA.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_zero_volume_dip_far_below_both_neighbours(self, mock_ticker):
+        """Test the guard is symmetric: a wrong price can be too low too."""
+        self._ticker(
+            mock_ticker,
+            [("2025-10-23", 100.0), ("2025-10-24", 70.0), ("2025-10-27", 101.0)],
+            volumes=[500, 0, 500],
+        )
+        quotes = fetch_yahoo_quotes("XXXX.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_traded_bar_however_far_it_moves(self, mock_ticker):
+        """Test a bar with volume is trusted: real trades can spike."""
+        self._ticker(
+            mock_ticker,
+            [("2022-09-26", 39.4), ("2022-09-27", 60.0), ("2022-09-28", 42.9)],
+            volumes=[43405, 71342, 123451],
+        )
+        quotes = fetch_yahoo_quotes("GLTL.L", "2022-09-20")
+        self.assertEqual(len(quotes), 3)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_zero_volume_step_that_the_next_bar_confirms(self, mock_ticker):
+        """Test a level change is not a spike: funds report no volume at all."""
+        self._ticker(
+            mock_ticker,
+            [("2026-09-16", 100.0), ("2026-09-17", 130.0), ("2026-09-18", 131.0)],
+            volumes=[0, 0, 0],
+        )
+        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
+        self.assertEqual(len(quotes), 3)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_newest_bar_which_has_no_next_bar_to_judge_by(self, mock_ticker):
+        """Test the newest bar is kept: one neighbour cannot show a spike."""
+        self._ticker(
+            mock_ticker,
+            [("2026-09-17", 100.0), ("2026-09-18", 140.0)],
+            volumes=[500, 0],
+        )
+        quotes = fetch_yahoo_quotes("XXXX.L", "2026-09-10")
+        self.assertEqual(len(quotes), 2)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_spike_neighbours_skip_bars_without_a_price(self, mock_ticker):
+        """Test a null-close bar does not hide a spike's neighbour."""
+        self._ticker(
+            mock_ticker,
+            [
+                ("2025-10-22", 6.5655),
+                ("2025-10-23", float("nan")),
+                ("2025-10-24", 8.9258),
+                ("2025-10-27", 6.7285),
+            ],
+            volumes=[83899, 0, 0, 292481],
+        )
+        quotes = fetch_yahoo_quotes("WLDS.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-22", "2025-10-27"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_returns_dated_quotes(self, mock_ticker):
