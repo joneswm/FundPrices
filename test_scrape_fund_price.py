@@ -4232,5 +4232,56 @@ class TestYahooEmptyLatestBar(unittest.TestCase):
             self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
 
+class TestYahooUnfinishedSession(unittest.TestCase):
+    """Regression: the newest bar is stored before its session has closed (#84).
+
+    A rebuild run at 12:56 UTC on 2026-10-19 stored SWDA.L's 2026-10-19 bar,
+    a 13:46 London trade, while the session ran until 16:30.
+    """
+
+    ROWS = [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)]
+    _ticker = TestYahooEmptyLatestBar._ticker
+    _meta = staticmethod(TestYahooEmptyLatestBar._meta)
+
+    @staticmethod
+    def _now(text):
+        import pandas as pd
+
+        return pd.Timestamp(text, tz="Europe/London").to_pydatetime()
+
+    def _fetch(self, mock_ticker, meta, now):
+        self._ticker(mock_ticker, self.ROWS, meta)
+        return fetch_yahoo_quotes("SWDA.L", "2026-10-01", now=self._now(now))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_newest_bar_while_its_session_is_open(self, mock_ticker):
+        """Test an intraday price is not stored as the day's close."""
+        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+        self.assertEqual([q.date for q in quotes], ["2026-10-16"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_newest_bar_once_its_session_has_ended(self, mock_ticker):
+        """Test the bar is stored once the session's end has passed."""
+        meta = self._meta(traded="2026-10-19 16:35", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 21:05")
+        self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_previous_session_while_today_is_open(self, mock_ticker):
+        """Test only a bar dated on the open session's day is held back."""
+        self.ROWS = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
+        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_unusable_metadata_keeps_the_newest_bar(self, mock_ticker):
+        """Test a price is not lost because the session cannot be judged."""
+        for meta in (RuntimeError("boom"), {}):
+            quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+            self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+
+
 if __name__ == "__main__":
     unittest.main()
