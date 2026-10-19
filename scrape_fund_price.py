@@ -342,7 +342,7 @@ def get_source_config(source, fund_id):
     return None, None
 
 
-def fetch_yahoo_quotes(symbol, start, end=None):
+def fetch_yahoo_quotes(symbol, start, end=None, now=None):
     """Fetch dated daily quotes for a symbol from Yahoo Finance.
 
     Uses daily bars rather than the summary endpoint: the summary carries no
@@ -353,6 +353,8 @@ def fetch_yahoo_quotes(symbol, start, end=None):
         symbol: Yahoo ticker (e.g. "IDTG.L", "0P00000YAN")
         start: Inclusive ISO start date
         end: Exclusive ISO end date, or None for up to the latest bar
+        now: Aware datetime to judge whether the newest bar's session is
+            over (default: the current time)
 
     Returns:
         list[Quote], oldest first
@@ -387,6 +389,14 @@ def fetch_yahoo_quotes(symbol, start, end=None):
                 close = closing_price_from_metadata(ticker, timestamp.date())
             if close is None:
                 continue
+        elif index == len(bars) - 1 and session_still_open(
+            ticker, timestamp.date(), now
+        ):
+            print(
+                f"Warning: {symbol} {timestamp.date()}: session still open, "
+                f"intraday price {format_yahoo_price(close)} not stored"
+            )
+            continue
         priced.append((timestamp, close, volumes[index]))
 
     quotes = []
@@ -422,6 +432,23 @@ def is_untraded_spike(close, volume, previous, following):
     falls = close * UNTRADED_SPIKE_RATIO < previous
     falls = falls and close * UNTRADED_SPIKE_RATIO < following
     return rises or falls
+
+
+def session_still_open(ticker, bar_date, now=None):
+    """Return True when `bar_date`'s regular session has not ended yet (#84).
+
+    Yahoo serves the running session's bar with the latest trade as its
+    close, so a run during market hours would store an intraday price as the
+    day's close. Unusable metadata gives False: the bar is kept, as it always
+    was, rather than losing a price that is probably final.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        meta = ticker.get_history_metadata()
+        session_end = meta["currentTradingPeriod"]["regular"]["end"]
+        return session_end.date() == bar_date and now < session_end
+    except Exception:
+        return False
 
 
 def closing_price_from_metadata(ticker, bar_date):

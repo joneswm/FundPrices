@@ -223,6 +223,10 @@ rate rather than its close.
   every London ETF back a day, and the 90-day window with it
 - `fetch_yahoo_quotes` fills a null **newest** close from the chart metadata only when that
   price traded on the bar's date and the regular session is over; any doubt drops the bar
+- It also holds back a priced newest bar while that day's regular session is still open
+  (#84), so a run during market hours stores no intraday price. FT's dated endpoint has
+  no such check yet: a run during the day can store a provisional FT row, which the next
+  run replaces
 - Scheduled runs start hours after the cron time, so a run at 00:40 UTC is normal
 
 ### Error Handling
