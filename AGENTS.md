@@ -116,7 +116,7 @@ YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 
 **Source Codes:**
 - `FT` - Financial Times (dated HTTP endpoint; falls back to scraping)
-- `YA` - **Yahoo Finance API** via yfinance daily bars. Used by 20 of 26 instruments
+- `YA` - **Yahoo Finance API** via yfinance daily bars. Used by 26 of 32 instruments
 - `IV` - investing.com (undocumented HTTP endpoint). Used only by closed holdings, for
   funds Yahoo and FT no longer price; never put it on a schedule
 - `GF` - deprecated spelling of `YA`; still accepted, warns, and names the line
@@ -200,7 +200,7 @@ rate rather than its close.
 
 | Source | Method | Status |
 |--------|--------|--------|
-| Yahoo Finance API (`YA`) | yfinance daily bars | 20 funds, 5 closed holdings |
+| Yahoo Finance API (`YA`) | yfinance daily bars | 26 funds, 5 closed holdings |
 | Financial Times (`FT`) | Dated HTTP endpoint; Playwright fallback | 6 funds, 1 closed holding |
 | investing.com (`IV`) | Dated HTTP endpoint | 2 closed holdings |
 | Yahoo Finance (`YH`) | Web Scraping (Playwright) | Supported, unused |

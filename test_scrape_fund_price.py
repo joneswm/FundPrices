@@ -3129,7 +3129,7 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         """Test the repository's own configuration has been migrated."""
         specs = read_fund_specs("funds.txt")
         self.assertEqual({s.source for s in specs}, {"YA", "FT"})
-        self.assertEqual(len(specs), 26)
+        self.assertEqual(len(specs), 32)
 
 
 class TestLineEndings(unittest.TestCase):
