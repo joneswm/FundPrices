@@ -7207,5 +7207,116 @@ class TestSourceAuthority(unittest.TestCase):
         self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-30", "3"])
 
 
+class TestIssuerDeclaredDividend(unittest.TestCase):
+    """Test a future issuer row as the declared dividend (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def declared(self, table, currency="GBP"):
+        return scrape_fund_price.issuer_declared(table, currency, self.TODAY)
+
+    def test_the_earliest_future_row_is_declared(self):
+        """Test ex-dates after today, oldest of them."""
+        table = issuer_table(
+            ("2026-07-16", "", "2026-07-29", "2.4146"),
+            ("2026-11-12", "2026-11-13", "2026-11-25", "2.5"),
+            ("2027-01-14", "", "2027-01-27", "2.6"),
+        )
+        self.assertEqual(
+            self.declared(table),
+            scrape_fund_price.DeclaredDividend(
+                "2026-11-12", "2026-11-25", "2.5", "GBP"
+            ),
+        )
+
+    def test_today_is_history_not_declared(self):
+        """Test the boundary matches apply_issuer_table."""
+        table = issuer_table(("2026-10-26", "", "2026-11-09", "2.5"))
+        self.assertIsNone(self.declared(table))
+
+    def test_no_future_row_is_none(self):
+        """Test nothing is declared until the issuer says so."""
+        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        self.assertIsNone(self.declared(table))
+
+    def test_the_amount_is_in_the_price_currency(self):
+        """Test pounds become pence for a pence line."""
+        table = issuer_table(("2026-11-12", "", "2026-11-25", "0.0991"))
+        declared = self.declared(table, "GBp")
+        self.assertEqual((declared.amount, declared.currency), ("9.91", "GBp"))
+
+    def test_an_amount_that_cannot_be_stated_is_empty(self):
+        """Test zero, or another currency, leaves the amount to the last paid."""
+        for text, currency in (("0.0", "GBP"), ("1.5", "USD")):
+            with self.subTest(text=text, currency=currency):
+                table = issuer_table(("2026-11-12", "", "2026-11-25", text))
+                declared = self.declared(table, currency="GBP")
+                self.assertEqual((declared.amount, declared.currency), ("", ""))
+                self.assertEqual(declared.ex_date, "2026-11-12")
+
+    def test_a_row_without_a_pay_date_is_declared_without_one(self):
+        """Test the ex-date alone is a declaration."""
+        table = issuer_table(("2026-11-12", "", "", "2.5"))
+        self.assertEqual(self.declared(table).pay_date, "")
+
+
+class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
+    """Test the upcoming row of a declaration with an amount (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def rows(self, declared, estimate=None, stored=()):
+        return scrape_fund_price.upcoming_rows_for(
+            "IGLS.L",
+            [list(row) for row in stored],
+            set(),
+            ("0.33", "GBP"),
+            declared,
+            estimate,
+            self.TODAY,
+        )
+
+    def test_the_stated_amount_replaces_the_last_paid(self):
+        """Test the declared amount is the issuer's, not an echo."""
+        declared = scrape_fund_price.DeclaredDividend(
+            "2026-11-12", "2026-11-25", "2.5", "GBp"
+        )
+        self.assertEqual(
+            self.rows(declared),
+            [
+                [
+                    "IGLS.L",
+                    "2026-11-12",
+                    "2026-11-25",
+                    "2.5",
+                    "GBp",
+                    "declared",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_a_declaration_without_an_amount_still_carries_the_last_paid(self):
+        """Test Yahoo's declaration, as in SPEC-010."""
+        declared = scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-25")
+        [row] = self.rows(declared)
+        self.assertEqual(row[3:5], ["0.33", "GBP"])
+
+    def test_it_replaces_the_estimate_and_an_earlier_declaration(self):
+        """Test the issuer's date wins over a Yahoo date stored yesterday."""
+        stored = [
+            ["IGLS.L", "2026-11-19", "", "0.33", "GBP", "declared", "2026-10-25"],
+            ["IGLS.L", "2026-11-21", "", "0.33", "GBP", "estimated", "2026-10-25"],
+        ]
+        estimate = scrape_fund_price.EstimatedDividend("2026-11-21", "", "0.33", "GBP")
+        declared = scrape_fund_price.DeclaredDividend(
+            "2026-11-12", "2026-11-25", "2.5", "GBP"
+        )
+        rows = self.rows(declared, estimate, stored)
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
