@@ -2,6 +2,8 @@ from playwright.sync_api import sync_playwright
 import datetime
 import csv
 import decimal
+import html
+import json
 import math
 import os
 import time
@@ -2730,6 +2732,138 @@ def read_dividend_sources(filename=None, specs=None):
             sources.append(DividendSource(identifier, source, source_id))
 
     return sources
+
+
+ISHARES_PRODUCT_URL = "https://www.ishares.com/uk/individual/en/products/{product_id}"
+ISHARES_REQUEST_TIMEOUT = 30
+# The page embeds its data model entity-escaped inside attributes; the
+# distributions section is this container (SPEC-011).
+ISHARES_TABLE_MARKER = "&quot;performance.distributions.table&quot;"
+# How much of the page after the marker is unescaped and decoded: the table
+# is a few kilobytes, the page megabytes.
+ISHARES_TABLE_SPAN = 400_000
+
+
+class IssuerDistribution(NamedTuple):
+    """One distribution as the issuer states it."""
+
+    ex_date: str  # ISO YYYY-MM-DD
+    record_date: str  # "" when the issuer gives none
+    pay_date: str  # "" when the issuer gives none or it precedes the ex-date
+    amount: str  # decimal text in the share class's currency, major units
+
+
+class IssuerTable(NamedTuple):
+    """An issuer's distributions for one share class, oldest first."""
+
+    currency: str  # the share class's currency; "" when the page does not say
+    rows: tuple
+
+
+def parse_ishares_date(value):
+    """Return an ISO date for the YYYYMMDD integer iShares holds, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    try:
+        return datetime.date(
+            value // 10000, value // 100 % 100, value % 100
+        ).isoformat()
+    except ValueError:
+        return None
+
+
+def parse_ishares_distributions(text, product_id):
+    """Read the distributions table of an iShares UK product page.
+
+    The page holds the table behind its "Distributions" section as four
+    parallel lists, newest first: `exDate`, `recordDate`, `payableDate` and
+    `totalDistribution`. A page with no such table is an error, not an empty
+    one: an accumulating class has none, and so does a page that has changed.
+
+    Args:
+        text: The page's HTML
+        product_id: The product id, for the share class's currency and errors
+
+    Returns:
+        IssuerTable, oldest row first
+
+    Raises:
+        ValueError: no table, or a table that is not four lists of equal length
+            holding real dates and amounts
+    """
+    start = text.find(ISHARES_TABLE_MARKER)
+    if start < 0:
+        raise ValueError(f"iShares product {product_id}: no distributions table")
+
+    lead = max(0, start - 2000)
+    segment = html.unescape(text[lead : start + ISHARES_TABLE_SPAN])
+    at = segment.find(html.unescape(ISHARES_TABLE_MARKER))
+    table, _ = json.JSONDecoder().raw_decode(segment[segment.rfind("{", 0, at) :])
+    points = table.get("dataPointsByNameMap", {})
+    if "exDate" not in points:
+        raise ValueError(f"iShares product {product_id}: no distributions table")
+
+    columns = [
+        points.get(name, {}).get("value")
+        for name in ("exDate", "recordDate", "payableDate", "totalDistribution")
+    ]
+    if not all(isinstance(column, list) for column in columns) or (
+        len({len(column) for column in columns}) != 1
+    ):
+        raise ValueError(f"iShares product {product_id}: malformed distributions table")
+
+    rows = []
+    for ex_value, record_value, pay_value, amount in zip(*columns):
+        ex_date = parse_ishares_date(ex_value)
+        try:
+            amount_value = decimal.Decimal(amount)
+        except (decimal.InvalidOperation, TypeError):
+            amount_value = None
+        usable = amount_value is not None and amount_value.is_finite()
+        if ex_date is None or not usable or amount_value < 0:
+            raise ValueError(
+                f"iShares product {product_id}: malformed distributions table"
+            )
+        pay_date = parse_ishares_date(pay_value) or ""
+        rows.append(
+            IssuerDistribution(
+                ex_date,
+                parse_ishares_date(record_value) or "",
+                pay_date if pay_date >= ex_date else "",
+                amount,
+            )
+        )
+
+    currency = re.search(
+        r"&quot;currency&quot;:&quot;([A-Z]{3})&quot;,&quot;pId&quot;:"
+        + re.escape(str(product_id))
+        + r"\b",
+        text,
+    )
+    return IssuerTable(currency.group(1) if currency else "", tuple(reversed(rows)))
+
+
+def fetch_ishares_distributions(product_id):
+    """Fetch an iShares UK product page and return its distributions.
+
+    One plain GET of the page the site itself serves (its robots.txt allows
+    the product pages), the page being 1.5 to 3 MB.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    response = requests.get(
+        ISHARES_PRODUCT_URL.format(product_id=product_id),
+        timeout=ISHARES_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_ishares_distributions(response.text, product_id)
+
+
+def fetch_issuer_table(source):
+    """Fetch the distribution table of a configured DividendSource."""
+    return fetch_ishares_distributions(source.source_id)
 
 
 # The frequency and the next dividend are read from the twelve months of

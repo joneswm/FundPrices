@@ -6710,8 +6710,8 @@ def ishares_page(rows, currency="GBP", product_id=1):
     selector = {"currency": currency, "pId": product_id}
     return (
         "<html><body>"
-        f'<div data-component="{html.escape(json.dumps(table))}"></div>'
-        f'<div data-selector="{html.escape(json.dumps([selector]))}"></div>'
+        f'<div data-component="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
+        f'<div data-selector="{html.escape(json.dumps([selector], separators=(",", ":")))}"></div>'
         "</body></html>"
     )
 
@@ -6788,7 +6788,7 @@ class TestIsharesPageParsing(unittest.TestCase):
             "fullName": "performance.distributions.table",
             "dataPointsByNameMap": {},
         }
-        page = f'<div data-x="{html.escape(json.dumps(table))}"></div>'
+        page = f'<div data-x="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
             self.parse(page)
 
@@ -6803,7 +6803,7 @@ class TestIsharesPageParsing(unittest.TestCase):
                 "totalDistribution": {"value": ["1.5"]},
             },
         }
-        page = f'<div data-x="{html.escape(json.dumps(table))}"></div>'
+        page = f'<div data-x="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*malformed"):
             self.parse(page)
 
@@ -6817,7 +6817,7 @@ class TestIsharesPageParsing(unittest.TestCase):
 
     def test_a_bad_amount_is_an_error(self):
         """Test the amount must be a decimal."""
-        for bad in (None, "x", "", "-1.5"):
+        for bad in (None, "x", "", "-1.5", "NaN", "Infinity"):
             with self.subTest(bad=bad):
                 page = ishares_page([(20260716, 20260717, 20260729, bad)])
                 with self.assertRaisesRegex(ValueError, "251804.*malformed"):
