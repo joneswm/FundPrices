@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import os
 import shutil
+from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 import csv
 import datetime
@@ -657,6 +658,10 @@ class TestFundPriceScraper(unittest.TestCase):
         finally:
             scrape_fund_price.DATA_DIR = original_data_dir
 
+    @patch(
+        "scrape_fund_price.update_dividends",
+        return_value=scrape_fund_price.DividendResults(),
+    )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.parse_arguments")
@@ -664,7 +669,14 @@ class TestFundPriceScraper(unittest.TestCase):
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
     def test_main_function(
-        self, mock_write, mock_scrape, mock_read, mock_parse, mock_pairs, mock_summary
+        self,
+        mock_write,
+        mock_scrape,
+        mock_read,
+        mock_parse,
+        mock_pairs,
+        mock_summary,
+        mock_update,
     ):
         """Test main function orchestration."""
         # Mock the arguments to return normal mode (no history)
@@ -672,6 +684,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_args.history = None
         mock_args.backfill = False
         mock_args.import_closed = False
+        mock_args.backfill_dividends = False
         mock_parse.return_value = mock_args
 
         # Mock the functions
@@ -687,6 +700,10 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_scrape.assert_called_once()
         mock_write.assert_called_once()
 
+    @patch(
+        "scrape_fund_price.update_dividends",
+        return_value=scrape_fund_price.DividendResults(),
+    )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.parse_arguments")
@@ -694,13 +711,21 @@ class TestFundPriceScraper(unittest.TestCase):
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
     def test_main_fails_job_when_scrape_failures_remain(
-        self, mock_write, mock_scrape, mock_read, mock_parse, mock_pairs, mock_summary
+        self,
+        mock_write,
+        mock_scrape,
+        mock_read,
+        mock_parse,
+        mock_pairs,
+        mock_summary,
+        mock_update,
     ):
         """Test main exits non-zero when fallback prices were used after failures."""
         mock_args = MagicMock()
         mock_args.history = None
         mock_args.backfill = False
         mock_args.import_closed = False
+        mock_args.backfill_dividends = False
         mock_parse.return_value = mock_args
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
 
@@ -989,7 +1014,12 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_history_without_start_date_errors(self, mock_args, mock_print):
         """Test --history without --start reports an error and stops."""
         mock_args.return_value = MagicMock(
-            history="AAPL", start=None, end=None, backfill=False, import_closed=False
+            history="AAPL",
+            start=None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=False,
         )
         main()
         mock_print.assert_called_once_with(
@@ -1007,6 +1037,7 @@ class TestMainEntryPoint(unittest.TestCase):
             end=None,
             backfill=False,
             import_closed=False,
+            backfill_dividends=False,
         )
         mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
         main()
@@ -1026,6 +1057,7 @@ class TestMainEntryPoint(unittest.TestCase):
             end=None,
             backfill=False,
             import_closed=False,
+            backfill_dividends=False,
         )
         mock_fetch.return_value = "Error: No data found for symbol BADSYM"
         main()
@@ -1520,6 +1552,10 @@ class TestWindowedScraping(unittest.TestCase):
 class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     """Test a partially failed run still publishes everything it obtained."""
 
+    @patch(
+        "scrape_fund_price.update_dividends",
+        return_value=scrape_fund_price.DividendResults(),
+    )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.write_results")
@@ -1527,11 +1563,23 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_results_are_written_before_failure_is_signalled(
-        self, mock_args, mock_read, mock_scrape, mock_write, mock_pairs, mock_summary
+        self,
+        mock_args,
+        mock_read,
+        mock_scrape,
+        mock_write,
+        mock_pairs,
+        mock_summary,
+        mock_update,
     ):
         """Test output is written even when some funds failed."""
         mock_args.return_value = MagicMock(
-            history=None, start=None, end=None, backfill=False, import_closed=False
+            history=None,
+            start=None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=False,
         )
         mock_read.return_value = [("GF", "QQQ"), ("GF", "GRAB")]
         results = ScrapeResults(
@@ -1547,6 +1595,10 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         # discard a whole day of good prices.
         mock_write.assert_called_once_with(results)
 
+    @patch(
+        "scrape_fund_price.update_dividends",
+        return_value=scrape_fund_price.DividendResults(),
+    )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.write_results")
@@ -1554,11 +1606,23 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.parse_arguments")
     def test_clean_run_does_not_exit_non_zero(
-        self, mock_args, mock_read, mock_scrape, mock_write, mock_pairs, mock_summary
+        self,
+        mock_args,
+        mock_read,
+        mock_scrape,
+        mock_write,
+        mock_pairs,
+        mock_summary,
+        mock_update,
     ):
         """Test a run with no failures completes normally."""
         mock_args.return_value = MagicMock(
-            history=None, start=None, end=None, backfill=False, import_closed=False
+            history=None,
+            start=None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=False,
         )
         mock_read.return_value = [("GF", "QQQ")]
         mock_scrape.return_value = ScrapeResults(
@@ -6161,6 +6225,304 @@ class TestDailyDividendSummaryFlow(DividendRunCase):
         third = self._run([FundSpec("YA", "QQQ")], events, declared)
         [row] = third.summary
         self.assertEqual((row.ex_date, row.status), ("2026-11-12", "declared"))
+
+
+class TestDividendBackfillArguments(unittest.TestCase):
+    """Test the --backfill-dividends command line (SPEC-010, #85)."""
+
+    def _args(self, **overrides):
+        values = dict(
+            backfill=False,
+            history=None,
+            import_closed=False,
+            backfill_dividends=True,
+            start=None,
+        )
+        values.update(overrides)
+        return MagicMock(**values)
+
+    def test_flag_is_parsed_and_defaults_off(self):
+        """Test the flag exists, alone or with --from."""
+        self.assertFalse(parse_arguments([]).backfill_dividends)
+        args = parse_arguments(["--backfill-dividends", "--from", "2024-01-01"])
+        self.assertTrue(args.backfill_dividends)
+        self.assertEqual(args.start, "2024-01-01")
+
+    def test_no_start_date_is_valid(self):
+        """Test the whole history is the default."""
+        validate = scrape_fund_price.validate_dividend_backfill_args
+        self.assertIsNone(validate(self._args()))
+        self.assertIsNone(validate(self._args(start="2024-01-01")))
+
+    def test_other_modes_cannot_be_combined(self):
+        """Test one mode at a time."""
+        validate = scrape_fund_price.validate_dividend_backfill_args
+        for combined in (
+            {"backfill": True},
+            {"history": "AAPL"},
+            {"import_closed": True},
+        ):
+            with self.subTest(combined=combined):
+                self.assertIn("cannot be combined", validate(self._args(**combined)))
+
+    def test_a_bad_or_future_start_date_is_rejected(self):
+        """Test the same date rules as --backfill."""
+        validate = scrape_fund_price.validate_dividend_backfill_args
+        self.assertIn("Invalid --from", validate(self._args(start="01/01/2024")))
+        self.assertIn("Invalid --from", validate(self._args(start="2024-13-45")))
+        future = (date.today() + timedelta(days=2)).isoformat()
+        self.assertIn("future", validate(self._args(start=future)))
+
+    def test_not_asked_for_is_not_validated(self):
+        """Test a daily run skips the check."""
+        validate = scrape_fund_price.validate_dividend_backfill_args
+        self.assertIsNone(validate(self._args(backfill_dividends=False, backfill=True)))
+
+
+class TestConfiguredIdentifiers(unittest.TestCase):
+    """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
+
+    def test_funds_aliases_and_closed_holdings_are_all_known(self):
+        """Test the three sources of identifiers."""
+        with tempfile.TemporaryDirectory() as directory:
+            closed = os.path.join(directory, "closed_holdings.txt")
+            with open(closed, "w") as f:
+                f.write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
+            known = scrape_fund_price.configured_identifiers(
+                [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
+                closed,
+            )
+        self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
+
+    def test_a_missing_closed_holdings_file_adds_nothing(self):
+        """Test the file is optional here."""
+        known = scrape_fund_price.configured_identifiers(
+            [("FT", "GB00B1FXTF86")],
+            os.path.join(tempfile.gettempdir(), "no-such-file"),
+        )
+        self.assertEqual(known, {"GB00B1FXTF86"})
+
+    def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        specs = read_fund_specs("funds.txt")
+        known = scrape_fund_price.configured_identifiers(specs)
+        scrape_fund_price.read_distributions("distributions.txt", known)
+
+
+class TestDividendsInTheDailyRun(unittest.TestCase):
+    """Test main() runs the dividend update beside the prices (SPEC-010, #85)."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
+        with open(self.distributions_file, "w") as f:
+            f.write("# nothing yet\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _daily_args(self):
+        return MagicMock(
+            history=None,
+            start=None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=False,
+        )
+
+    def _run(self, update=None):
+        """Run main() with prices faked, keeping the mocks that matter."""
+        update = update or scrape_fund_price.DividendResults()
+        outcome = (
+            {"side_effect": update}
+            if isinstance(update, Exception)
+            else {"return_value": update}
+        )
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments", return_value=self._daily_args()
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "QQQ")],
+                )
+            )
+            self.scrape = enter(
+                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
+            )
+            enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
+            self.summary = enter(patch("scrape_fund_price.write_summary"))
+            self.update = enter(patch("scrape_fund_price.update_dividends", **outcome))
+            main()
+
+    def test_the_update_runs_after_the_prices_with_the_configuration(self):
+        """Test update_dividends gets the funds and the validated schedules."""
+        self._run()
+        self.update.assert_called_once()
+        specs, distributions = self.update.call_args.args
+        self.assertEqual([spec.lookup_id for spec in specs], ["QQQ"])
+        self.assertEqual(distributions, [])
+
+    def test_the_summary_receives_the_days_dividend_rows(self):
+        """Test news from the update reaches daily_summary.md."""
+        results = scrape_fund_price.DividendResults()
+        results.summary = [
+            scrape_fund_price.DividendSummaryRow(
+                "QQQ", (), "2026-11-12", "", "", "", "declared"
+            )
+        ]
+        self._run(update=results)
+        self.assertEqual(
+            self.summary.call_args.kwargs["dividend_rows"], results.summary
+        )
+
+    def test_a_bad_distributions_file_fails_before_any_network_call(self):
+        """Test validation comes first, as it does for funds.txt."""
+        with open(self.distributions_file, "w") as f:
+            f.write("NOPE,annual,03-01,30\n")
+        with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
+            self._run()
+        self.scrape.assert_not_called()
+        self.update.assert_not_called()
+
+    def test_dividend_failures_fail_the_run_after_everything_is_written(self):
+        """Test a dividend failure is reported like a price failure."""
+        results = scrape_fund_price.DividendResults(failures=["QQQ: dividends: down"])
+        with self.assertRaises(SystemExit) as error:
+            self._run(update=results)
+        self.assertEqual(error.exception.code, 1)
+        self.summary.assert_called_once()
+
+    def test_a_crash_in_the_dividend_update_does_not_cost_the_summary(self):
+        """Test the price summary is still written, and the run still fails."""
+        with patch("builtins.print") as mock_print:
+            with self.assertRaises(SystemExit):
+                self._run(update=RuntimeError("disk full"))
+        self.summary.assert_called_once()
+        self.assertEqual(self.summary.call_args.kwargs["dividend_rows"], [])
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("dividends: disk full", printed)
+
+
+class TestDividendBackfillMainMode(unittest.TestCase):
+    """Test main() with --backfill-dividends (SPEC-010, #85)."""
+
+    def _args(self, start="2024-01-01"):
+        return MagicMock(
+            history=None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=True,
+            start=start,
+        )
+
+    def _report(self, failures=()):
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "QQQ",
+                "before": 3,
+                "deleted": 2,
+                "retained": 1,
+                "inserted": 2,
+                "first": "2026-03-25",
+                "last": "2026-06-23",
+                "currency": "USD",
+                "status": "rebuilt",
+            }
+        )
+        report.failures.extend(failures)
+        return report
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_dividends")
+    @patch("scrape_fund_price.read_distributions", return_value=[])
+    @patch("scrape_fund_price.read_fund_specs")
+    @patch("scrape_fund_price.scrape_funds")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_rebuilds_from_the_start_date_and_prints_the_report(
+        self, mock_args, mock_scrape, mock_specs, _dists, mock_backfill, mock_print
+    ):
+        """Test the rebuild runs alone and its table reaches stdout."""
+        mock_args.return_value = self._args()
+        mock_specs.return_value = [FundSpec("YA", "QQQ")]
+        mock_backfill.return_value = self._report()
+        main()
+        mock_scrape.assert_not_called()
+        [call] = mock_backfill.call_args_list
+        self.assertEqual(call.args[0][0].lookup_id, "QQQ")
+        self.assertEqual(call.args[2], "2024-01-01")
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("| QQQ |", printed)
+
+    @patch("scrape_fund_price.backfill_dividends")
+    @patch("scrape_fund_price.read_distributions", return_value=[])
+    @patch("scrape_fund_price.read_fund_specs", return_value=[])
+    @patch("scrape_fund_price.parse_arguments")
+    def test_no_start_date_rebuilds_everything(
+        self, mock_args, _specs, _dists, mock_backfill
+    ):
+        """Test --from is optional."""
+        mock_args.return_value = self._args(start=None)
+        mock_backfill.return_value = self._report()
+        main()
+        self.assertIsNone(mock_backfill.call_args.args[2])
+
+    @patch("scrape_fund_price.backfill_dividends")
+    @patch("scrape_fund_price.read_distributions", return_value=[])
+    @patch("scrape_fund_price.read_fund_specs", return_value=[])
+    @patch("scrape_fund_price.parse_arguments")
+    def test_failures_exit_non_zero_after_the_report(
+        self, mock_args, _specs, _dists, mock_backfill
+    ):
+        """Test a partial rebuild is visible to the workflow."""
+        mock_args.return_value = self._args()
+        mock_backfill.return_value = self._report(failures=["BAD: dividends: down"])
+        with self.assertRaises(SystemExit) as error:
+            main()
+        self.assertEqual(error.exception.code, 1)
+
+    @patch("scrape_fund_price.backfill_dividends")
+    @patch("scrape_fund_price.read_distributions", return_value=[])
+    @patch("scrape_fund_price.read_fund_specs", return_value=[])
+    @patch("scrape_fund_price.parse_arguments")
+    def test_the_report_reaches_the_actions_job_summary(
+        self, mock_args, _specs, _dists, mock_backfill
+    ):
+        """Test the rebuild is visible on the run page."""
+        mock_args.return_value = self._args()
+        mock_backfill.return_value = self._report()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "step_summary.md")
+            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
+                main()
+            with open(path, encoding="utf-8") as f:
+                written = f.read()
+        self.assertIn("Dividend rebuild from 2024-01-01", written)
+        self.assertIn("QQQ", written)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_dividends")
+    @patch("scrape_fund_price.parse_arguments")
+    def test_an_invalid_invocation_exits_with_two(
+        self, mock_args, mock_backfill, mock_print
+    ):
+        """Test a bad --from date stops before any work."""
+        mock_args.return_value = self._args(start="yesterday")
+        with self.assertRaises(SystemExit) as error:
+            main()
+        self.assertEqual(error.exception.code, 2)
+        mock_backfill.assert_not_called()
 
 
 if __name__ == "__main__":
