@@ -2811,6 +2811,19 @@ def upcoming_rows_for(
     return [rows[ex_date] for ex_date in sorted(rows)]
 
 
+def merge_by_ex_date(rows_by_fund, identifiers):
+    """Return ex-date -> row over several identifiers of one instrument.
+
+    An alias may carry rows the lookup identifier does not, so an instrument's
+    rows are the union; where identifiers agree on an ex-date the lookup
+    identifier's row wins.
+    """
+    merged = {}
+    for identifier in reversed(identifiers):
+        merged.update(rows_by_fund.get(identifier, {}))
+    return merged
+
+
 def build_dividend_upcoming(
     specs, distributions, history, stored, declared, today, currencies
 ):
@@ -2844,11 +2857,7 @@ def build_dividend_upcoming(
         spec = as_fund_spec(entry)
         identifiers = spec.publish_ids
 
-        # An alias may carry history the lookup identifier does not, so the
-        # instrument's history is the union, one row per ex-date.
-        instrument_history = {}
-        for identifier in identifiers:
-            instrument_history.update(history_by_fund.get(identifier, {}))
+        instrument_history = merge_by_ex_date(history_by_fund, identifiers)
         ordered = [
             instrument_history[ex_date] for ex_date in sorted(instrument_history)
         ]
@@ -2865,10 +2874,13 @@ def build_dividend_upcoming(
         else:
             estimate = estimate_next_dividend(ordered, today)
 
-        instrument_stored = {}
-        for identifier in reversed(identifiers):
-            for row in stored_by_fund.get(identifier, []):
-                instrument_stored[row[1]] = row
+        instrument_stored = merge_by_ex_date(
+            {
+                i: {row[1]: row for row in stored_by_fund.get(i, [])}
+                for i in identifiers
+            },
+            identifiers,
+        )
 
         merged = upcoming_rows_for(
             spec.lookup_id,
