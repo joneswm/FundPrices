@@ -5,6 +5,8 @@ import shutil
 from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 import csv
+import html
+import json
 import datetime
 from datetime import date, timedelta
 
@@ -6673,6 +6675,196 @@ class TestDividendSourceConfiguration(unittest.TestCase):
             _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
         )
         self.assertTrue(all(source.source == "IS" for source in sources))
+
+
+FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def fixture_text(name):
+    """Return a page recorded from the live site (see fixtures/)."""
+    with open(os.path.join(FIXTURE_DIR, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def ishares_page(rows, currency="GBP", product_id=1):
+    """Build a page shaped like iShares UK's from (ex, record, pay, amount) rows.
+
+    Dates are YYYYMMDD integers or None, exactly as the live page holds them,
+    newest first; the data is entity-escaped inside attributes, as there.
+    """
+
+    def points(index, label):
+        values = [row[index] for row in rows]
+        return {"name": label, "value": values}
+
+    table = {
+        "name": "table",
+        "fullName": "performance.distributions.table",
+        "dataPointsByNameMap": {
+            "exDate": points(0, "exDate"),
+            "recordDate": points(1, "recordDate"),
+            "payableDate": points(2, "payableDate"),
+            "totalDistribution": points(3, "totalDistribution"),
+        },
+    }
+    selector = {"currency": currency, "pId": product_id}
+    return (
+        "<html><body>"
+        f'<div data-component="{html.escape(json.dumps(table))}"></div>'
+        f'<div data-selector="{html.escape(json.dumps([selector]))}"></div>'
+        "</body></html>"
+    )
+
+
+class TestIsharesPageParsing(unittest.TestCase):
+    """Test reading the distributions table of an iShares UK page (SPEC-011, #87)."""
+
+    def parse(self, text, product_id="251804"):
+        return scrape_fund_price.parse_ishares_distributions(text, product_id)
+
+    def test_the_recorded_igls_page(self):
+        """Test the live page of iShares UK Gilts 0-5yr, newest last."""
+        table = self.parse(fixture_text("ishares_251804_igls.html"))
+        self.assertEqual(table.currency, "GBP")
+        self.assertEqual(len(table.rows), 36)
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution(
+                "2026-07-16", "2026-07-17", "2026-07-29", "2.4146"
+            ),
+        )
+        self.assertEqual(
+            table.rows[-2],
+            scrape_fund_price.IssuerDistribution(
+                "2026-01-15", "2026-01-16", "2026-01-28", "2.5662"
+            ),
+        )
+        self.assertEqual(table.rows[0].ex_date, "2009-06-24")
+        self.assertEqual(table.rows[0].amount, "0.6824")
+
+    def test_the_recorded_flos_page(self):
+        """Test a GBP-hedged class of a dollar fund, with a zero amount."""
+        table = self.parse(fixture_text("ishares_290356_flos.html"), "290356")
+        self.assertEqual(table.currency, "GBP")
+        self.assertEqual(len(table.rows), 18)
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution(
+                "2026-05-21", "2026-05-22", "2026-05-29", "0.0991"
+            ),
+        )
+        self.assertEqual(table.rows[0].amount, "0.0")
+
+    def test_the_share_class_currency_is_read_for_the_product(self):
+        """Test another class's entry on the page is not taken."""
+        page = ishares_page([(20260716, 20260717, 20260729, "1.5")], "USD", 7)
+        self.assertEqual(self.parse(page, "7").currency, "USD")
+        self.assertEqual(self.parse(page, "8").currency, "")
+
+    def test_a_missing_pay_date_or_record_date_is_empty(self):
+        """Test null cells are empty text."""
+        page = ishares_page([(20260716, None, None, "1.5")])
+        [row] = self.parse(page).rows
+        self.assertEqual(row, ("2026-07-16", "", "", "1.5"))
+
+    def test_a_pay_date_before_the_ex_date_is_not_trusted(self):
+        """Test a pay date that cannot be right is dropped."""
+        page = ishares_page([(20260716, 20260717, 20260715, "1.5")])
+        self.assertEqual(self.parse(page).rows[0].pay_date, "")
+
+    def test_a_pay_date_on_the_ex_date_is_kept(self):
+        """Test same-day payment is allowed."""
+        page = ishares_page([(20260716, 20260716, 20260716, "1.5")])
+        self.assertEqual(self.parse(page).rows[0].pay_date, "2026-07-16")
+
+    def test_a_page_with_no_table_is_an_error(self):
+        """Test an accumulating class, or a changed page, is not an empty table."""
+        with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
+            self.parse("<html><body>nothing here</body></html>")
+
+    def test_a_table_without_dates_is_an_error(self):
+        """Test the lists must be there."""
+        table = {
+            "fullName": "performance.distributions.table",
+            "dataPointsByNameMap": {},
+        }
+        page = f'<div data-x="{html.escape(json.dumps(table))}"></div>'
+        with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
+            self.parse(page)
+
+    def test_a_ragged_table_is_an_error(self):
+        """Test lists of different lengths are refused rather than zipped."""
+        table = {
+            "fullName": "performance.distributions.table",
+            "dataPointsByNameMap": {
+                "exDate": {"value": [20260716, 20260115]},
+                "recordDate": {"value": [20260717]},
+                "payableDate": {"value": [20260729]},
+                "totalDistribution": {"value": ["1.5"]},
+            },
+        }
+        page = f'<div data-x="{html.escape(json.dumps(table))}"></div>'
+        with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+            self.parse(page)
+
+    def test_a_bad_ex_date_is_an_error(self):
+        """Test a date that is not one stops the page, not just the row."""
+        for bad in (None, 20261340, "x", 2026071):
+            with self.subTest(bad=bad):
+                page = ishares_page([(bad, 20260717, 20260729, "1.5")])
+                with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                    self.parse(page)
+
+    def test_a_bad_amount_is_an_error(self):
+        """Test the amount must be a decimal."""
+        for bad in (None, "x", "", "-1.5"):
+            with self.subTest(bad=bad):
+                page = ishares_page([(20260716, 20260717, 20260729, bad)])
+                with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                    self.parse(page)
+
+    def test_an_empty_table_has_no_rows(self):
+        """Test a new fund with no distribution yet."""
+        self.assertEqual(self.parse(ishares_page([])).rows, ())
+
+
+class TestIsharesPageFetch(unittest.TestCase):
+    """Test the one request per instrument (SPEC-011, #87)."""
+
+    def test_one_get_of_the_product_page(self):
+        """Test the url carries the product id and the call has a timeout."""
+        response = MagicMock(text=ishares_page([(20260716, 20260717, 20260729, "2.5")]))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            table = scrape_fund_price.fetch_ishares_distributions("251804")
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://www.ishares.com/uk/individual/en/products/251804",
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(table.rows[0].amount, "2.5")
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_ishares_distributions("251804")
+
+    def test_the_dispatcher_calls_the_source_for_its_code(self):
+        """Test fetch_issuer_table routes IS to the iShares fetch."""
+        source = scrape_fund_price.DividendSource("IGLS.L", "IS", "251804")
+        with patch.object(
+            scrape_fund_price, "fetch_ishares_distributions", return_value="table"
+        ) as fetch:
+            self.assertEqual(scrape_fund_price.fetch_issuer_table(source), "table")
+        fetch.assert_called_once_with("251804")
 
 
 if __name__ == "__main__":
