@@ -4283,5 +4283,153 @@ class TestYahooUnfinishedSession(unittest.TestCase):
             self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
 
 
+class TestDistributionConfiguration(unittest.TestCase):
+    """Test distributions.txt parsing and validation (SPEC-010, #85)."""
+
+    KNOWN = {"GB00B1FXTF86", "IE0008368742", "BMV7ZZ3"}
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _read(self, text, known="default"):
+        path = os.path.join(self.test_dir, "distributions.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        if known == "default":
+            known = self.KNOWN
+        return scrape_fund_price.read_distributions(path, known)
+
+    def test_reads_a_full_line(self):
+        """Test every field of the documented example is parsed."""
+        [dist] = self._read(
+            "GB00B1FXTF86,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01\n"
+        )
+        self.assertEqual(dist.identifier, "GB00B1FXTF86")
+        self.assertEqual(dist.frequency, "semiannual")
+        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
+        self.assertEqual(dist.pay_offset_days, 30)
+        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
+        self.assertEqual(dist.as_of, "2026-10-01")
+
+    def test_amounts_and_as_of_are_optional(self):
+        """Test the shortest legal line has four fields."""
+        [dist] = self._read("IE0008368742,annual,12-15,28\n")
+        self.assertEqual(dist.amounts, ("",))
+        self.assertEqual(dist.as_of, "")
+
+    def test_amounts_without_as_of_are_kept(self):
+        """Test five fields are legal: the amounts then feed estimates only."""
+        [dist] = self._read("IE0008368742,annual,12-15,28,0.31\n")
+        self.assertEqual(dist.amounts, ("0.31",))
+        self.assertEqual(dist.as_of, "")
+
+    def test_an_unknown_amount_may_be_left_empty(self):
+        """Test a slot with no known amount is an empty entry."""
+        [dist] = self._read("GB00B1FXTF86,semiannual,03-01;09-01,30,;0.0794\n")
+        self.assertEqual(dist.amounts, ("", "0.0794"))
+
+    def test_dates_are_sorted_and_amounts_follow_their_dates(self):
+        """Test the amount stays with the date it was written against."""
+        [dist] = self._read("GB00B1FXTF86,semiannual,09-01;03-01,30,0.0794;0.0821\n")
+        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
+        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
+
+    def test_frequency_is_case_insensitive(self):
+        """Test the frequency is normalised to lower case."""
+        [dist] = self._read("GB00B1FXTF86,Quarterly,01-05;04-05;07-05;10-05,20\n")
+        self.assertEqual(dist.frequency, "quarterly")
+
+    def test_every_frequency_needs_its_own_number_of_dates(self):
+        """Test the date count must match the payments a year."""
+        monthly = ";".join(f"{month:02d}-10" for month in range(1, 13))
+        [dist] = self._read(f"GB00B1FXTF86,monthly,{monthly},5\n")
+        self.assertEqual(len(dist.xd_dates), 12)
+        with self.assertRaisesRegex(ValueError, "line 1.*2 ex-dates"):
+            self._read("GB00B1FXTF86,quarterly,03-01;09-01,30\n")
+        with self.assertRaisesRegex(ValueError, "line 1.*1 ex-date"):
+            self._read("GB00B1FXTF86,annual,03-01;09-01,30\n")
+
+    def test_leap_day_is_allowed(self):
+        """Test 02-29 is a real ex-date for the years that have one."""
+        [dist] = self._read("GB00B1FXTF86,annual,02-29,10\n")
+        self.assertEqual(dist.xd_dates, ((2, 29),))
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        """Test full-line and trailing comments, and blank lines."""
+        dists = self._read(
+            "# header\n\n"
+            "GB00B1FXTF86,annual,03-01,30   # factsheet p.2\n"
+            "   \n"
+            "IE0008368742,annual,06-01,30\n"
+        )
+        self.assertEqual(
+            [d.identifier for d in dists], ["GB00B1FXTF86", "IE0008368742"]
+        )
+
+    def test_a_header_only_file_has_no_entries(self):
+        """Test the shipped file, comments only, yields nothing."""
+        self.assertEqual(self._read("# nothing yet\n"), [])
+
+    def test_a_missing_file_has_no_entries(self):
+        """Test the file is optional."""
+        path = os.path.join(self.test_dir, "absent.txt")
+        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+    def test_identifier_must_be_configured(self):
+        """Test a line for an unknown instrument names the line."""
+        with self.assertRaisesRegex(ValueError, "line 2.*'NOPE'"):
+            self._read("GB00B1FXTF86,annual,03-01,30\nNOPE,annual,03-01,30\n")
+
+    def test_membership_is_not_checked_without_a_known_set(self):
+        """Test callers that only want the grammar can skip the lookup."""
+        [dist] = self._read("ANYTHING,annual,03-01,30\n", known=None)
+        self.assertEqual(dist.identifier, "ANYTHING")
+
+    def test_repeated_identifier_names_both_lines(self):
+        """Test an identifier may have one line."""
+        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
+            self._read("GB00B1FXTF86,annual,03-01,30\nGB00B1FXTF86,annual,04-01,30\n")
+
+    def test_malformed_lines_name_the_line_number(self):
+        """Test each way a line can be wrong fails with its line number."""
+        bad = {
+            "GB00B1FXTF86,annual": "expected",
+            "GB00B1FXTF86,annual,03-01": "expected",
+            ",annual,03-01,30": "expected",
+            "GB00B1FXTF86,annual,03-01,30,0.3,2026-10-01,extra": "expected",
+            "GB00B1FXTF86,weekly,03-01,30": "frequency",
+            "GB00B1FXTF86,annual,3-1,30": "ex-date",
+            "GB00B1FXTF86,annual,13-01,30": "ex-date",
+            "GB00B1FXTF86,annual,02-30,30": "ex-date",
+            "GB00B1FXTF86,annual,,30": "ex-date",
+            "GB00B1FXTF86,semiannual,03-01;03-01,30": "repeats",
+            "GB00B1FXTF86,annual,03-01,thirty": "pay offset",
+            "GB00B1FXTF86,annual,03-01,-5": "pay offset",
+            "GB00B1FXTF86,annual,03-01,366": "pay offset",
+            "GB00B1FXTF86,annual,03-01,30,abc": "amount",
+            "GB00B1FXTF86,annual,03-01,30,0": "amount",
+            "GB00B1FXTF86,annual,03-01,30,-0.5": "amount",
+            "GB00B1FXTF86,annual,03-01,30,NaN": "amount",
+            "GB00B1FXTF86,annual,03-01,30,1;2": "amounts",
+            "GB00B1FXTF86,annual,03-01,30,": "amounts field is empty",
+            "GB00B1FXTF86,annual,03-01,30,,2026-10-01": "amounts field is empty",
+            "GB00B1FXTF86,annual,03-01,30,0.3,yesterday": "as-of",
+            "GB00B1FXTF86,annual,03-01,30,0.3,2026-13-01": "as-of",
+            "GB00B1FXTF86,annual,03-01,30,0.3,": "as-of",
+        }
+        for line, fragment in bad.items():
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(ValueError, f"line 3.*{fragment}"):
+                    self._read(f"# one\n\n{line}\n")
+
+    def test_the_shipped_file_parses_and_has_no_entries(self):
+        """Test the committed distributions.txt is a valid, empty file."""
+        path = os.path.join(os.path.dirname(__file__), "distributions.txt")
+        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+
 if __name__ == "__main__":
     unittest.main()
