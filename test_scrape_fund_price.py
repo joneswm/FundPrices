@@ -4431,5 +4431,230 @@ class TestDistributionConfiguration(unittest.TestCase):
         self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
 
 
+class TestYahooDividendEvents(unittest.TestCase):
+    """Test dividend events from the Yahoo daily-bar route (SPEC-010, #85)."""
+
+    def _ticker(self, mock_ticker, rows, currency="GBP", column=True):
+        import pandas as pd
+
+        inst = MagicMock()
+        idx = pd.to_datetime([d for d, _ in rows])
+        data = {"Close": [1.0] * len(rows)}
+        if column:
+            data["Dividends"] = [v for _, v in rows]
+        inst.history.return_value = pd.DataFrame(data, index=idx)
+        inst.fast_info = {"currency": currency}
+        mock_ticker.return_value = inst
+        return inst
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_returns_one_event_per_ex_date_with_the_price_currency(self, mock_ticker):
+        """Test only bars carrying a dividend become events."""
+        self._ticker(
+            mock_ticker,
+            [("2026-09-17", 0.0), ("2026-09-18", 0.0821), ("2026-09-21", 0.0)],
+        )
+        events = scrape_fund_price.fetch_yahoo_dividends("IGLS.L", "2026-09-01")
+        self.assertEqual(
+            events, [scrape_fund_price.DividendEvent("2026-09-18", "0.0821", "GBP")]
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_pence_line_stays_in_pence(self, mock_ticker):
+        """Test GBp is kept, as it is for prices."""
+        self._ticker(mock_ticker, [("2026-09-18", 24.5)], currency="GBp")
+        [event] = scrape_fund_price.fetch_yahoo_dividends("SWDA.L", "2026-09-01")
+        self.assertEqual((event.amount, event.currency), ("24.5", "GBp"))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_amounts_are_plain_decimal_text(self, mock_ticker):
+        """Test whole numbers, small values and noise-free decimals."""
+        self._ticker(
+            mock_ticker,
+            [("2026-01-02", 3.0), ("2026-02-02", 1e-05), ("2026-03-02", 0.1234567)],
+        )
+        events = scrape_fund_price.fetch_yahoo_dividends("QQQ", "2026-01-01")
+        self.assertEqual([e.amount for e in events], ["3", "0.00001", "0.1234567"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_requests_actions_unadjusted_for_the_window(self, mock_ticker):
+        """Test the same call as the bars, with the corporate actions on."""
+        inst = self._ticker(mock_ticker, [("2026-09-18", 0.5)])
+        scrape_fund_price.fetch_yahoo_dividends("QQQ", "2026-09-01", "2026-09-19")
+        kwargs = inst.history.call_args.kwargs
+        self.assertTrue(kwargs["actions"])
+        self.assertFalse(kwargs["auto_adjust"])
+        self.assertEqual((kwargs["start"], kwargs["end"]), ("2026-09-01", "2026-09-19"))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_no_start_asks_for_the_whole_history(self, mock_ticker):
+        """Test the first fetch of an instrument reads everything Yahoo has."""
+        inst = self._ticker(mock_ticker, [("2026-09-18", 0.5)])
+        scrape_fund_price.fetch_yahoo_dividends("QQQ", None)
+        kwargs = inst.history.call_args.kwargs
+        self.assertEqual(kwargs["period"], "max")
+        self.assertNotIn("start", kwargs)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_missing_values_and_columns_give_no_events(self, mock_ticker):
+        """Test NaN, an absent column and an empty frame are not errors."""
+        self._ticker(mock_ticker, [("2026-09-18", float("nan"))])
+        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
+        self._ticker(mock_ticker, [("2026-09-18", 1.0)], column=False)
+        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
+        self._ticker(mock_ticker, [])
+        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_unknown_currency_is_empty_not_an_error(self, mock_ticker):
+        """Test a missing currency leaves the field empty, as the prices do."""
+        inst = self._ticker(mock_ticker, [("2026-09-18", 0.5)])
+        inst.fast_info = {}
+        [event] = scrape_fund_price.fetch_yahoo_dividends("QQQ", "2026-09-01")
+        self.assertEqual(event.currency, "")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_exception_propagates_to_the_retry_wrapper(self, mock_ticker):
+        """Test transport errors are raised so fetch_with_retries can retry."""
+        mock_ticker.side_effect = Exception("Network error")
+        with self.assertRaisesRegex(Exception, "Network error"):
+            scrape_fund_price.fetch_yahoo_dividends("QQQ", "2026-09-01")
+
+
+class FakeCalendarTicker:
+    """A stand-in for yf.Ticker exposing only calendar and info."""
+
+    def __init__(self, calendar=None, info=None, calendar_error=None, info_error=None):
+        self._calendar, self._info = calendar, info
+        self._calendar_error, self._info_error = calendar_error, info_error
+
+    @property
+    def calendar(self):
+        if self._calendar_error:
+            raise self._calendar_error
+        return self._calendar
+
+    @property
+    def info(self):
+        if self._info_error:
+            raise self._info_error
+        return self._info
+
+
+def epoch(text):
+    """Midnight UTC of an ISO date, as Yahoo's info endpoint reports dates."""
+    day = datetime.date.fromisoformat(text)
+    midnight = datetime.datetime.combine(day, datetime.time(), datetime.timezone.utc)
+    return int(midnight.timestamp())
+
+
+class TestYahooDeclaredDividends(unittest.TestCase):
+    """Test the next declared ex-date and pay date from Yahoo (SPEC-010, #85)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _declared(self, mock_ticker, **kwargs):
+        mock_ticker.return_value = FakeCalendarTicker(**kwargs)
+        return scrape_fund_price.fetch_yahoo_declared("QQQ", self.TODAY)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_calendar_gives_the_ex_date_and_pay_date(self, mock_ticker):
+        """Test the calendar's two dividend dates are taken."""
+        declared = self._declared(
+            mock_ticker,
+            calendar={
+                "Dividend Date": date(2026, 11, 28),
+                "Ex-Dividend Date": date(2026, 11, 12),
+            },
+        )
+        self.assertEqual(
+            declared, scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_an_ex_date_today_is_still_upcoming(self, mock_ticker):
+        """Test the boundary: today's ex-date is declared, yesterday's is not."""
+        today = self._declared(mock_ticker, calendar={"Ex-Dividend Date": self.TODAY})
+        self.assertEqual(today.ex_date, "2026-10-26")
+        yesterday = self._declared(
+            mock_ticker, calendar={"Ex-Dividend Date": date(2026, 10, 25)}, info={}
+        )
+        self.assertIsNone(yesterday)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_missing_or_earlier_pay_date_is_left_empty(self, mock_ticker):
+        """Test the pay date is only kept when it follows the ex-date."""
+        no_pay = self._declared(
+            mock_ticker, calendar={"Ex-Dividend Date": date(2026, 11, 12)}
+        )
+        self.assertEqual(no_pay.pay_date, "")
+        early = self._declared(
+            mock_ticker,
+            calendar={
+                "Ex-Dividend Date": date(2026, 11, 12),
+                "Dividend Date": date(2026, 11, 1),
+            },
+        )
+        self.assertEqual(early.pay_date, "")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_info_is_the_fallback_when_the_calendar_has_no_ex_date(self, mock_ticker):
+        """Test epoch seconds from info are read as UTC dates."""
+        declared = self._declared(
+            mock_ticker,
+            calendar={},
+            info={
+                "exDividendDate": epoch("2026-11-12"),
+                "dividendDate": epoch("2026-11-28"),
+            },
+        )
+        self.assertEqual(
+            declared, scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_failing_calendar_falls_back_to_info(self, mock_ticker):
+        """Test Yahoo's calendar error does not hide what info knows."""
+        declared = self._declared(
+            mock_ticker,
+            calendar_error=RuntimeError("404"),
+            info={"exDividendDate": epoch("2026-11-12")},
+        )
+        self.assertEqual(declared.ex_date, "2026-11-12")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_info_failure_propagates_to_the_retry_wrapper(self, mock_ticker):
+        """Test the last resort failing is an error, not 'nothing declared'."""
+        with self.assertRaises(RuntimeError):
+            self._declared(
+                mock_ticker, calendar={}, info_error=RuntimeError("Network error")
+            )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_nothing_declared_gives_none(self, mock_ticker):
+        """Test neither source naming an ex-date is not an error."""
+        self.assertIsNone(self._declared(mock_ticker, calendar={}, info={}))
+        self.assertIsNone(self._declared(mock_ticker, calendar=None, info=None))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_date_values_come_in_several_shapes(self, mock_ticker):
+        """Test datetimes, ISO text and garbage are each handled."""
+        as_datetime = self._declared(
+            mock_ticker,
+            calendar={"Ex-Dividend Date": datetime.datetime(2026, 11, 12, 9, 30)},
+        )
+        self.assertEqual(as_datetime.ex_date, "2026-11-12")
+        as_text = self._declared(
+            mock_ticker, calendar={"Ex-Dividend Date": "2026-11-12"}
+        )
+        self.assertEqual(as_text.ex_date, "2026-11-12")
+        for junk in ("soon", "", None, True, 1e30, [date(2026, 11, 12)]):
+            self.assertIsNone(
+                self._declared(
+                    mock_ticker, calendar={"Ex-Dividend Date": junk}, info={}
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
