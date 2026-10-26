@@ -63,16 +63,25 @@ from scrape_fund_price import (
 # live FX rewrites got in before.
 _REAL_DATA_DIR = scrape_fund_price.DATA_DIR
 _SUITE_DATA_DIR = None
+# The same for the issuer list (SPEC-011): no test reads the shipped
+# dividend_sources.txt by accident, so a main() test never fetches a page.
+_REAL_DIVIDEND_SOURCES_FILE = getattr(
+    scrape_fund_price, "DIVIDEND_SOURCES_FILE", "dividend_sources.txt"
+)
 
 
 def setUpModule():
     global _SUITE_DATA_DIR
     _SUITE_DATA_DIR = tempfile.mkdtemp(prefix="fundprices-tests-")
     scrape_fund_price.DATA_DIR = _SUITE_DATA_DIR
+    scrape_fund_price.DIVIDEND_SOURCES_FILE = os.path.join(
+        _SUITE_DATA_DIR, "no-dividend-sources.txt"
+    )
 
 
 def tearDownModule():
     scrape_fund_price.DATA_DIR = _REAL_DATA_DIR
+    scrape_fund_price.DIVIDEND_SOURCES_FILE = _REAL_DIVIDEND_SOURCES_FILE
     if _SUITE_DATA_DIR:
         shutil.rmtree(_SUITE_DATA_DIR, ignore_errors=True)
 
@@ -6562,6 +6571,110 @@ class TestDividendEdgeCases(unittest.TestCase):
             date(2026, 10, 26),
         )
         self.assertEqual(rows, [])
+
+
+class TestDividendSourceConfiguration(unittest.TestCase):
+    """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
+
+    SPECS = [
+        FundSpec("YA", "IGLS.L"),
+        FundSpec("FT", "IE00B0M63516", ("IDBZ",)),
+        FundSpec("YA", "QQQ"),
+    ]
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _read(self, text, specs="default"):
+        path = os.path.join(self.test_dir, "dividend_sources.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        if specs == "default":
+            specs = self.SPECS
+        return scrape_fund_price.read_dividend_sources(path, specs)
+
+    def test_reads_lines_comments_and_blank_lines(self):
+        """Test the documented grammar."""
+        sources = self._read(
+            "# the issuers\n"
+            "\n"
+            "IGLS.L,IS,251804   # 0-5yr gilts\n"
+            "IE00B0M63516 , is , 251853\n"
+        )
+        self.assertEqual(
+            sources,
+            [
+                scrape_fund_price.DividendSource("IGLS.L", "IS", "251804"),
+                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
+            ],
+        )
+
+    def test_an_alias_may_name_the_instrument(self):
+        """Test any published identifier is accepted."""
+        [source] = self._read("IDBZ,IS,251853\n")
+        self.assertEqual(source.identifier, "IDBZ")
+
+    def test_a_missing_file_means_no_sources(self):
+        """Test the file is optional."""
+        missing = os.path.join(self.test_dir, "none.txt")
+        self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
+
+    def test_the_default_file_is_the_configured_one(self):
+        """Test the production call names no file."""
+        path = os.path.join(self.test_dir, "dividend_sources.txt")
+        with open(path, "w") as f:
+            f.write("QQQ,IS,1\n")
+        with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
+            [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
+        self.assertEqual(source.identifier, "QQQ")
+
+    def test_without_specs_the_identifier_is_not_checked(self):
+        """Test the grammar can be read on its own."""
+        [source] = self._read("ANYTHING,IS,5\n", specs=None)
+        self.assertEqual(source.identifier, "ANYTHING")
+
+    def test_bad_lines_name_the_line(self):
+        """Test every malformed field fails before any network call."""
+        cases = {
+            "IGLS.L,IS": "line 1.*expected",
+            "IGLS.L,IS,251804,extra": "line 1.*expected",
+            ",IS,251804": "line 1.*expected",
+            "IGLS.L,XX,251804": "line 1.*source 'XX'",
+            "IGLS.L,IS,abc": "line 1.*source id 'abc'",
+            "IGLS.L,IS,": "line 1.*source id ''",
+            "IGLS.L,IS,1234567890": "line 1.*source id '1234567890'",
+            "IGLS.L,IS,0": "line 1.*source id '0'",
+            "NOPE,IS,251804": "line 1.*'NOPE'.*funds.txt",
+        }
+        for text, pattern in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self._read(text + "\n")
+
+    def test_the_error_names_the_right_line(self):
+        """Test line numbers count comments and blanks."""
+        with self.assertRaisesRegex(ValueError, "line 3"):
+            self._read("# c\n\nIGLS.L,IS,x\n")
+
+    def test_a_repeated_identifier_is_an_error(self):
+        """Test one line per identifier."""
+        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
+            self._read("IGLS.L,IS,1\nIGLS.L,IS,2\n")
+
+    def test_two_lines_for_one_instrument_are_an_error(self):
+        """Test a lookup id and its alias are the same instrument."""
+        with self.assertRaisesRegex(ValueError, "line 2.*same instrument.*line 1"):
+            self._read("IE00B0M63516,IS,1\nIDBZ,IS,1\n")
+
+    def test_the_committed_file_is_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        sources = scrape_fund_price.read_dividend_sources(
+            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
+        )
+        self.assertTrue(all(source.source == "IS" for source in sources))
 
 
 if __name__ == "__main__":
