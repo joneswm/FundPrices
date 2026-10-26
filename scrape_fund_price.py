@@ -10,6 +10,7 @@ import requests
 import yfinance as yf
 import argparse
 import re
+import statistics
 from contextlib import nullcontext
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -2528,6 +2529,168 @@ def collect_dividends(specs, today, start=None):
             results.declared[spec.lookup_id] = declared
 
     return results
+
+
+# The frequency and the next dividend are read from the twelve months of
+# ex-dates up to the last one (SPEC-010).
+ESTIMATE_WINDOW_DAYS = 365
+# A payer silent for a whole period plus this many days has stopped paying.
+ESTIMATE_STOP_MARGIN_DAYS = 45
+# Median gap between ex-dates, in days, up to which a frequency applies, as
+# (limit, months in the period). Anything longer is annual.
+FREQUENCY_BANDS = ((45, 1), (135, 3), (270, 6))
+
+
+class EstimatedDividend(NamedTuple):
+    """A projected dividend: the next ex-date and what it is expected to pay."""
+
+    ex_date: str
+    pay_date: str  # "" when no payment lag is known
+    amount: str  # "" when no amount is known
+    currency: str
+
+
+def last_day_of_month(year, month):
+    """Return the number of days in a month."""
+    first_of_next = datetime.date(year + month // 12, month % 12 + 1, 1)
+    return (first_of_next - datetime.timedelta(days=1)).day
+
+
+def add_months(day, months):
+    """Return `day` moved by whole calendar months, clamped to the month's end."""
+    year, month_index = divmod(day.year * 12 + day.month - 1 + months, 12)
+    month = month_index + 1
+    return datetime.date(year, month, min(day.day, last_day_of_month(year, month)))
+
+
+def detect_period_months(ex_dates):
+    """Return the payment period in months (1, 3, 6 or 12) from ex-dates.
+
+    The median gap decides, so one special dividend does not turn a quarterly
+    payer into a monthly one. A single date shows no spacing and reads as
+    annual.
+    """
+    ordered = sorted(set(ex_dates))
+    if len(ordered) < 2:
+        return 12
+    gap = statistics.median(
+        (later - earlier).days for earlier, later in zip(ordered, ordered[1:])
+    )
+    for limit, months in FREQUENCY_BANDS:
+        if gap <= limit:
+            return months
+    return 12
+
+
+def estimate_next_dividend(rows, today):
+    """Project an instrument's next dividend from its history (SPEC-010).
+
+    The next ex-date is the last one plus the period, moved on by whole
+    periods until it is today or later; the amount and currency are the last
+    paid. The period is read from the twelve months to the last ex-date, not
+    to today: a semi-annual payer whose next dividend is not yet reported has
+    one ex-date in the twelve months to today and would read as annual. An
+    instrument silent for a period and a margin has stopped and gets no
+    estimate. A pay date is projected only when the last row has one.
+
+    Args:
+        rows: One instrument's [fund, ex_date, pay_date, amount, currency,
+            source] history rows, in any order
+        today: The run date
+
+    Returns:
+        EstimatedDividend, or None when there is nothing to project from
+    """
+    dated = []
+    for row in rows:
+        try:
+            ex_date = datetime.date.fromisoformat(row[1])
+        except ValueError:
+            continue
+        if ex_date <= today:
+            dated.append((ex_date, row))
+    if not dated:
+        return None
+
+    dated.sort(key=lambda item: item[0])
+    last_ex, last_row = dated[-1]
+    window_start = last_ex - datetime.timedelta(days=ESTIMATE_WINDOW_DAYS)
+    months = detect_period_months(ex for ex, _ in dated if ex > window_start)
+    if (today - last_ex).days > months * 31 + ESTIMATE_STOP_MARGIN_DAYS:
+        return None
+
+    periods = 1
+    next_ex = add_months(last_ex, months)
+    while next_ex < today:
+        periods += 1
+        next_ex = add_months(last_ex, months * periods)
+
+    pay_date = ""
+    try:
+        lag = datetime.date.fromisoformat(last_row[2]) - last_ex
+    except ValueError:
+        lag = None
+    if lag is not None and lag.days >= 0:
+        pay_date = (next_ex + lag).isoformat()
+
+    return EstimatedDividend(next_ex.isoformat(), pay_date, last_row[3], last_row[4])
+
+
+def slot_date(month, day, year):
+    """Return a configured (month, day) in a year; 29 February clamps to 28."""
+    return datetime.date(year, month, min(day, last_day_of_month(year, month)))
+
+
+def distribution_estimate(dist, currency, today):
+    """Return the next dividend a distributions.txt line schedules.
+
+    The next occurrence of one of its ex-dates on or after `today`, paid the
+    line's offset later, for that slot's amount ("" when not known).
+    """
+    candidates = [
+        (slot_date(month, day, year), slot)
+        for year in (today.year, today.year + 1)
+        for slot, (month, day) in enumerate(dist.xd_dates)
+    ]
+    ex_date, slot = min(item for item in candidates if item[0] >= today)
+    pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
+    return EstimatedDividend(
+        ex_date.isoformat(), pay_date.isoformat(), dist.amounts[slot], currency
+    )
+
+
+def distribution_history_rows(dist, currency, today):
+    """Return the `config` history rows a distributions.txt line asserts.
+
+    Only a line with amounts and an as-of date asserts anything: for each
+    ex-date with an amount, its latest occurrence on or before the as-of date
+    (and today, so a mistyped future date cannot assert a dividend that has not
+    happened). Without the date, nothing says when the amounts were true, and
+    every later occurrence would be recorded as paid at an old amount.
+    """
+    if not dist.as_of:
+        return []
+
+    limit = min(datetime.date.fromisoformat(dist.as_of), today)
+    rows = []
+    for (month, day), amount in zip(dist.xd_dates, dist.amounts):
+        if not amount:
+            continue
+        ex_date = slot_date(month, day, limit.year)
+        if ex_date > limit:
+            ex_date = slot_date(month, day, limit.year - 1)
+        pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
+        rows.append(
+            [
+                dist.identifier,
+                ex_date.isoformat(),
+                pay_date.isoformat(),
+                amount,
+                currency,
+                "config",
+            ]
+        )
+    return rows
 
 
 def parse_arguments(args=None):
