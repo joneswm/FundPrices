@@ -12,13 +12,14 @@ The whole application is one module, `scrape_fund_price.py`, with one test modul
 
 ## Modes
 
-One entry point, four modes, selected by command-line flags:
+One entry point, five modes, selected by command-line flags:
 
 | Mode | Flag | Reads | Writes |
 |------|------|-------|--------|
-| Daily run | *(none)* | `funds.txt`, `fx_pairs.txt` | every output file |
+| Daily run | *(none)* | `funds.txt`, `fx_pairs.txt`, `distributions.txt` | every output file |
 | Rebuild | `--backfill --from DATE` | `funds.txt`, `fx_pairs.txt` | price and FX files (no summary) |
 | Closed-holding import | `--import-closed` | `closed_holdings.txt` | `prices_history.csv` only |
+| Dividend rebuild | `--backfill-dividends [--from DATE]` | `funds.txt`, `distributions.txt` | the dividend files only |
 | Ad-hoc export | `--history SYMBOL --start DATE` | nothing | `history_<SYMBOL>_<START>_<END>.csv` |
 
 ## Components
@@ -56,7 +57,7 @@ warning that names the offending line.
 
 ### 2. Configuration
 
-Three text files, each validated in full before any network call, with errors naming
+Four text files, each validated in full before any network call, with errors naming
 the line.
 
 - **`funds.txt`** — `<source>,<lookup_id>[,<alias>[;<alias>...]]`. The instruments
@@ -69,6 +70,11 @@ the line.
   `<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`. Instruments held once
   and no longer priced. Kept apart from `funds.txt` precisely so the daily run cannot
   reach them.
+- **`distributions.txt`** —
+  `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`.
+  Hand-kept dividend schedules for instruments no source covers, chiefly the FT-sourced
+  OEICs, whose ex-dates and pay dates the fund fixes. The identifier must be published by
+  `funds.txt` or `closed_holdings.txt`. A missing file means no entries.
 
 ### 3. Storage
 
@@ -83,7 +89,9 @@ them.)
 | `prices_history_90_days.csv` | last 90 calendar days, currently priced funds only | daily, rebuild |
 | `latest_<identifier>.price` | one price, for single-value consumers | daily, rebuild |
 | `fx_history.csv`, `latest_fx.csv` | `Pair,Date,Rate` at 6 dp | daily, rebuild |
-| `daily_summary.csv`, `daily_summary.md` | new, old, delta and percent delta | daily |
+| `dividends_history.csv` | `Fund,ExDate,PayDate,Amount,Currency,Source`: every past ex-date | daily, dividend rebuild |
+| `dividends_upcoming.csv` | `Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`: the next dividend, `declared` or `estimated` | daily, dividend rebuild |
+| `daily_summary.csv`, `daily_summary.md` | new, old, delta and percent delta; the Markdown also lists the dividends that are new today | daily |
 
 **Design decisions**
 
@@ -95,6 +103,13 @@ them.)
   `funds.txt`; the import owns the identifiers in `closed_holdings.txt`. A rebuild
   only touches identifiers it is given, and only ever promotes configured funds into
   the "current" files, so none of the three can undo another's work.
+- **The dividend files follow the same rules.** The history is a keyed upsert on
+  `(Fund, ExDate)`, the daily run only ever adds or corrects, and a rebuild replaces only
+  the Yahoo rows (`Source` `YA`), never the `config` rows from `distributions.txt`. The
+  upcoming file is a state, not a log: projections are recomputed every run and a
+  declared row stays until Yahoo names another date or the dividend is a week past and in
+  the history. `Amount` is stored in the instrument's price currency and never converted,
+  so a pence line stays in `GBp`. The file knows nothing about holders.
 - **A rebuild deletes carefully.** It removes weekend rows and rows with no currency
   (the scrape-dated legacy data it exists to replace) but keeps currency-bearing rows
   a source happened to omit, because sources intermittently drop real trading days.
@@ -125,13 +140,17 @@ funds.txt ──> read_fund_specs ──> scrape_funds ──> write_results
                                      │  on failure: carry the last known row forward
 fx_pairs.txt ─> read_fx_pairs ──> snap_fx_rates ──> write_fx_results
                                                         │
+funds.txt + distributions.txt ──> update_dividends ──> dividends_history.csv
+                                     │  per YA fund: fetch_with_retries(events, declared)
+                                     └─> build_dividend_upcoming ──> dividends_upcoming.csv
+                                                        │
 history + fx ──> build_price_summary / build_fx_summary ──> write_summary
                                                         │
                                    failures? ──> exit 1 (after everything is written)
 ```
 
-Prices, FX and the summary are written independently, so a problem with one never
-costs another its day of data. The process exits non-zero only after every file that
+Prices, FX, dividends and the summary are written independently, so a problem with one
+never costs another its day of data. The process exits non-zero only after every file that
 could be written has been.
 
 ## Error handling

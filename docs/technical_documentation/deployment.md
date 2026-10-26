@@ -48,8 +48,9 @@ YA,IDTG.L
 YA,0P00000YAN,JFM0003373
 ```
 
-`fx_pairs.txt` lists the FX rates to snap, and `closed_holdings.txt` lists one-off
-historical imports. See the [README](../../README.md#configuration) for all three
+`fx_pairs.txt` lists the FX rates to snap, `closed_holdings.txt` lists one-off
+historical imports, and `distributions.txt` lists the dividend schedules of instruments
+no source covers. See the [README](../../README.md#configuration) for all four
 formats.
 
 ### 2. Data Directory
@@ -57,7 +58,8 @@ The application will create a `data/` directory for storing results:
 - `latest_prices.csv`: Most recent prices
 - `prices_history.csv`: Historical data
 - `prices_history_90_days.csv`, `latest_<identifier>.price`, `fx_history.csv`,
-  `latest_fx.csv`, `daily_summary.csv` and `daily_summary.md`
+  `latest_fx.csv`, `dividends_history.csv`, `dividends_upcoming.csv`,
+  `daily_summary.csv` and `daily_summary.md`
 
 ### 3. File Locations
 The configuration files and the `data/` directory are read from the working
@@ -69,7 +71,7 @@ Actions sets.
 
 ### Local Development
 ```bash
-# Daily run: prices, FX rates and the summary
+# Daily run: prices, FX rates, dividends and the summary
 python scrape_fund_price.py
 
 # Rebuild stored history from the sources
@@ -77,6 +79,9 @@ python scrape_fund_price.py --backfill --from 2021-12-01
 
 # One-off import of closed holdings
 python scrape_fund_price.py --import-closed
+
+# Rebuild the Yahoo rows of the dividend history (--from is optional)
+python scrape_fund_price.py --backfill-dividends
 ```
 
 ### Cron Job (Linux/macOS)

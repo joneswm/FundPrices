@@ -26,6 +26,27 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-010: The Dividend Calendar
+**Status**: ✅ **COMPLETED** (on branch `dividends-calendar`, awaiting merge)  
+**Created**: 2026-10-26  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/010-dividends/`  
+**Tracking**: [#85](https://github.com/joneswm/FundPrices/issues/85)
+
+**Implementation Details**:
+- ✅ `data/dividends_history.csv`: every past ex-date Yahoo knows for the `YA` instruments, in the price currency, under every alias, upserted on `(Fund, ExDate)`
+- ✅ `data/dividends_upcoming.csv`: the next ex-date, `declared` by Yahoo's calendar or `estimated` from the last twelve months
+- ✅ `distributions.txt`: hand-kept schedules for instruments no source covers, validated before any network call
+- ✅ A Dividends section in `daily_summary.md`
+- ✅ `--backfill-dividends [--from DATE]` rebuilds the Yahoo rows of the history
+
+**Evidence**: `update_dividends()`, `backfill_dividends()` and `read_distributions()` in
+`scrape_fund_price.py`; the classes `TestDistributionConfiguration`, `TestYahooDividendEvents`
+to `TestDividendBackfillMainMode` in `test_scrape_fund_price.py`. Run `make test-coverage`
+for the figures.
+
+---
+
 ### SPEC-002: Rolling 90-Day Price History
 **Status**: ✅ **COMPLETED**  
 **Created**: 2026-08-16  
@@ -554,8 +575,8 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ### Overall Status
 
 #### Spec Kit Specifications
-- **Active Specs**: 9
-- **Completed**: 9 (SPEC-001 to SPEC-009; see [`specs/README.md`](../../specs/README.md))
+- **Active Specs**: 10
+- **Completed**: 10 (SPEC-001 to SPEC-010; see [`specs/README.md`](../../specs/README.md))
 - **In Progress**: 0
 - **Planned**: 0
 
@@ -581,6 +602,7 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 - ✅ Multi-source dated price collection (Yahoo Finance API, FT, investing.com; scraping fallback)
 - ✅ True price dates and currencies, identifier aliases, FX rates, daily summary
 - ✅ History rebuild from source data, and one-off imports of closed holdings
+- ✅ Dividend calendar: past and upcoming dividends, declared or projected
 - ✅ Historical price data retrieval for any stock/fund
 - ✅ Automated daily collection via GitHub Actions
 - ✅ Comprehensive testing suite with both coverage gates enforced in CI

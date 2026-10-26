@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-010: The Dividend Calendar
+**Status**: ✅ Built (branch `dividends-calendar`, not yet merged)
+**Location**: [010-dividends/](010-dividends/)
+**Description**: Publish every instrument's past dividends and its next one, declared or projected, beside the prices, with a hand-kept `distributions.txt` for instruments no source covers. Stage DV-F of the Portfolio Tracker dividend design (#85).
+
 ### SPEC-009: One-Off Imports for Closed Holdings
 **Status**: ✅ Complete
 **Location**: [009-closed-holdings/](009-closed-holdings/)

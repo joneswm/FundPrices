@@ -1,0 +1,30 @@
+# Distribution schedules for instruments no source covers (SPEC-010, #85).
+#
+# Yahoo supplies the dividends of the YA instruments in funds.txt. The OEIC
+# share classes priced from the Financial Times have no such source, but their
+# ex-dividend (XD) and payment dates are fixed by the fund and printed on its
+# factsheet. A line here turns that schedule into estimated rows in
+# data/dividends_upcoming.csv and, when the amounts carry an as-of date, into
+# past rows in data/dividends_history.csv with Source "config".
+#
+# Format: <identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]
+#
+#   identifier       an identifier published in funds.txt (lookup id or alias) or
+#                    an identifier in closed_holdings.txt
+#   frequency        monthly, quarterly, semiannual or annual
+#   xd-dates         ;-separated MM-DD ex-dividend dates, one per payment in a
+#                    year (12, 4, 2 or 1); 02-29 means 28 February in a common year
+#   pay-offset-days  days from each ex-date to its payment (0 to 365)
+#   last-amounts     optional; ;-separated gross amounts per share, one per
+#                    xd-date in the same order, empty for "not known"; in the
+#                    unit the identifier's price is quoted in (GBP, not pence,
+#                    for a fund priced in GBP)
+#   as-of            optional YYYY-MM-DD, only with last-amounts: the date the
+#                    amounts were checked against the fund. Amounts without it
+#                    feed estimates only; with it, the latest occurrence of
+#                    each ex-date on or before it is also written to the history
+#
+# Update the amounts and the as-of date after each payment: an old amount is
+# projected forward, not noticed. Example (not a real fund):
+#
+# XX0000000000,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01

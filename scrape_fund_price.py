@@ -10,6 +10,7 @@ import requests
 import yfinance as yf
 import argparse
 import re
+import statistics
 from contextlib import nullcontext
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -293,6 +294,194 @@ def read_closed_holdings(filename=None):
     return holdings
 
 
+DISTRIBUTIONS_FILE = "distributions.txt"
+# Payments a year for each frequency a distributions.txt line may name.
+DISTRIBUTION_FREQUENCIES = {"monthly": 12, "quarterly": 4, "semiannual": 2, "annual": 1}
+MAX_PAY_OFFSET_DAYS = 365
+
+
+class Distribution(NamedTuple):
+    """One instrument's hand-kept distribution schedule (SPEC-010).
+
+    For instruments no source covers, such as the FT-sourced OEICs, whose
+    ex-dividend and payment dates are fixed by the fund. `xd_dates` are
+    (month, day) pairs in calendar order and `amounts` holds one entry per
+    date, in the same order, "" where the amount is not known.
+    """
+
+    identifier: str
+    frequency: str
+    xd_dates: tuple
+    pay_offset_days: int
+    amounts: tuple
+    as_of: str  # "" when the amounts carry no date
+
+
+def parse_xd_date(text):
+    """Return (month, day) for an `MM-DD` text, or None when it is not one.
+
+    Validated against a leap year so 02-29 is accepted; a common year clamps
+    it to 28 February when the date is turned into a real one.
+    """
+    if not re.match(r"^\d{2}-\d{2}$", text):
+        return None
+    month, day = int(text[:2]), int(text[3:])
+    try:
+        datetime.date(2000, month, day)
+    except ValueError:
+        return None
+    return month, day
+
+
+def distribution_error(number, message):
+    """Build the ValueError for a bad distributions.txt line."""
+    return ValueError(f"distributions file line {number}: {message}")
+
+
+def read_distributions(filename=None, known_identifiers=None):
+    """Read hand-kept distribution schedules.
+
+    Each line is
+    `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`
+    with `#` comments and blank lines ignored; see specs/010-dividends/spec.md
+    for the field rules. A missing file means no entries, so the file is
+    optional like fx_pairs.txt.
+
+    Args:
+        filename: Path to read (default: DISTRIBUTIONS_FILE)
+        known_identifiers: Identifiers a line may name (funds.txt and
+            closed_holdings.txt); None skips that check
+
+    Raises:
+        ValueError: naming the offending line, before any network call.
+    """
+    if filename is None:
+        filename = DISTRIBUTIONS_FILE
+
+    if not os.path.isfile(filename):
+        return []
+
+    distributions = []
+    seen = {}
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) not in (4, 5, 6) or not fields[0]:
+                raise distribution_error(
+                    number,
+                    "expected '<identifier>,<frequency>,<xd-dates>,"
+                    f"<pay-offset-days>[,<last-amounts>[,<as-of>]]', got {line!r}",
+                )
+
+            identifier, frequency = fields[0], fields[1].lower()
+            if frequency not in DISTRIBUTION_FREQUENCIES:
+                raise distribution_error(
+                    number,
+                    f"frequency {fields[1]!r} is not one of "
+                    f"{', '.join(DISTRIBUTION_FREQUENCIES)}",
+                )
+
+            xd_dates = []
+            for text in fields[2].split(";"):
+                parsed = parse_xd_date(text.strip())
+                if parsed is None:
+                    raise distribution_error(
+                        number, f"ex-date {text.strip()!r} is not a valid MM-DD date"
+                    )
+                if parsed in xd_dates:
+                    raise distribution_error(
+                        number, f"ex-date {text.strip()!r} repeats"
+                    )
+                xd_dates.append(parsed)
+            expected = DISTRIBUTION_FREQUENCIES[frequency]
+            if len(xd_dates) != expected:
+                raise distribution_error(
+                    number,
+                    f"{frequency} needs {expected} ex-date(s) but "
+                    f"{len(xd_dates)} ex-dates were given",
+                )
+
+            offset_text = fields[3]
+            if (
+                not re.match(r"^[0-9]{1,4}$", offset_text)
+                or int(offset_text) > MAX_PAY_OFFSET_DAYS
+            ):
+                raise distribution_error(
+                    number,
+                    f"pay offset {offset_text!r} must be a whole number of days "
+                    f"from 0 to {MAX_PAY_OFFSET_DAYS}",
+                )
+
+            amounts = [""] * len(xd_dates)
+            if len(fields) > 4:
+                if not fields[4]:
+                    raise distribution_error(
+                        number,
+                        "amounts field is empty; remove the trailing comma if "
+                        "no amounts are known",
+                    )
+                texts = [text.strip() for text in fields[4].split(";")]
+                if len(texts) != len(xd_dates):
+                    raise distribution_error(
+                        number,
+                        f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)",
+                    )
+                for text in texts:
+                    if not text:
+                        continue
+                    try:
+                        value = decimal.Decimal(text)
+                    except decimal.InvalidOperation:
+                        value = None
+                    if value is None or not value.is_finite() or value <= 0:
+                        raise distribution_error(
+                            number, f"amount {text!r} is not a positive decimal"
+                        )
+                amounts = texts
+
+            as_of = ""
+            if len(fields) > 5:
+                as_of = fields[5]
+                try:
+                    datetime.date.fromisoformat(as_of)
+                except ValueError:
+                    raise distribution_error(
+                        number, f"as-of date {as_of!r} is not a valid YYYY-MM-DD date"
+                    )
+
+            if known_identifiers is not None and identifier not in known_identifiers:
+                raise distribution_error(
+                    number,
+                    f"identifier {identifier!r} is in neither funds.txt nor "
+                    f"closed_holdings.txt",
+                )
+            if identifier in seen:
+                raise distribution_error(
+                    number,
+                    f"identifier {identifier!r} already used on line "
+                    f"{seen[identifier]}",
+                )
+            seen[identifier] = number
+
+            order = sorted(range(len(xd_dates)), key=lambda i: xd_dates[i])
+            distributions.append(
+                Distribution(
+                    identifier,
+                    frequency,
+                    tuple(xd_dates[i] for i in order),
+                    int(offset_text),
+                    tuple(amounts[i] for i in order),
+                    as_of,
+                )
+            )
+
+    return distributions
+
+
 def as_fund_spec(entry):
     """Accept a FundSpec or a plain (source, identifier) pair.
 
@@ -368,11 +557,7 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
     # adjusted values would not match prices snapped at the time.
     history = ticker.history(start=start, end=end, auto_adjust=False)
 
-    currency = ""
-    try:
-        currency = ticker.fast_info["currency"] or ""
-    except Exception:
-        currency = ""
+    currency = ticker_currency(ticker)
 
     bars = list(history["Close"].items()) if len(history) else []
     volumes = history["Volume"].tolist() if "Volume" in history else [None] * len(bars)
@@ -504,6 +689,140 @@ def fetch_yahoo_hourly(symbol, start, end=None):
             )
         )
     return bars
+
+
+class DividendEvent(NamedTuple):
+    """One dividend Yahoo reports: the ex-date and the gross amount per share."""
+
+    ex_date: str  # ISO YYYY-MM-DD
+    amount: str  # plain decimal text, in `currency`
+    currency: str  # the instrument's price currency; "" when Yahoo gives none
+
+
+class DeclaredDividend(NamedTuple):
+    """The next dividend Yahoo has announced."""
+
+    ex_date: str
+    pay_date: str  # "" when Yahoo gives none or it does not follow the ex-date
+
+
+def format_dividend_amount(value):
+    """Format a per-share amount as plain decimal text.
+
+    Yahoo holds dividends as float32 and the float64 it serves carries the
+    noise: FLOS.L's 12.35p arrives as 12.349999. Seven significant digits is
+    all a float32 holds, so rounding there recovers the published figure
+    without discarding any real precision; the Decimal then keeps a small value
+    out of exponent notation. (format_yahoo_price cannot be used: 12.349999 is
+    a different float32 from 12.35, so its round trip keeps the noise.)
+    """
+    return format(decimal.Decimal(f"{float(value):.7g}").normalize(), "f")
+
+
+def ticker_currency(ticker):
+    """Return the currency Yahoo quotes a ticker in, or "" when it will not say."""
+    try:
+        return ticker.fast_info["currency"] or ""
+    except Exception:
+        return ""
+
+
+def fetch_yahoo_dividends(symbol, start, end=None):
+    """Fetch the dividend events of a symbol from Yahoo Finance.
+
+    The same call as the daily bars with the corporate actions switched on:
+    the bar of an ex-date carries the gross amount per share in its Dividends
+    column. The amount is in the instrument's price currency, so a pence line
+    stays in GBp exactly as its prices do.
+
+    Args:
+        symbol: Yahoo ticker (e.g. "IGLS.L", "QQQ")
+        start: Inclusive ISO start date, or None for everything Yahoo has
+        end: Exclusive ISO end date, or None for the latest bar; ignored
+            when start is None
+
+    Returns:
+        list[DividendEvent], oldest first
+
+    Raises:
+        Exception: transport and API errors propagate so fetch_with_retries
+            can retry them
+    """
+    ticker = yf.Ticker(symbol)
+    if start is None:
+        history = ticker.history(period="max", auto_adjust=False, actions=True)
+    else:
+        history = ticker.history(start=start, end=end, auto_adjust=False, actions=True)
+
+    if "Dividends" not in history:
+        return []
+
+    currency = ticker_currency(ticker)
+    events = []
+    for timestamp, value in history["Dividends"].items():
+        if value is None or math.isnan(float(value)) or float(value) <= 0:
+            continue
+        events.append(
+            DividendEvent(
+                timestamp.date().isoformat(), format_dividend_amount(value), currency
+            )
+        )
+    return events
+
+
+def parse_yahoo_date(value):
+    """Return a date from the shapes Yahoo uses for one, or None.
+
+    The calendar holds dates, the info endpoint epoch seconds. Anything else,
+    including a value too large to be a time, is no date.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        if isinstance(value, str):
+            return datetime.date.fromisoformat(value[:10])
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).date()
+    except (ValueError, OverflowError, OSError):
+        return None
+    return None
+
+
+def fetch_yahoo_declared(symbol, today=None):
+    """Return the next dividend Yahoo has announced, or None.
+
+    `Ticker.calendar` first, then `Ticker.info` (`exDividendDate`,
+    `dividendDate`) when the calendar has no ex-date still to come: Yahoo has
+    a calendar for stocks and rarely for ETFs, and it raises for some funds.
+    Only an ex-date today or later counts; the others are the last dividend,
+    which the history already holds. Neither endpoint carries the declared
+    amount.
+
+    Raises:
+        Exception: an info failure propagates so fetch_with_retries can retry
+            it; a calendar failure is not an error, because info is asked next
+    """
+    today = today or datetime.date.today()
+    ticker = yf.Ticker(symbol)
+    try:
+        calendar = ticker.calendar or {}
+    except Exception:
+        calendar = {}
+
+    ex_date = parse_yahoo_date(calendar.get("Ex-Dividend Date"))
+    pay_date = parse_yahoo_date(calendar.get("Dividend Date"))
+    if ex_date is None or ex_date < today:
+        info = ticker.info or {}
+        ex_date = parse_yahoo_date(info.get("exDividendDate"))
+        pay_date = parse_yahoo_date(info.get("dividendDate"))
+
+    if ex_date is None or ex_date < today:
+        return None
+    if pay_date is None or pay_date < ex_date:
+        return DeclaredDividend(ex_date.isoformat(), "")
+    return DeclaredDividend(ex_date.isoformat(), pay_date.isoformat())
 
 
 FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
@@ -1336,6 +1655,82 @@ def build_fx_summary(fx_rows, pairs, failures, run_date):
     ]
 
 
+class DividendSummaryRow(NamedTuple):
+    """One dividend that is new, or newly dated, in today's run."""
+
+    name: str
+    aliases: tuple
+    ex_date: str
+    pay_date: str
+    amount: str
+    currency: str
+    status: str
+
+
+def build_dividend_summary(previous, upcoming, specs):
+    """List the upcoming dividends that are news today (SPEC-010).
+
+    A row is news when its (Fund, ExDate) was not in the previous file or its
+    pay date or status changed: a new ex-date, a pay date appearing, an
+    estimate turning into a declared dividend. A different amount alone is
+    not. An aliased instrument is reported once, under its lookup identifier,
+    as in the price table.
+
+    Args:
+        previous: The previous run's dividends_upcoming.csv rows
+        upcoming: Today's rows
+        specs: FundSpec instances, or plain (source, identifier) pairs
+    """
+    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
+    rows = []
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        for row in sorted(upcoming, key=lambda row: row[1]):
+            if row[0] != spec.lookup_id:
+                continue
+            if before.get((row[0], row[1])) == (row[2], row[5]):
+                continue
+            rows.append(
+                DividendSummaryRow(
+                    spec.lookup_id,
+                    tuple(spec.aliases),
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                )
+            )
+    return rows
+
+
+def _dividend_table(rows):
+    """Render the Dividends section's lines: a table, or None when empty."""
+    if not rows:
+        return ["None"]
+
+    lines = [
+        "| Name | Ex-date | Pay date | Amount | Ccy | Status |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        cells = [
+            display_name(row.name, row.aliases),
+            row.ex_date,
+            row.pay_date or "-",
+            row.amount or "-",
+            row.currency or "-",
+            row.status,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+def display_name(name, aliases):
+    """Return an instrument's name with its aliases, as the tables show it."""
+    return f"{name} ({', '.join(aliases)})" if aliases else name
+
+
 def _summary_table(rows, value_label, include_currency):
     """Render one Markdown table of summary rows."""
     columns = ["Name"]
@@ -1349,9 +1744,7 @@ def _summary_table(rows, value_label, include_currency):
     ]
 
     for row in rows:
-        name = row.name
-        if row.aliases:
-            name = f"{name} ({', '.join(row.aliases)})"
+        name = display_name(row.name, row.aliases)
         if row.failed:
             name += " !"
         elif row.stale:
@@ -1372,8 +1765,12 @@ def _summary_table(rows, value_label, include_currency):
     return lines
 
 
-def render_summary_markdown(price_rows, fx_rows, run_date):
-    """Render the day's movements for reading directly on GitHub."""
+def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
+    """Render the day's movements for reading directly on GitHub.
+
+    `dividend_rows` (DividendSummaryRow, possibly none) adds a Dividends
+    section; without it the output is what it was before dividends existed.
+    """
     lines = [f"# Daily Price Summary - {run_date}", ""]
 
     lines += ["## Prices", ""]
@@ -1386,6 +1783,10 @@ def render_summary_markdown(price_rows, fx_rows, run_date):
             "",
         ]
         lines += _summary_table(fx_rows, "Rate", include_currency=False)
+
+    if dividend_rows is not None:
+        lines += ["", "## Dividends", ""]
+        lines += _dividend_table(dividend_rows)
 
     attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
     lines += ["", "## Attention", ""]
@@ -1422,8 +1823,11 @@ def render_summary_markdown(price_rows, fx_rows, run_date):
     return "\n".join(lines) + "\n"
 
 
-def write_summary(price_rows, fx_rows, run_date, data_dir=None):
+def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=None):
     """Write the daily summary as CSV and Markdown.
+
+    The CSV has one row per instrument and a header consumers read, so the
+    Dividends section goes in the Markdown only.
 
     Past summaries stay recoverable from git history and can be recomputed
     from prices_history.csv, so no dated archive is kept.
@@ -1454,7 +1858,7 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None):
                 ]
             )
 
-    markdown = render_summary_markdown(price_rows, fx_rows, run_date)
+    markdown = render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows)
     with open_for_write(
         os.path.join(data_dir, "daily_summary.md"), encoding="utf-8"
     ) as file:
@@ -1464,6 +1868,22 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None):
     if step_summary:
         with open(step_summary, "a", encoding="utf-8") as file:
             file.write(markdown)
+
+
+def validate_start_date(value):
+    """Return an error message for an unusable --from date, else None."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    try:
+        start = datetime.date.fromisoformat(value)
+    except ValueError:
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    if start > datetime.date.today():
+        return "--from date is in the future"
+
+    return None
 
 
 def validate_backfill_args(args):
@@ -1477,18 +1897,7 @@ def validate_backfill_args(args):
     if not args.start:
         return "--from is required when using --backfill"
 
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.start):
-        return "Invalid --from date format. Use YYYY-MM-DD"
-
-    try:
-        start = datetime.date.fromisoformat(args.start)
-    except ValueError:
-        return "Invalid --from date format. Use YYYY-MM-DD"
-
-    if start > datetime.date.today():
-        return "--from date is in the future"
-
-    return None
+    return validate_start_date(args.start)
 
 
 def check_quoting_unit(identifier, quotes):
@@ -2084,6 +2493,717 @@ def import_closed_holdings(holdings, data_dir=None):
     return report
 
 
+DIVIDENDS_HISTORY_FILE = "dividends_history.csv"
+DIVIDENDS_UPCOMING_FILE = "dividends_upcoming.csv"
+DIVIDEND_HISTORY_HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+DIVIDEND_UPCOMING_HEADER = [
+    "Fund",
+    "ExDate",
+    "PayDate",
+    "Amount",
+    "Currency",
+    "Status",
+    "AsOf",
+]
+# The daily run re-reads this many days of Yahoo's dividend events; the whole
+# history is read only when there is no dividends_history.csv yet.
+DIVIDEND_WINDOW_DAYS = 400
+
+
+class DividendResults(list):
+    """The day's dividend fetch: history rows plus what else Yahoo said.
+
+    Rows are [identifier, ex_date, pay_date, amount, currency, source].
+    `declared` maps a lookup identifier to its announced next dividend and
+    `fetched` holds the lookup identifiers whose events were read, so a
+    failed instrument can be told from one that simply pays nothing.
+    """
+
+    def __init__(self, rows=None, failures=None, declared=None, fetched=None):
+        super().__init__(rows or [])
+        self.failures = failures or []
+        self.declared = declared or {}
+        self.fetched = fetched or set()
+        self.summary = []  # DividendSummaryRow, set by update_dividends
+
+
+def read_dividend_history(data_dir):
+    """Read dividends_history.csv keyed on (Fund, ExDate).
+
+    A missing file is an empty history, and a row without a fund or an
+    ex-date cannot be keyed, so it is skipped rather than stopping the run.
+    """
+    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
+    if not os.path.isfile(path):
+        return {}
+
+    width = len(DIVIDEND_HISTORY_HEADER)
+    rows = {}
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            if row[0] and row[1]:
+                rows[(row[0], row[1])] = row
+    return rows
+
+
+def write_dividend_history(rows, data_dir):
+    """Write dividends_history.csv sorted by ex-date then fund."""
+    os.makedirs(data_dir, exist_ok=True)
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(DIVIDEND_HISTORY_HEADER)
+        writer.writerows(ordered)
+
+
+def merge_dividend_rows(stored, incoming):
+    """Upsert incoming history rows into `stored`, keyed on (Fund, ExDate).
+
+    An incoming row replaces the stored one, so a corrected amount applies and
+    a rerun cannot duplicate. The one exception: a `config` row, which is the
+    owner's assertion from distributions.txt, never replaces a row a source
+    supplied, because the source is authoritative once it knows the dividend.
+    """
+    for row in incoming:
+        current = stored.get((row[0], row[1]))
+        if current is not None and current[5] != "config" and row[5] == "config":
+            continue
+        stored[(row[0], row[1])] = list(row)
+
+
+def collect_dividends(specs, today, start=None):
+    """Fetch Yahoo's dividend events and declared dividends for each YA fund.
+
+    One fetch per instrument, published under every alias. Only YA has a
+    dividend route; the other sources are covered by distributions.txt.
+    Failures are isolated per instrument, as for prices. A calendar lookup
+    that fails is only a warning: Yahoo has no calendar for most funds, and
+    failing the run every day for an optional fact would hide real failures.
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        today: The run date; events dated after it are ignored
+        start: Inclusive ISO start of the events window, None for all of them
+    """
+    results = DividendResults()
+
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if spec.source != "YA":
+            continue
+
+        events, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            results.failures.append(f"{spec.lookup_id}: dividends: {error}")
+            continue
+        results.fetched.add(spec.lookup_id)
+
+        for event in events:
+            if event.ex_date > today.isoformat():
+                continue
+            for identifier in spec.publish_ids:
+                results.append(
+                    [identifier, event.ex_date, "", event.amount, event.currency, "YA"]
+                )
+
+        declared, error = fetch_with_retries(
+            lambda: fetch_yahoo_declared(spec.lookup_id, today)
+        )
+        if error:
+            print(
+                f"Warning: {spec.lookup_id}: declared dividend lookup failed: {error}"
+            )
+        elif declared is not None:
+            results.declared[spec.lookup_id] = declared
+
+    return results
+
+
+# The frequency and the next dividend are read from the twelve months of
+# ex-dates up to the last one (SPEC-010).
+ESTIMATE_WINDOW_DAYS = 365
+# A payer silent for a whole period plus this many days has stopped paying.
+ESTIMATE_STOP_MARGIN_DAYS = 45
+# Median gap between ex-dates, in days, up to which a frequency applies, as
+# (limit, months in the period). Anything longer is annual.
+FREQUENCY_BANDS = ((45, 1), (135, 3), (270, 6))
+
+
+class EstimatedDividend(NamedTuple):
+    """A projected dividend: the next ex-date and what it is expected to pay."""
+
+    ex_date: str
+    pay_date: str  # "" when no payment lag is known
+    amount: str  # "" when no amount is known
+    currency: str
+
+
+def last_day_of_month(year, month):
+    """Return the number of days in a month."""
+    first_of_next = datetime.date(year + month // 12, month % 12 + 1, 1)
+    return (first_of_next - datetime.timedelta(days=1)).day
+
+
+def add_months(day, months):
+    """Return `day` moved by whole calendar months, clamped to the month's end."""
+    year, month_index = divmod(day.year * 12 + day.month - 1 + months, 12)
+    month = month_index + 1
+    return datetime.date(year, month, min(day.day, last_day_of_month(year, month)))
+
+
+def detect_period_months(ex_dates):
+    """Return the payment period in months (1, 3, 6 or 12) from ex-dates.
+
+    The median gap decides, so one special dividend does not turn a quarterly
+    payer into a monthly one. A single date shows no spacing and reads as
+    annual.
+    """
+    ordered = sorted(set(ex_dates))
+    if len(ordered) < 2:
+        return 12
+    gap = statistics.median(
+        (later - earlier).days for earlier, later in zip(ordered, ordered[1:])
+    )
+    for limit, months in FREQUENCY_BANDS:
+        if gap <= limit:
+            return months
+    return 12
+
+
+def next_period_start(last_ex, months, today):
+    """Return `last_ex` plus whole periods: the first such date on or after today.
+
+    Counted from `last_ex` each time rather than stepping from the previous
+    result, so month-end clamping does not drift (31 January, 30 April).
+    """
+    periods = 1
+    while add_months(last_ex, months * periods) < today:
+        periods += 1
+    return add_months(last_ex, months * periods)
+
+
+def estimate_next_dividend(rows, today):
+    """Project an instrument's next dividend from its history (SPEC-010).
+
+    The next ex-date is the last one plus the period, moved on by whole
+    periods until it is today or later; the amount and currency are the last
+    paid. The period is read from the twelve months to the last ex-date, not
+    to today: a semi-annual payer whose next dividend is not yet reported has
+    one ex-date in the twelve months to today and would read as annual. An
+    instrument silent for a period and a margin has stopped and gets no
+    estimate. A pay date is projected only when the last row has one.
+
+    Args:
+        rows: One instrument's [fund, ex_date, pay_date, amount, currency,
+            source] history rows, in any order
+        today: The run date
+
+    Returns:
+        EstimatedDividend, or None when there is nothing to project from
+    """
+    dated = []
+    for row in rows:
+        try:
+            ex_date = datetime.date.fromisoformat(row[1])
+        except ValueError:
+            continue
+        if ex_date <= today:
+            dated.append((ex_date, row))
+    if not dated:
+        return None
+
+    dated.sort(key=lambda item: item[0])
+    last_ex, last_row = dated[-1]
+    window_start = last_ex - datetime.timedelta(days=ESTIMATE_WINDOW_DAYS)
+    months = detect_period_months(ex for ex, _ in dated if ex > window_start)
+    if (today - last_ex).days > months * 31 + ESTIMATE_STOP_MARGIN_DAYS:
+        return None
+
+    next_ex = next_period_start(last_ex, months, today)
+
+    pay_date = ""
+    try:
+        lag = datetime.date.fromisoformat(last_row[2]) - last_ex
+    except ValueError:
+        lag = None
+    if lag is not None and lag.days >= 0:
+        pay_date = (next_ex + lag).isoformat()
+
+    return EstimatedDividend(next_ex.isoformat(), pay_date, last_row[3], last_row[4])
+
+
+def slot_date(month, day, year):
+    """Return a configured (month, day) in a year; 29 February clamps to 28."""
+    return datetime.date(year, month, min(day, last_day_of_month(year, month)))
+
+
+def distribution_estimate(dist, currency, today):
+    """Return the next dividend a distributions.txt line schedules.
+
+    The next occurrence of one of its ex-dates on or after `today`, paid the
+    line's offset later, for that slot's amount ("" when not known).
+    """
+    candidates = [
+        (slot_date(month, day, year), slot)
+        for year in (today.year, today.year + 1)
+        for slot, (month, day) in enumerate(dist.xd_dates)
+    ]
+    ex_date, slot = min(item for item in candidates if item[0] >= today)
+    pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
+    return EstimatedDividend(
+        ex_date.isoformat(), pay_date.isoformat(), dist.amounts[slot], currency
+    )
+
+
+def distribution_history_rows(dist, currency, today):
+    """Return the `config` history rows a distributions.txt line asserts.
+
+    Only a line with amounts and an as-of date asserts anything: for each
+    ex-date with an amount, its latest occurrence on or before the as-of date
+    (and today, so a mistyped future date cannot assert a dividend that has not
+    happened). Without the date, nothing says when the amounts were true, and
+    every later occurrence would be recorded as paid at an old amount.
+    """
+    if not dist.as_of:
+        return []
+
+    limit = min(datetime.date.fromisoformat(dist.as_of), today)
+    rows = []
+    for (month, day), amount in zip(dist.xd_dates, dist.amounts):
+        if not amount:
+            continue
+        ex_date = slot_date(month, day, limit.year)
+        if ex_date > limit:
+            ex_date = slot_date(month, day, limit.year - 1)
+        pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
+        rows.append(
+            [
+                dist.identifier,
+                ex_date.isoformat(),
+                pay_date.isoformat(),
+                amount,
+                currency,
+                "config",
+            ]
+        )
+    return rows
+
+
+# A row stays in dividends_upcoming.csv this many days past its ex-date once it
+# is in the history (the downstream matches a receipt against it), and for
+# this many days whether or not it ever arrives (a "missing" dividend is
+# visible for a month, not for ever).
+UPCOMING_GRACE_DAYS = 7
+UPCOMING_MAX_AGE_DAYS = 30
+
+
+def read_dividend_upcoming(data_dir):
+    """Read dividends_upcoming.csv as a list of rows.
+
+    A missing file has no rows, and a row without a fund or an ex-date is
+    skipped rather than stopping the run.
+    """
+    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
+    if not os.path.isfile(path):
+        return []
+
+    width = len(DIVIDEND_UPCOMING_HEADER)
+    rows = []
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            if row[0] and row[1]:
+                rows.append(row)
+    return rows
+
+
+def write_dividend_upcoming(rows, data_dir):
+    """Write dividends_upcoming.csv sorted by ex-date then fund."""
+    os.makedirs(data_dir, exist_ok=True)
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(DIVIDEND_UPCOMING_HEADER)
+        writer.writerows(ordered)
+
+
+def upcoming_rows_for(
+    identifier, stored, history_dates, last_paid, declared, estimate, today
+):
+    """Return one instrument's upcoming rows, oldest ex-date first.
+
+    The file is a state, not a log: a projection is recomputed every run, so a
+    stored estimate with an ex-date still to come is dropped and replaced by
+    today's. A stored declaration is kept until Yahoo names a different one,
+    so a day on which the calendar lookup fails does not retract it. A row
+    past its ex-date leaves once it is in the history and a week old, or at
+    any rate after a month. A declaration not yet in the history stands for
+    the period: no estimate is written beside it.
+
+    Args:
+        identifier: The Fund value of the rows
+        stored: The instrument's rows from the previous run
+        history_dates: Its ex-dates in dividends_history.csv
+        last_paid: (amount, currency) of its latest history row
+        declared: Today's DeclaredDividend, or None
+        estimate: Today's EstimatedDividend, or None
+        today: The run date, which is also the rows' AsOf
+    """
+    as_of = today.isoformat()
+    rows = {}
+
+    for row in stored:
+        try:
+            age = (today - datetime.date.fromisoformat(row[1])).days
+        except ValueError:
+            continue
+        if age <= 0:
+            if row[5] == "estimated" or declared is not None:
+                continue
+        elif age > UPCOMING_MAX_AGE_DAYS:
+            continue
+        elif age > UPCOMING_GRACE_DAYS and row[1] in history_dates:
+            continue
+        rows[row[1]] = [identifier] + row[1:7]
+
+    if declared is not None:
+        amount, currency = last_paid
+        rows[declared.ex_date] = [
+            identifier,
+            declared.ex_date,
+            declared.pay_date,
+            amount,
+            currency,
+            "declared",
+            as_of,
+        ]
+
+    pending = any(
+        row[5] == "declared" and row[1] >= as_of and row[1] not in history_dates
+        for row in rows.values()
+    )
+    if estimate is not None and not pending:
+        rows[estimate.ex_date] = [
+            identifier,
+            estimate.ex_date,
+            estimate.pay_date,
+            estimate.amount,
+            estimate.currency,
+            "estimated",
+            as_of,
+        ]
+
+    return [rows[ex_date] for ex_date in sorted(rows)]
+
+
+def merge_by_ex_date(rows_by_fund, identifiers):
+    """Return ex-date -> row over several identifiers of one instrument.
+
+    An alias may carry rows the lookup identifier does not, so an instrument's
+    rows are the union; where identifiers agree on an ex-date the lookup
+    identifier's row wins.
+    """
+    merged = {}
+    for identifier in reversed(identifiers):
+        merged.update(rows_by_fund.get(identifier, {}))
+    return merged
+
+
+def build_dividend_upcoming(
+    specs, distributions, history, stored, declared, today, currencies
+):
+    """Build dividends_upcoming.csv from the day's inputs.
+
+    Only the instruments in funds.txt get rows: a closed holding is not held,
+    so nothing is expected of it, and a fund removed from funds.txt loses its
+    rows. An instrument with a line in distributions.txt takes its estimate
+    from that line; the others from the pattern of their history. Everything
+    is computed once on the lookup identifier and published under every alias.
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        history: dividends_history.csv rows keyed on (Fund, ExDate)
+        stored: The previous run's upcoming rows
+        declared: Lookup identifier -> DeclaredDividend for today
+        today: The run date
+        currencies: Identifier -> the currency of its newest stored price
+    """
+    history_by_fund = {}
+    for (fund, ex_date), row in history.items():
+        history_by_fund.setdefault(fund, {})[ex_date] = row
+    stored_by_fund = {}
+    for row in stored:
+        stored_by_fund.setdefault(row[0], []).append(row)
+    schedule_for = {dist.identifier: dist for dist in distributions}
+
+    rows = []
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        identifiers = spec.publish_ids
+
+        instrument_history = merge_by_ex_date(history_by_fund, identifiers)
+        ordered = [
+            instrument_history[ex_date] for ex_date in sorted(instrument_history)
+        ]
+        last_paid = (ordered[-1][3], ordered[-1][4]) if ordered else ("", "")
+
+        schedule = next(
+            (schedule_for[i] for i in identifiers if i in schedule_for), None
+        )
+        if schedule is not None:
+            currency = first_currency(identifiers, currencies)
+            estimate = distribution_estimate(schedule, currency, today)
+        else:
+            estimate = estimate_next_dividend(ordered, today)
+
+        instrument_stored = merge_by_ex_date(
+            {
+                i: {row[1]: row for row in stored_by_fund.get(i, [])}
+                for i in identifiers
+            },
+            identifiers,
+        )
+
+        merged = upcoming_rows_for(
+            spec.lookup_id,
+            list(instrument_stored.values()),
+            set(instrument_history),
+            last_paid,
+            declared.get(spec.lookup_id),
+            estimate,
+            today,
+        )
+        for identifier in identifiers:
+            rows.extend([identifier] + row[1:] for row in merged)
+
+    return sorted(rows, key=lambda row: (row[1], row[0]))
+
+
+def stored_currencies(data_dir):
+    """Return identifier -> the currency of its newest stored price."""
+    return {fund: row[3] for fund, row in newest_stored_rows(data_dir).items()}
+
+
+def first_currency(identifiers, currencies):
+    """Return the first known currency among an instrument's identifiers."""
+    return next((currencies[i] for i in identifiers if currencies.get(i)), "")
+
+
+def published_identifiers(identifier, specs):
+    """Return every identifier the instrument behind `identifier` is published under.
+
+    A line in distributions.txt may use the lookup id or an alias; either way
+    the rows go out under all of them. A closed holding has only itself.
+    """
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if identifier in spec.publish_ids:
+            return spec.publish_ids
+    return (identifier,)
+
+
+def config_history_rows(distributions, specs, currencies, today):
+    """Return the `config` history rows of every distributions.txt line."""
+    rows = []
+    for dist in distributions:
+        identifiers = published_identifiers(dist.identifier, specs)
+        currency = first_currency(identifiers, currencies)
+        for row in distribution_history_rows(dist, currency, today):
+            rows.extend([identifier] + row[1:] for identifier in identifiers)
+    return rows
+
+
+def publish_upcoming(specs, distributions, history, declared, data_dir, today):
+    """Rebuild dividends_upcoming.csv and return (previous rows, new rows)."""
+    previous = read_dividend_upcoming(data_dir)
+    upcoming = build_dividend_upcoming(
+        specs,
+        distributions,
+        history,
+        previous,
+        declared,
+        today,
+        stored_currencies(data_dir),
+    )
+    write_dividend_upcoming(upcoming, data_dir)
+    return previous, upcoming
+
+
+def update_dividends(specs, distributions, data_dir=None, today=None):
+    """Run the daily dividend update and write both dividend files.
+
+    Upserts Yahoo's events into dividends_history.csv, adds the rows
+    distributions.txt asserts, then rebuilds dividends_upcoming.csv. The
+    history is read whole only when there is none yet; afterwards the daily
+    run re-reads DIVIDEND_WINDOW_DAYS, enough to pick up a correction, and
+    never deletes (a rebuild does that: backfill_dividends).
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        data_dir: Directory for output files (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        DividendResults whose `failures` lists the instruments that could not
+        be fetched; their stored rows are untouched
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    os.makedirs(data_dir, exist_ok=True)
+    first_run = not os.path.isfile(os.path.join(data_dir, DIVIDENDS_HISTORY_FILE))
+    window = datetime.timedelta(days=DIVIDEND_WINDOW_DAYS)
+    start = None if first_run else (today - window).isoformat()
+
+    results = collect_dividends(specs, today, start)
+    history = read_dividend_history(data_dir)
+    merge_dividend_rows(history, results)
+    currencies = stored_currencies(data_dir)
+    merge_dividend_rows(
+        history, config_history_rows(distributions, specs, currencies, today)
+    )
+    write_dividend_history(list(history.values()), data_dir)
+
+    previous, upcoming = publish_upcoming(
+        specs, distributions, history, results.declared, data_dir, today
+    )
+    results.summary = build_dividend_summary(previous, upcoming, specs)
+    return results
+
+
+def backfill_dividends(specs, distributions, start=None, data_dir=None, today=None):
+    """Rebuild the Yahoo rows of dividends_history.csv from the source.
+
+    For each YA instrument that fetches, its source rows from `start` (all of
+    them without one) are replaced by what Yahoo reports now, so a dividend
+    Yahoo dropped or re-dated goes. `config` rows are the owner's and stay, and
+    an instrument that fails keeps everything it had. The upcoming file is then
+    rebuilt from the new history (no calendar lookup: it keeps its declared
+    rows).
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        start: Inclusive ISO date to rebuild from, None for everything
+        data_dir: Directory for output files (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    os.makedirs(data_dir, exist_ok=True)
+    history = read_dividend_history(data_dir)
+    report = BackfillReport()
+
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if spec.source != "YA":
+            continue
+
+        events, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            report.failures.append(f"{spec.lookup_id}: dividends: {error}")
+        else:
+            events = [event for event in events if event.ex_date <= today.isoformat()]
+
+        for identifier in spec.publish_ids:
+            existing = [key for key in history if key[0] == identifier]
+            item = {
+                "identifier": identifier,
+                "before": len(existing),
+                "deleted": 0,
+                "retained": len(existing),
+                "inserted": 0,
+                "first": min((key[1] for key in existing), default="-"),
+                "last": max((key[1] for key in existing), default="-"),
+                "currency": "-",
+                "status": "failed, kept existing",
+            }
+            if not error:
+                doomed = [
+                    key
+                    for key in existing
+                    if history[key][5] != "config" and key[1] >= (start or "")
+                ]
+                for key in doomed:
+                    del history[key]
+                merge_dividend_rows(
+                    history,
+                    (
+                        [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
+                        for e in events
+                    ),
+                )
+                item.update(
+                    deleted=len(doomed),
+                    retained=len(existing) - len(doomed),
+                    inserted=len(events),
+                    first=events[0].ex_date if events else "-",
+                    last=events[-1].ex_date if events else "-",
+                    currency=events[0].currency if events else "-",
+                    status="rebuilt",
+                )
+            report.entries.append(item)
+
+    merge_dividend_rows(
+        history,
+        config_history_rows(distributions, specs, stored_currencies(data_dir), today),
+    )
+    write_dividend_history(list(history.values()), data_dir)
+    publish_upcoming(specs, distributions, history, {}, data_dir, today)
+    return report
+
+
+def configured_identifiers(specs, closed_file=None):
+    """Return every identifier a distributions.txt line may name.
+
+    The identifiers funds.txt publishes under (lookup ids and aliases) and the
+    identifiers of closed_holdings.txt, which may have past dividends of their
+    own. A missing closed-holdings file adds nothing.
+    """
+    if closed_file is None:
+        closed_file = CLOSED_HOLDINGS_FILE
+
+    identifiers = {
+        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
+    }
+    if os.path.isfile(closed_file):
+        identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
+    return identifiers
+
+
+def validate_dividend_backfill_args(args):
+    """Return an error message for an invalid dividend rebuild, else None."""
+    if not getattr(args, "backfill_dividends", False):
+        return None
+
+    if args.backfill or args.history or args.import_closed:
+        return (
+            "--backfill-dividends cannot be combined with --backfill, "
+            "--history or --import-closed"
+        )
+
+    return validate_start_date(args.start) if args.start else None
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
@@ -2099,7 +3219,9 @@ def parse_arguments(args=None):
         "  Normal mode: python scrape_fund_price.py\n"
         "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
         "  Backfill:   python scrape_fund_price.py --backfill --from 2021-12-01\n"
-        "  Closed:     python scrape_fund_price.py --import-closed",
+        "  Closed:     python scrape_fund_price.py --import-closed\n"
+        "  Dividends:  python scrape_fund_price.py --backfill-dividends\n"
+        "              (optionally --from 2021-12-01)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -2129,6 +3251,11 @@ def parse_arguments(args=None):
         "--import-closed",
         action="store_true",
         help="Import one-off history for the instruments in closed_holdings.txt",
+    )
+    parser.add_argument(
+        "--backfill-dividends",
+        action="store_true",
+        help="Rebuild the Yahoo rows of the dividend history (--from is optional)",
     )
     parser.add_argument(
         "--from",
@@ -2230,6 +3357,30 @@ def main():
             raise SystemExit(1)
         return
 
+    if args.backfill_dividends:
+        error = validate_dividend_backfill_args(args)
+        if error:
+            print(f"Error: {error}")
+            raise SystemExit(2)
+
+        specs = read_fund_specs(FUNDS_FILE)
+        distributions = read_distributions(
+            DISTRIBUTIONS_FILE, configured_identifiers(specs)
+        )
+        report = backfill_dividends(specs, distributions, args.start)
+        summary = report.to_markdown()
+        print(summary)
+
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+            with open(step_summary, "a", encoding="utf-8") as f:
+                f.write(f"## Dividend rebuild from {args.start or 'the start'}\n\n")
+                f.write(f"{summary}\n")
+
+        if report.failures:
+            raise SystemExit(1)
+        return
+
     # Check if historical data mode
     if args.history:
         if not args.start:
@@ -2247,6 +3398,10 @@ def main():
         failures = []
 
         funds = read_fund_specs(FUNDS_FILE)
+        # Validated with funds.txt, before any network call.
+        distributions = read_distributions(
+            DISTRIBUTIONS_FILE, configured_identifiers(funds)
+        )
         results = scrape_funds(funds)
         write_results(results)
         failures.extend(getattr(results, "failures", []))
@@ -2261,6 +3416,14 @@ def main():
             fx_failures = list(fx_results.failures)
             failures.extend(fx_failures)
 
+        # Dividends are fetched and written independently too: a crash here
+        # must not cost the day's price summary.
+        try:
+            dividends = update_dividends(funds, distributions)
+        except Exception as error:
+            dividends = DividendResults(failures=[f"dividends: {error}"])
+        failures.extend(dividends.failures)
+
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.
         run_date = datetime.date.today().isoformat()
@@ -2274,7 +3437,9 @@ def main():
             fx_failures,
             run_date,
         )
-        write_summary(price_summary, fx_summary, run_date)
+        write_summary(
+            price_summary, fx_summary, run_date, dividend_rows=dividends.summary
+        )
 
         if failures:
             for failure in failures:
