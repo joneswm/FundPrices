@@ -5610,5 +5610,413 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(len(self._build([("GF", "QQQ")], history)), 1)
 
 
+class DividendRunCase(unittest.TestCase):
+    """Shared scaffolding for tests that run the dividend update end to end."""
+
+    TODAY = date(2026, 10, 26)
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _file(self, name):
+        return os.path.join(self.test_dir, name)
+
+    def _read(self, name):
+        with open(self._file(name), newline="") as f:
+            return list(csv.reader(f))[1:]
+
+    def _write(self, name, text):
+        with open(self._file(name), "w", newline="") as f:
+            f.write(text)
+
+    def _dists(self, *lines):
+        path = self._file("distributions.txt")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return scrape_fund_price.read_distributions(path, None)
+
+    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
+        """Run update_dividends (or `runner`) with Yahoo faked."""
+        events = events or {}
+        declared = declared or {}
+        self.windows = []
+
+        def fake_events(symbol, window_start, end=None):
+            self.windows.append((symbol, window_start))
+            value = events.get(symbol, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def fake_declared(symbol, today=None):
+            return declared.get(symbol)
+
+        runner = runner or scrape_fund_price.update_dividends
+        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
+            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
+                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+
+
+class TestDailyDividendUpdate(DividendRunCase):
+    """Test the daily dividend run (SPEC-010, #85)."""
+
+    EVENT = scrape_fund_price.DividendEvent
+
+    def test_the_first_run_reads_the_whole_history(self):
+        """Test no dividends_history.csv yet means no window."""
+        self._run([FundSpec("YA", "QQQ")])
+        self.assertEqual(self.windows, [("QQQ", None)])
+
+    def test_later_runs_read_a_window_of_four_hundred_days(self):
+        """Test the daily call is cheap once the history exists."""
+        self._run([FundSpec("YA", "QQQ")])
+        self._run([FundSpec("YA", "QQQ")])
+        self.assertEqual(self.windows, [("QQQ", "2025-09-21")])
+
+    def test_both_files_are_written_for_every_alias(self):
+        """Test history and upcoming, published under each identifier."""
+        events = {
+            "0P00000YAN": [
+                self.EVENT("2026-03-05", "1", "GBP"),
+                self.EVENT("2026-09-03", "1.1", "GBP"),
+            ]
+        }
+        self._run([FundSpec("YA", "0P00000YAN", ("JFM0003373",))], events)
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"],
+                ["JFM0003373", "2026-03-05", "", "1", "GBP", "YA"],
+                ["0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"],
+                ["JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"],
+            ],
+        )
+        self.assertEqual(
+            self._read("dividends_upcoming.csv"),
+            [
+                [
+                    "0P00000YAN",
+                    "2027-03-03",
+                    "",
+                    "1.1",
+                    "GBP",
+                    "estimated",
+                    "2026-10-26",
+                ],
+                [
+                    "JFM0003373",
+                    "2027-03-03",
+                    "",
+                    "1.1",
+                    "GBP",
+                    "estimated",
+                    "2026-10-26",
+                ],
+            ],
+        )
+
+    def test_a_declared_dividend_reaches_the_upcoming_file(self):
+        """Test Yahoo's next ex-date is published as declared."""
+        events = {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
+        declared = {
+            "QQQ": scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
+        }
+        self._run([FundSpec("YA", "QQQ")], events, declared)
+        self.assertEqual(
+            self._read("dividends_upcoming.csv"),
+            [
+                [
+                    "QQQ",
+                    "2026-11-12",
+                    "2026-11-28",
+                    "0.9",
+                    "USD",
+                    "declared",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_a_rerun_changes_nothing(self):
+        """Test the files are byte-identical on a second identical run."""
+        events = {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
+        self._run([FundSpec("YA", "QQQ")], events)
+        first = [
+            open(self._file(n)).read()
+            for n in ("dividends_history.csv", "dividends_upcoming.csv")
+        ]
+        self._run([FundSpec("YA", "QQQ")], events)
+        second = [
+            open(self._file(n)).read()
+            for n in ("dividends_history.csv", "dividends_upcoming.csv")
+        ]
+        self.assertEqual(first, second)
+
+    def test_a_changed_amount_replaces_the_stored_row(self):
+        """Test a correction from Yahoo applies."""
+        self._run(
+            [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
+        )
+        self._run(
+            [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-09-22", "0.95", "USD")]}
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["QQQ", "2026-09-22", "", "0.95", "USD", "YA"]],
+        )
+
+    def test_older_history_is_kept_when_the_window_moves_on(self):
+        """Test the daily run only ever upserts."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2020-03-24,,0.5,USD,YA\n",
+        )
+        self._run(
+            [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
+        )
+        self.assertEqual(len(self._read("dividends_history.csv")), 2)
+
+    def test_a_failed_instrument_keeps_its_rows_and_is_reported(self):
+        """Test one failure costs only that instrument; the files are still written."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "BAD,2026-03-05,,1,USD,YA\n"
+            "BAD,2026-09-03,,1,USD,YA\n",
+        )
+        results = self._run(
+            [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")],
+            {
+                "BAD": RuntimeError("down"),
+                "QQQ": [self.EVENT("2026-09-22", "0.9", "USD")],
+            },
+        )
+        self.assertEqual(results.failures, ["BAD: dividends: down"])
+        funds = {row[0] for row in self._read("dividends_history.csv")}
+        self.assertEqual(funds, {"BAD", "QQQ"})
+        # The failed fund's upcoming row is still projected from what it had.
+        funds = {row[0] for row in self._read("dividends_upcoming.csv")}
+        self.assertEqual(funds, {"BAD", "QQQ"})
+
+    def test_config_rows_enter_the_history_in_the_price_currency(self):
+        """Test a distributions.txt line asserts its past dividends."""
+        self._write(
+            "latest_prices.csv",
+            "Fund,Date,Price,Currency\nGB00B1FXTF86,2026-10-23,7.15,GBP\n",
+        )
+        dists = self._dists(
+            "GB00B1FXTF86,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01"
+        )
+        self._run([FundSpec("FT", "GB00B1FXTF86")], distributions=dists)
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["GB00B1FXTF86", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"],
+                ["GB00B1FXTF86", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"],
+            ],
+        )
+        self.assertEqual(
+            self._read("dividends_upcoming.csv"),
+            [
+                [
+                    "GB00B1FXTF86",
+                    "2027-03-01",
+                    "2027-03-31",
+                    "0.0821",
+                    "GBP",
+                    "estimated",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_config_rows_are_published_under_every_alias_and_yahoo_wins(self):
+        """Test the alias rule, and that a Yahoo row beats the owner's."""
+        dists = self._dists("JFM0003373,annual,09-03,28,1.2,2026-10-01")
+        self._run(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
+            {"0P00000YAN": [self.EVENT("2026-09-03", "1.25", "GBP")]},
+            distributions=dists,
+        )
+        rows = self._read("dividends_history.csv")
+        self.assertEqual({row[0] for row in rows}, {"0P00000YAN", "JFM0003373"})
+        self.assertEqual({(row[3], row[5]) for row in rows}, {("1.25", "YA")})
+
+    def test_a_closed_holding_gets_history_but_no_upcoming_row(self):
+        """Test closed holdings are never fetched and never expected to pay."""
+        dists = self._dists("BMV7ZZ3,annual,03-05,20,0.4,2026-10-01")
+        results = self._run([FundSpec("YA", "QQQ")], distributions=dists)
+        self.assertEqual(self.windows, [("QQQ", None)])
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["BMV7ZZ3", "2026-03-05", "2026-03-25", "0.4", "", "config"]],
+        )
+        self.assertEqual(self._read("dividends_upcoming.csv"), [])
+
+    def test_the_default_directory_and_date_are_used_when_omitted(self):
+        """Test the production call has no arguments to get wrong."""
+        with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
+            with patch.object(
+                scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: []
+            ):
+                with patch.object(
+                    scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
+                ):
+                    scrape_fund_price.update_dividends([FundSpec("YA", "QQQ")], [])
+        self.assertTrue(os.path.isfile(self._file("dividends_history.csv")))
+        self.assertTrue(os.path.isfile(self._file("dividends_upcoming.csv")))
+
+
+class TestDividendBackfill(DividendRunCase):
+    """Test rebuilding the dividend history from the sources (SPEC-010, #85)."""
+
+    EVENT = scrape_fund_price.DividendEvent
+
+    def _backfill(self, specs, events, start=None, distributions=()):
+        def runner(specs, dists, data_dir, today):
+            return scrape_fund_price.backfill_dividends(
+                specs, dists, start, data_dir, today
+            )
+
+        return self._run(specs, events, distributions=distributions, runner=runner)
+
+    def test_the_rebuild_replaces_source_rows_from_the_start_date(self):
+        """Test rows Yahoo no longer reports go, and earlier ones stay."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "QQQ,2025-03-24,,0.5,USD,YA\n"
+            "QQQ,2026-03-24,,0.6,USD,YA\n"
+            "QQQ,2026-06-23,,0.7,USD,YA\n",
+        )
+        report = self._backfill(
+            [FundSpec("YA", "QQQ")],
+            {
+                "QQQ": [
+                    self.EVENT("2026-03-25", "0.65", "USD"),
+                    self.EVENT("2026-06-23", "0.71", "USD"),
+                ]
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["QQQ", "2025-03-24", "", "0.5", "USD", "YA"],
+                ["QQQ", "2026-03-25", "", "0.65", "USD", "YA"],
+                ["QQQ", "2026-06-23", "", "0.71", "USD", "YA"],
+            ],
+        )
+        self.assertEqual(self.windows, [("QQQ", "2026-01-01")])
+        [entry] = report.entries
+        self.assertEqual(
+            (
+                entry["identifier"],
+                entry["before"],
+                entry["deleted"],
+                entry["retained"],
+                entry["inserted"],
+            ),
+            ("QQQ", 3, 2, 1, 2),
+        )
+        self.assertEqual(
+            (entry["first"], entry["last"], entry["status"]),
+            ("2026-03-25", "2026-06-23", "rebuilt"),
+        )
+
+    def test_no_start_date_rebuilds_everything_from_the_source(self):
+        """Test the whole of Yahoo's history is read and the source rows replaced."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2019-03-24,,0.5,USD,YA\n",
+        )
+        self._backfill(
+            [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-06-23", "0.71", "USD")]}
+        )
+        self.assertEqual(self.windows, [("QQQ", None)])
+        self.assertEqual(
+            [row[1] for row in self._read("dividends_history.csv")], ["2026-06-23"]
+        )
+
+    def test_config_rows_survive_a_rebuild(self):
+        """Test the owner's rows are not the source's to delete."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "QQQ,2026-03-24,2026-04-23,0.5,USD,config\n",
+        )
+        self._backfill([FundSpec("YA", "QQQ")], {"QQQ": []})
+        self.assertEqual(len(self._read("dividends_history.csv")), 1)
+
+    def test_a_failing_instrument_keeps_what_it_had(self):
+        """Test a source outage cannot wipe an instrument's history."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\nBAD,2026-03-05,,1,USD,YA\n",
+        )
+        report = self._backfill(
+            [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")],
+            {
+                "BAD": RuntimeError("down"),
+                "QQQ": [self.EVENT("2026-06-23", "0.71", "USD")],
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(report.failures, ["BAD: dividends: down"])
+        self.assertEqual(
+            {row[0] for row in self._read("dividends_history.csv")}, {"BAD", "QQQ"}
+        )
+        bad = [e for e in report.entries if e["identifier"] == "BAD"][0]
+        self.assertEqual((bad["deleted"], bad["status"]), (0, "failed, kept existing"))
+
+    def test_every_alias_is_rebuilt_and_reported(self):
+        """Test one fetch, each identifier replaced."""
+        report = self._backfill(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
+            {"0P00000YAN": [self.EVENT("2026-06-23", "0.71", "GBP")]},
+        )
+        self.assertEqual(
+            [e["identifier"] for e in report.entries], ["0P00000YAN", "JFM0003373"]
+        )
+        self.assertEqual(len(self._read("dividends_history.csv")), 2)
+
+    def test_an_instrument_with_nothing_to_report_is_rebuilt_empty(self):
+        """Test the report copes with no events (first and last are dashes)."""
+        report = self._backfill([FundSpec("YA", "GRAB")], {"GRAB": []})
+        [entry] = report.entries
+        self.assertEqual(
+            (entry["first"], entry["last"], entry["currency"]), ("-", "-", "-")
+        )
+
+    def test_only_yahoo_instruments_are_rebuilt_and_the_upcoming_file_follows(self):
+        """Test FT funds are untouched by the source and estimates are refreshed."""
+        dists = self._dists("GB00B1FXTF86,annual,12-15,28,0.5,2026-10-01")
+        report = self._backfill(
+            [FundSpec("FT", "GB00B1FXTF86"), FundSpec("YA", "QQQ")],
+            {"QQQ": [self.EVENT("2026-06-23", "0.71", "USD")]},
+            distributions=dists,
+        )
+        self.assertEqual([e["identifier"] for e in report.entries], ["QQQ"])
+        funds = {row[0] for row in self._read("dividends_history.csv")}
+        self.assertEqual(funds, {"GB00B1FXTF86", "QQQ"})
+        funds = {row[0] for row in self._read("dividends_upcoming.csv")}
+        self.assertEqual(funds, {"GB00B1FXTF86", "QQQ"})
+
+    def test_the_default_directory_and_date_are_used_when_omitted(self):
+        """Test the production call needs only the start date."""
+        with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
+            with patch.object(
+                scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: []
+            ):
+                scrape_fund_price.backfill_dividends(
+                    [FundSpec("YA", "QQQ")], [], "2026-01-01"
+                )
+        self.assertTrue(os.path.isfile(self._file("dividends_history.csv")))
+
+
 if __name__ == "__main__":
     unittest.main()
