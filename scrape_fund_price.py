@@ -3039,6 +3039,79 @@ def apply_issuer_table(history, identifier, table, price_currency, today, start=
     return changed
 
 
+# Pause between two issuer pages: they are 1.5 to 3 MB each (SPEC-011).
+ISSUER_PAUSE_SECONDS = 1
+
+
+class IssuerResults:
+    """The day's issuer fetch (SPEC-011).
+
+    `tables` maps the lookup identifier of each instrument whose page was read
+    to its IssuerTable; `requested` holds every configured lookup identifier,
+    and `failures` the "<identifier>: pay dates: <error>" lines of the pages
+    that could not be read.
+    """
+
+    def __init__(self):
+        self.tables = {}
+        self.requested = set()
+        self.failures = []
+
+
+def collect_issuer_tables(sources, specs):
+    """Fetch each configured instrument's distribution table, once.
+
+    Retried by `fetch_with_retries()` and paced; one instrument failing, by
+    network, status or a page that has changed, never stops the others.
+
+    Args:
+        sources: DividendSource lines from dividend_sources.txt
+        specs: FundSpec instances, or plain (source, identifier) pairs
+    """
+    instrument_of = {}
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        for identifier in spec.publish_ids:
+            instrument_of[identifier] = spec.lookup_id
+
+    results = IssuerResults()
+    for index, source in enumerate(sources):
+        lookup_id = instrument_of[source.identifier]
+        results.requested.add(lookup_id)
+        if index:
+            time.sleep(ISSUER_PAUSE_SECONDS)
+
+        table, error = fetch_with_retries(lambda: fetch_issuer_table(source))
+        if error:
+            results.failures.append(f"{source.identifier}: pay dates: {error}")
+        else:
+            results.tables[lookup_id] = table
+    return results
+
+
+def merge_issuer_tables(history, specs, tables, currencies, today, start=None):
+    """Apply each fetched table to its instrument's rows under every alias.
+
+    Returns:
+        Lookup identifier -> the DeclaredDividend the issuer announced, for
+        the instruments that have one
+    """
+    declared = {}
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        table = tables.get(spec.lookup_id)
+        if table is None:
+            continue
+
+        price_currency = first_currency(spec.publish_ids, currencies)
+        for identifier in spec.publish_ids:
+            apply_issuer_table(history, identifier, table, price_currency, today, start)
+        announced = issuer_declared(table, price_currency, today)
+        if announced is not None:
+            declared[spec.lookup_id] = announced
+    return declared
+
+
 # The frequency and the next dividend are read from the twelve months of
 # ex-dates up to the last one (SPEC-010).
 ESTIMATE_WINDOW_DAYS = 365
@@ -3455,13 +3528,15 @@ def publish_upcoming(specs, distributions, history, declared, data_dir, today):
     return previous, upcoming
 
 
-def update_dividends(specs, distributions, data_dir=None, today=None):
+def update_dividends(specs, distributions, data_dir=None, today=None, sources=()):
     """Run the daily dividend update and write both dividend files.
 
     Upserts Yahoo's events into dividends_history.csv, adds the rows
-    distributions.txt asserts, then rebuilds dividends_upcoming.csv. The
-    history is read whole only when there is none yet; afterwards the daily
-    run re-reads DIVIDEND_WINDOW_DAYS, enough to pick up a correction, and
+    distributions.txt asserts, applies the issuers' tables (pay dates, amounts,
+    the distributions Yahoo lacks), then rebuilds dividends_upcoming.csv, where
+    an issuer's declared distribution replaces Yahoo's. The history is read
+    whole only when there is none yet; afterwards the daily run re-reads
+    DIVIDEND_WINDOW_DAYS of Yahoo's events, enough to pick up a correction, and
     never deletes (a rebuild does that: backfill_dividends).
 
     Args:
@@ -3469,6 +3544,7 @@ def update_dividends(specs, distributions, data_dir=None, today=None):
         distributions: Distribution lines from distributions.txt
         data_dir: Directory for output files (default: DATA_DIR)
         today: The run date (default: today)
+        sources: DividendSource lines from dividend_sources.txt
 
     Returns:
         DividendResults whose `failures` lists the instruments that could not
@@ -3484,11 +3560,16 @@ def update_dividends(specs, distributions, data_dir=None, today=None):
     start = None if first_run else (today - window).isoformat()
 
     results = collect_dividends(specs, today, start)
+    issuers = collect_issuer_tables(sources, specs)
+    results.failures.extend(issuers.failures)
     history = read_dividend_history(data_dir)
     merge_dividend_rows(history, results)
     currencies = stored_currencies(data_dir)
     merge_dividend_rows(
         history, config_history_rows(distributions, specs, currencies, today)
+    )
+    results.declared.update(
+        merge_issuer_tables(history, specs, issuers.tables, currencies, today)
     )
     write_dividend_history(list(history.values()), data_dir)
 
@@ -3499,15 +3580,79 @@ def update_dividends(specs, distributions, data_dir=None, today=None):
     return results
 
 
-def backfill_dividends(specs, distributions, start=None, data_dir=None, today=None):
-    """Rebuild the Yahoo rows of dividends_history.csv from the source.
+def rebuild_issuer_rows(history, spec, table, currencies, today, start):
+    """Rebuild the `IS` rows of an instrument that has no Yahoo route.
 
-    For each YA instrument that fetches, its source rows from `start` (all of
+    The instrument's `IS` rows from `start` are replaced by what the issuer
+    says now; with no table (its page failed) they all stay. Rows of other
+    sources are never touched.
+
+    Returns:
+        (report entries, DeclaredDividend by lookup identifier)
+    """
+    items = []
+    for identifier in spec.publish_ids:
+        existing = [key for key in history if key[0] == identifier]
+        doomed = (
+            [
+                key
+                for key in existing
+                if history[key][5] == "IS" and key[1] >= (start or "")
+            ]
+            if table is not None
+            else []
+        )
+        for key in doomed:
+            del history[key]
+        items.append(
+            {
+                "identifier": identifier,
+                "before": len(existing),
+                "deleted": len(doomed),
+                "retained": len(existing) - len(doomed),
+                "inserted": 0,
+                "first": min((key[1] for key in existing), default="-"),
+                "last": max((key[1] for key in existing), default="-"),
+                "currency": "-",
+                "status": "failed, kept existing",
+            }
+        )
+
+    tables = {} if table is None else {spec.lookup_id: table}
+    declared = merge_issuer_tables(history, [spec], tables, currencies, today, start)
+    if table is not None:
+        for item in items:
+            rows = sorted(
+                row
+                for key, row in history.items()
+                if key[0] == item["identifier"]
+                and row[5] == "IS"
+                and key[1] >= (start or "")
+            )
+            item.update(
+                inserted=len(rows),
+                first=rows[0][1] if rows else "-",
+                last=rows[-1][1] if rows else "-",
+                currency=rows[-1][4] if rows else "-",
+                status="rebuilt",
+            )
+    return items, declared
+
+
+def backfill_dividends(
+    specs, distributions, start=None, data_dir=None, today=None, sources=()
+):
+    """Rebuild the source rows of dividends_history.csv from the sources.
+
+    For each YA instrument that fetches, its `YA` rows from `start` (all of
     them without one) are replaced by what Yahoo reports now, so a dividend
-    Yahoo dropped or re-dated goes. `config` rows are the owner's and stay, and
-    an instrument that fails keeps everything it had. The upcoming file is then
-    rebuilt from the new history (no calendar lookup: it keeps its declared
-    rows).
+    Yahoo dropped or re-dated goes; where the issuer's page also fetched, its
+    `IS` rows are replaced too and the issuer's table is applied last. An
+    instrument with no Yahoo route (an FT-priced fund) has its `IS` rows
+    rebuilt alone. `config` rows are the owner's and stay, and an instrument
+    that fails keeps everything it had. The upcoming file is then rebuilt from
+    the new history (no calendar lookup: it keeps its declared rows, and takes
+    the issuers' announced ones).
 
     Args:
         specs: FundSpec instances, or plain (source, identifier) pairs
@@ -3515,6 +3660,7 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
         start: Inclusive ISO date to rebuild from, None for everything
         data_dir: Directory for output files (default: DATA_DIR)
         today: The run date (default: today)
+        sources: DividendSource lines from dividend_sources.txt
 
     Returns:
         BackfillReport
@@ -3526,10 +3672,21 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
     os.makedirs(data_dir, exist_ok=True)
     history = read_dividend_history(data_dir)
     report = BackfillReport()
+    issuers = collect_issuer_tables(sources, specs)
+    report.failures.extend(issuers.failures)
+    currencies = stored_currencies(data_dir)
+    declared = {}
 
     for entry in specs:
         spec = as_fund_spec(entry)
+        table = issuers.tables.get(spec.lookup_id)
         if spec.source != "YA":
+            if spec.lookup_id in issuers.requested:
+                items, announced = rebuild_issuer_rows(
+                    history, spec, table, currencies, today, start
+                )
+                report.entries.extend(items)
+                declared.update(announced)
             continue
 
         events, error = fetch_with_retries(
@@ -3539,6 +3696,7 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
             report.failures.append(f"{spec.lookup_id}: dividends: {error}")
         else:
             events = [event for event in events if event.ex_date <= today.isoformat()]
+        owned = ("YA",) if table is None else ("YA", "IS")
 
         for identifier in spec.publish_ids:
             existing = [key for key in history if key[0] == identifier]
@@ -3557,7 +3715,7 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
                 doomed = [
                     key
                     for key in existing
-                    if history[key][5] != "config" and key[1] >= (start or "")
+                    if history[key][5] in owned and key[1] >= (start or "")
                 ]
                 for key in doomed:
                     del history[key]
@@ -3579,12 +3737,17 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
                 )
             report.entries.append(item)
 
+        declared.update(
+            merge_issuer_tables(
+                history, [spec], issuers.tables, currencies, today, start
+            )
+        )
+
     merge_dividend_rows(
-        history,
-        config_history_rows(distributions, specs, stored_currencies(data_dir), today),
+        history, config_history_rows(distributions, specs, currencies, today)
     )
     write_dividend_history(list(history.values()), data_dir)
-    publish_upcoming(specs, distributions, history, {}, data_dir, today)
+    publish_upcoming(specs, distributions, history, declared, data_dir, today)
     return report
 
 
@@ -3783,7 +3946,8 @@ def main():
         distributions = read_distributions(
             DISTRIBUTIONS_FILE, configured_identifiers(specs)
         )
-        report = backfill_dividends(specs, distributions, args.start)
+        sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, specs)
+        report = backfill_dividends(specs, distributions, args.start, sources=sources)
         summary = report.to_markdown()
         print(summary)
 
@@ -3818,6 +3982,7 @@ def main():
         distributions = read_distributions(
             DISTRIBUTIONS_FILE, configured_identifiers(funds)
         )
+        sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, funds)
         results = scrape_funds(funds)
         write_results(results)
         failures.extend(getattr(results, "failures", []))
@@ -3835,7 +4000,7 @@ def main():
         # Dividends are fetched and written independently too: a crash here
         # must not cost the day's price summary.
         try:
-            dividends = update_dividends(funds, distributions)
+            dividends = update_dividends(funds, distributions, sources=sources)
         except Exception as error:
             dividends = DividendResults(failures=[f"dividends: {error}"])
         failures.extend(dividends.failures)
