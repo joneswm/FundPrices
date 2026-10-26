@@ -702,10 +702,15 @@ class DividendEvent(NamedTuple):
 
 
 class DeclaredDividend(NamedTuple):
-    """The next dividend Yahoo has announced."""
+    """The next dividend that has been announced.
+
+    Yahoo gives the dates only; an issuer (SPEC-011) also states the amount.
+    """
 
     ex_date: str
-    pay_date: str  # "" when Yahoo gives none or it does not follow the ex-date
+    pay_date: str  # "" when the source gives none or it does not follow the ex-date
+    amount: str = ""  # "" when the source does not state it
+    currency: str = ""  # the price currency of `amount`
 
 
 def format_dividend_amount(value):
@@ -2941,6 +2946,25 @@ def day_gap(first, second):
         return None
 
 
+def issuer_declared(table, price_currency, today):
+    """Return the next distribution an issuer has announced, or None.
+
+    The earliest row with an ex-date after today (the others are history, see
+    apply_issuer_table), with the amount it states in the price currency; an
+    amount that is zero or cannot be put in that currency is left empty, so
+    the upcoming row falls back to the last paid.
+    """
+    future = [row for row in table.rows if row.ex_date > today.isoformat()]
+    if not future:
+        return None
+
+    row = min(future, key=lambda candidate: candidate.ex_date)
+    amount = issuer_amount(row.amount, table.currency, price_currency)
+    if amount is None:
+        return DeclaredDividend(row.ex_date, row.pay_date)
+    return DeclaredDividend(row.ex_date, row.pay_date, amount.text, amount.currency)
+
+
 def apply_issuer_table(history, identifier, table, price_currency, today, start=None):
     """Merge an issuer's past distributions into one identifier's history rows.
 
@@ -3266,7 +3290,9 @@ def upcoming_rows_for(
         rows[row[1]] = [identifier] + row[1:7]
 
     if declared is not None:
-        amount, currency = last_paid
+        amount, currency = (
+            (declared.amount, declared.currency) if (declared.amount) else last_paid
+        )
         rows[declared.ex_date] = [
             identifier,
             declared.ex_date,
