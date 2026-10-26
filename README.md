@@ -10,7 +10,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **Daily summary**: new price, old price, delta and percent delta for every instrument
 - **History rebuild**: stored history can be rebuilt from the sources back to any date
 - **Closed holdings**: one-off imports for instruments no longer held, kept out of the daily run
-- **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does, and `dividend_sources.txt` adds the issuer's real pay dates and declared amounts (SPEC-011)
+- **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does, and `dividend_sources.txt` adds the issuer's real pay dates and declared amounts (SPEC-011, SPEC-012)
 - **Identifier aliases**: one fetch published under several identifiers
 - **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
@@ -138,28 +138,32 @@ python scrape_fund_price.py --backfill-dividends --from 2021-12-01
 
 #### `dividend_sources.txt`: the issuer's own dates
 
-Yahoo gives a past dividend's ex-date and amount and nothing else. For the iShares UK
-ETFs the issuer's fund page lists every distribution with its ex-date, record date,
-payable date and amount, so a line in `dividend_sources.txt` adds the real pay date.
-One line per instrument:
+Yahoo gives a past dividend's ex-date and amount and nothing else. The issuer of
+each instrument that pays, or its exchange partner, lists every distribution with its
+ex-date, payable date and amount, so a line in `dividend_sources.txt` adds the real pay
+date. One line per instrument:
 
 ```
 <identifier>,<source>,<source-id>
 
 IGLS.L,IS,251804
 IE00B0M63516,IS,251853
+QQQ,IV,46090E103
+GLTL.L,SS,IE00B6YX5L24
+KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS
+0639.HK,ET,639
 ```
 
 | Field | Meaning |
 |-------|---------|
 | `identifier` | An identifier from `funds.txt` (lookup id or alias). An FT-priced fund may be named: `IE00B0M63516` is an iShares ETF with no Yahoo route, and takes its whole dividend history from here |
-| `source` | `IS`: iShares UK (`www.ishares.com/uk`) |
-| `source-id` | For `IS`, the product id in the fund page's URL, `.../individual/en/products/<id>/...`. One id per share class: take the distributing class that matches the instrument. `https://www.ishares.com/uk/product-sitemap.xml` lists every id |
+| `source` | `IS`: iShares UK (`www.ishares.com/uk`). `IV`: Invesco's fund-data API. `SS`: SSGA's historical-distributions workbook for the SPDR ETFs. `Q4`: a Q4 Inc investor-relations feed. `ET`: etnet's dividend records for Hong Kong stocks (SPEC-012) |
+| `source-id` | `IS`: the product id in the fund page's URL, `.../individual/en/products/<id>/...`; one id per share class, take the distributing class that matches the instrument (`https://www.ishares.com/uk/product-sitemap.xml` lists every id). `IV`: the fund's CUSIP. `SS`: the fund's ISIN. `Q4`: `<ir host>/<exchange MIC>`, the ticker being the identifier. `ET`: the HK code without leading zeros (`639` for 0639.HK) |
 
-The daily run fetches each configured page once (one second apart; the pages are
-1.5 to 3 MB) and merges it, keyed on `(Fund, ExDate)`:
+The daily run fetches each configured document once (one second apart; the iShares pages are
+1.5 to 3 MB; the SSGA workbook is one download shared by every `SS` line) and merges it, keyed on `(Fund, ExDate)`:
 
-- a row gains its `PayDate` and its `Source` becomes `IS`; a distribution Yahoo lacks is
+- a row gains its `PayDate` and its `Source` becomes the code of the source (`IS`, `IV`, `SS`, `Q4` or `ET`); a distribution Yahoo lacks is
   inserted
 - the amount stays **Yahoo's when the two agree** (within the issuer's rounding: it shows
   four decimals of pounds, so a pence amount loses digits) and is **the issuer's when they
@@ -169,16 +173,18 @@ The daily run fetches each configured page once (one second apart; the pages are
 - a distribution with an ex-date still to come is the instrument's `declared` upcoming row
   with the issuer's pay date and stated amount, replacing the estimate and any date Yahoo
   gave; it is listed in the summary's Dividends section once
-- an `IS` row is never replaced by Yahoo's or by `distributions.txt`, so a day the issuer
+- an issuer row is never replaced by Yahoo's or by `distributions.txt`, so a day the issuer
   does not answer takes nothing away; a page that fails (network, status, or a page that
   has changed) is reported with the other failures, never stops the run, and the
   instrument keeps its rows
 
-`--backfill-dividends` also rebuilds the `IS` rows from the source. The file is validated
+`--backfill-dividends` also rebuilds the issuer rows from the source. The file is validated
 with `funds.txt` before any network call and a bad line fails with its line number.
-**Only the iShares funds are here**: QQQ, GLTL.L, KNSL and 0639.HK have no source that
-is both reachable and allowed; the research is in
-[docs/research/dividend_pay_date_sources.md](docs/research/dividend_pay_date_sources.md).
+Every instrument that pays has a source: the ten iShares funds (`IS`), QQQ (`IV`),
+GLTL.L (`SS`), KNSL (`Q4`) and 0639.HK (`ET`). Etnet's rights-issue rows are skipped, and
+a special and a final dividend on one ex-date are one row. The research is in
+[docs/research/dividend_pay_date_sources.md](docs/research/dividend_pay_date_sources.md),
+the design in [specs/012-pay-date-sources](specs/012-pay-date-sources/spec.md).
 An `estimated` row projects its pay date from the last real lag, so it carries one now
 that the history does; the issuer's declared row replaces it when announced.
 
@@ -374,8 +380,8 @@ ABCD,2026-11-19,2026-12-10,0.91,USD,declared,2026-10-26
 ```
 
 `Amount` is the gross amount per share in `Currency`, as the source quotes it and
-never converted. `Source` is `YA` (Yahoo), `IS` (the issuer, `dividend_sources.txt`) or
-`config` (`distributions.txt`); `IS` beats `YA` beats `config`. `AsOf` is
+never converted. `Source` is `YA` (Yahoo), `IS`, `IV`, `SS`, `Q4` or `ET` (the issuer, `dividend_sources.txt`) or
+`config` (`distributions.txt`); an issuer beats `YA` beats `config`. `AsOf` is
 the run that produced or last confirmed the row.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
@@ -435,7 +441,7 @@ The project includes automated execution via GitHub Actions:
 **Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
 **New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
-- ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011)
+- ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011), and for QQQ, GLTL.L, KNSL and 0639.HK from Invesco, SSGA, Q4 Inc and etnet (SPEC-012)
 - ✅ **Dividend Calendar**: past and upcoming dividends per instrument, declared or projected, with a hand-kept schedule for instruments no source covers (SPEC-010)
 - ✅ **Core Functionality**: Multi-source dated price collection (Yahoo Finance API, FT and investing.com over HTTP; scraping fallback), FX rates, daily summary, history rebuild, closed-holding imports
 - ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges

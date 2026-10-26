@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
+**Status**: ✅ Built (branch `pay-date-sources`, not yet merged)
+**Location**: [012-pay-date-sources/](012-pay-date-sources/)
+**Description**: Four more issuer sources for `dividend_sources.txt`, wired as `IS` is: `IV` (Invesco, QQQ), `SS` (SSGA's workbook, GLTL.L), `Q4` (Kinsale's IR feed, KNSL) and `ET` (etnet, 0639.HK). Follow-up to SPEC-011 (#89).
+
 ### SPEC-011: Dividend Pay Dates from the Issuer
 **Status**: ✅ Built (branch `pay-dates`, not yet merged)
 **Location**: [011-pay-dates/](011-pay-dates/)

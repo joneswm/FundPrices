@@ -217,3 +217,22 @@ owner might choose:
 4. Add a Playwright route for the LSE.
 
 The pay-offset guess the owner rejected stays out: none of this projects a pay date.
+
+## Follow-up 2026-10-27: the four remaining payers (#89, SPEC-012)
+
+The sections above stand as the record of 2026-10-26. A second pass found a source for each
+of the four instruments the recommendation left on Yahoo's calendar, all plain HTTP, no key,
+no JavaScript, each document fetched once and saved in `fixtures/`:
+
+| Instrument | Source (code) | Why it was missed |
+|------------|---------------|-------------------|
+| QQQ | Invesco's fund-data API, `dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/<CUSIP>/distribution?idType=cusip&productType=ETF` (`IV`) | The product page's own call; keyed by CUSIP (`idType=ticker` answers empty, and the guess `shareclasses/QQQ` was a ticker) |
+| GLTL.L | SSGA's historical-distributions workbook for every SPDR EMEA ETF, `ssga.com/library-content/products/fund-data/etfs/emea/spdr-etf-historical-distributions-uk-en.xlsx` (`SS`) | Linked from the dividend-distributions documents page, not from the fund page; allowed by `robots.txt` |
+| KNSL | The Q4 Inc feed behind the company's IR site, `ir.kinsalecapitalgroup.com/feed/StockQuote.svc/GetDividendList` (`Q4`) | EDGAR's 8-Ks state no dates; the IR feed carries declared, ex, record and pay dates; `robots.txt` is `Allow: /` with a 10 s crawl delay |
+| 0639.HK | etnet's dividend records, `etnet.com.hk/www/eng/stocks/realtime/quote_dividend.php?code=639` (`ET`) | aastocks and HKEX's widget need JavaScript; etnet's page is static HTML and its `/www/eng/stocks/` is open to robots |
+
+Two things the fixtures showed that the parsers handle: etnet lists rights issues (`Rts 1 for
+30 @HKD 2.6`) and "No Int Div" placeholders beside the cash dividends, and a final and a special
+dividend can share an ex-date (2018-05-31), which the history, keyed on `(Fund, ExDate)`, holds
+as one row. Not observed: how early before the ex-date each source shows a declared row (none
+had a future row on the day). The design is `specs/012-pay-date-sources/spec.md`.
