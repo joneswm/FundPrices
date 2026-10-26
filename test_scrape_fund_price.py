@@ -6687,6 +6687,11 @@ def fixture_text(name):
         return f.read()
 
 
+def embedded(value):
+    """Return JSON as the live page holds it: compact, entity-escaped."""
+    return html.escape(json.dumps(value, separators=(",", ":")))
+
+
 def ishares_page(rows, currency="GBP", product_id=1):
     """Build a page shaped like iShares UK's from (ex, record, pay, amount) rows.
 
@@ -6711,8 +6716,8 @@ def ishares_page(rows, currency="GBP", product_id=1):
     selector = {"currency": currency, "pId": product_id}
     return (
         "<html><body>"
-        f'<div data-component="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
-        f'<div data-selector="{html.escape(json.dumps([selector], separators=(",", ":")))}"></div>'
+        f'<div data-component="{embedded(table)}"></div>'
+        f'<div data-selector="{embedded([selector])}"></div>'
         "</body></html>"
     )
 
@@ -6789,7 +6794,7 @@ class TestIsharesPageParsing(unittest.TestCase):
             "fullName": "performance.distributions.table",
             "dataPointsByNameMap": {},
         }
-        page = f'<div data-x="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
+        page = f'<div data-x="{embedded(table)}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
             self.parse(page)
 
@@ -6804,7 +6809,7 @@ class TestIsharesPageParsing(unittest.TestCase):
                 "totalDistribution": {"value": ["1.5"]},
             },
         }
-        page = f'<div data-x="{html.escape(json.dumps(table, separators=(",", ":")))}"></div>'
+        page = f'<div data-x="{embedded(table)}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*malformed"):
             self.parse(page)
 
