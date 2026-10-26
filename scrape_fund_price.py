@@ -2442,14 +2442,13 @@ def read_dividend_history(data_dir):
     if not os.path.isfile(path):
         return {}
 
+    width = len(DIVIDEND_HISTORY_HEADER)
     rows = {}
     with open(path, mode="r", newline="") as file:
         reader = csv.reader(file)
         next(reader, None)  # Skip header
         for row in reader:
-            row = (row + [""] * len(DIVIDEND_HISTORY_HEADER))[
-                : len(DIVIDEND_HISTORY_HEADER)
-            ]
+            row = (row + [""] * width)[:width]
             if row[0] and row[1]:
                 rows[(row[0], row[1])] = row
     return rows
