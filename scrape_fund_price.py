@@ -709,11 +709,14 @@ class DeclaredDividend(NamedTuple):
 def format_dividend_amount(value):
     """Format a per-share amount as plain decimal text.
 
-    Yahoo reports dividends as float64. Going through repr() recovers the
-    shortest text that identifies the float, so 0.0821 stays 0.0821, and the
-    Decimal keeps a small value out of exponent notation.
+    Yahoo holds dividends as float32 and the float64 it serves carries the
+    noise: FLOS.L's 12.35p arrives as 12.349999. Seven significant digits is
+    all a float32 holds, so rounding there recovers the published figure
+    without discarding any real precision; the Decimal then keeps a small value
+    out of exponent notation. (format_yahoo_price cannot be used: 12.349999 is
+    a different float32 from 12.35, so its round trip keeps the noise.)
     """
-    return format(decimal.Decimal(repr(float(value))).normalize(), "f")
+    return format(decimal.Decimal(f"{float(value):.7g}").normalize(), "f")
 
 
 def ticker_currency(ticker):
