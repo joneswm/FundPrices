@@ -7249,8 +7249,10 @@ class TestIssuerDeclaredDividend(unittest.TestCase):
         """Test zero, or another currency, leaves the amount to the last paid."""
         for text, currency in (("0.0", "GBP"), ("1.5", "USD")):
             with self.subTest(text=text, currency=currency):
-                table = issuer_table(("2026-11-12", "", "2026-11-25", text))
-                declared = self.declared(table, currency="GBP")
+                table = issuer_table(
+                    ("2026-11-12", "", "2026-11-25", text), currency=currency
+                )
+                declared = self.declared(table, "GBP")
                 self.assertEqual((declared.amount, declared.currency), ("", ""))
                 self.assertEqual(declared.ex_date, "2026-11-12")
 
