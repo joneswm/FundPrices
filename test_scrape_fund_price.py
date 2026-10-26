@@ -6676,7 +6676,9 @@ class TestDividendSourceConfiguration(unittest.TestCase):
             _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
         )
         self.assertTrue(sources)
-        self.assertTrue(all(source.source == "IS" for source in sources))
+        self.assertTrue(
+            all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
+        )
 
 
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -7829,6 +7831,902 @@ class TestIssuerSourcesInMain(unittest.TestCase):
         self.scrape.assert_not_called()
         self.update.assert_not_called()
         self.rebuild.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-012: pay-date sources IV (Invesco), SS (SSGA), Q4 (Q4 Inc IR) and ET
+# (etnet), each one canned response recorded once from the live site (#89).
+# ---------------------------------------------------------------------------
+
+
+def fixture_bytes(name):
+    """Return a file recorded from the live site, as bytes (see fixtures/)."""
+    with open(os.path.join(FIXTURE_DIR, name), "rb") as f:
+        return f.read()
+
+
+def make_xlsx(rows, sheet_name="Open Fund", inline=False):
+    """Build a minimal workbook of one sheet from rows of strings and numbers."""
+    import io
+    import zipfile
+
+    def cell(row, column, value):
+        ref = f"{'ABCDEFGHIJKL'[column]}{row}"
+        if isinstance(value, (int, float)):
+            return f'<c r="{ref}" t="n"><v>{value}</v></c>'
+        if inline:
+            return f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>'
+        strings.append(value)
+        return f'<c r="{ref}" t="s"><v>{len(strings) - 1}</v></c>'
+
+    strings = []
+    body = "".join(
+        f'<row r="{n}">'
+        + "".join(cell(n, c, v) for c, v in enumerate(row) if v is not None)
+        + "</row>"
+        for n, row in enumerate(rows, start=1)
+    )
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    parts = {
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{ns}" xmlns:r="{rel}"><sheets>'
+            f'<sheet name="{sheet_name}" sheetId="2" r:id="rId1"/></sheets></workbook>'
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+            'relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" '
+            f'Type="{rel}/worksheet"/></Relationships>'
+        ),
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{ns}"><sheetData>{body}</sheetData></worksheet>'
+        ),
+        "xl/sharedStrings.xml": (
+            f'<sst xmlns="{ns}">'
+            + "".join(f"<si><t>{s}</t></si>" for s in strings)
+            + "</sst>"
+        ),
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, text in parts.items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+class TestPayDateSourceConfiguration(unittest.TestCase):
+    """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
+
+    SPECS = [
+        FundSpec("YA", "QQQ"),
+        FundSpec("YA", "GLTL.L"),
+        FundSpec("YA", "KNSL"),
+        FundSpec("YA", "0639.HK"),
+    ]
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _read(self, text):
+        path = os.path.join(self.test_dir, "dividend_sources.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return scrape_fund_price.read_dividend_sources(path, self.SPECS)
+
+    def test_the_four_codes_are_known(self):
+        """Test the code list and the authority of each."""
+        for code in ("IS", "IV", "SS", "Q4", "ET"):
+            self.assertIn(code, scrape_fund_price.DIVIDEND_SOURCE_CODES)
+            self.assertEqual(scrape_fund_price.SOURCE_AUTHORITY[code], 2)
+
+    def test_reads_one_line_per_source(self):
+        """Test the documented ids parse, codes case-insensitively."""
+        sources = self._read(
+            "QQQ,IV,46090E103\n"
+            "GLTL.L,ss,IE00B6YX5L24  # SPDR\n"
+            "KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS\n"
+            "0639.HK,ET,639\n"
+        )
+        self.assertEqual(
+            [(s.identifier, s.source, s.source_id) for s in sources],
+            [
+                ("QQQ", "IV", "46090E103"),
+                ("GLTL.L", "SS", "IE00B6YX5L24"),
+                ("KNSL", "Q4", "ir.kinsalecapitalgroup.com/XNYS"),
+                ("0639.HK", "ET", "639"),
+            ],
+        )
+
+    def test_a_malformed_source_id_names_the_line(self):
+        """Test each code checks its own id before any network call."""
+        cases = {
+            "QQQ,IV,46090E10": "line 1.*CUSIP",
+            "QQQ,IV,46090e103": "line 1.*CUSIP",
+            "QQQ,IV,": "line 1.*CUSIP",
+            "GLTL.L,SS,IE00B6YX5L2": "line 1.*ISIN",
+            "GLTL.L,SS,251804": "line 1.*ISIN",
+            "KNSL,Q4,ir.kinsalecapitalgroup.com": "line 1.*host/MIC",
+            "KNSL,Q4,ir.kinsale.com/xnys": "line 1.*host/MIC",
+            "KNSL,Q4,https://ir.kinsale.com/XNYS": "line 1.*host/MIC",
+            "KNSL,Q4,ir.kinsale.com/XNYS/x": "line 1.*host/MIC",
+            "0639.HK,ET,0639": "line 1.*HK code",
+            "0639.HK,ET,abc": "line 1.*HK code",
+            "0639.HK,ET,123456": "line 1.*HK code",
+        }
+        for text, pattern in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self._read(text + "\n")
+
+    def test_the_committed_file_names_the_four_instruments(self):
+        """Test the shipped rows validate against the committed funds.txt."""
+        sources = scrape_fund_price.read_dividend_sources(
+            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
+        )
+        by_code = {s.source: s for s in sources if s.source != "IS"}
+        self.assertEqual(
+            {code: (s.identifier, s.source_id) for code, s in by_code.items()},
+            {
+                "IV": ("QQQ", "46090E103"),
+                "SS": ("GLTL.L", "IE00B6YX5L24"),
+                "Q4": ("KNSL", "ir.kinsalecapitalgroup.com/XNYS"),
+                "ET": ("0639.HK", "639"),
+            },
+        )
+
+
+class TestInvescoParsing(unittest.TestCase):
+    """Test reading Invesco's distribution API (IV, SPEC-012, #89)."""
+
+    def parse(self, text, cusip="46090E103"):
+        return scrape_fund_price.parse_invesco_distributions(text, cusip)
+
+    @staticmethod
+    def payload(rows, currency="USD"):
+        return json.dumps(
+            {"cusip": "X", "currencyCode": currency, "distributions": rows}
+        )
+
+    @staticmethod
+    def row(ex="2026-09-21", record="2026-09-21", pay="2026-10-08", amount=0.75143):
+        return {
+            "exDate": ex,
+            "recordDate": record,
+            "payDate": pay,
+            "distributionAmountPerUnit": amount,
+        }
+
+    def test_the_recorded_qqq_response(self):
+        """Test the real response: oldest first, newest with its pay date."""
+        table = self.parse(fixture_text("invesco_46090E103_qqq.json"))
+        self.assertEqual(table.source, "IV")
+        self.assertEqual(table.currency, "USD")
+        self.assertEqual(len(table.rows), 89)
+        self.assertEqual(table.rows[0].ex_date, "2003-12-24")
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution(
+                "2026-09-21", "2026-09-21", "2026-10-08", "0.75143"
+            ),
+        )
+        self.assertEqual(
+            [r.ex_date for r in table.rows], sorted(r.ex_date for r in table.rows)
+        )
+
+    def test_a_missing_pay_date_is_empty_and_one_before_the_ex_date_too(self):
+        """Test the SPEC-011 rule: no pay date, or one before the ex-date, is absent."""
+        text = self.payload(
+            [
+                self.row("2026-01-05", pay=None),
+                self.row("2026-04-06", pay="2026-04-01"),
+            ]
+        )
+        self.assertEqual([r.pay_date for r in self.parse(text).rows], ["", ""])
+
+    def test_two_cash_rows_on_one_ex_date_are_one_distribution(self):
+        """Test the history is keyed on the ex-date, so the amounts add."""
+        text = self.payload(
+            [
+                self.row("2026-03-02", pay="2026-03-10", amount=0.5),
+                self.row("2026-03-02", pay="2026-03-12", amount=0.25),
+            ]
+        )
+        [row] = self.parse(text).rows
+        self.assertEqual((row.pay_date, row.amount), ("2026-03-12", "0.75"))
+
+    def test_no_table_is_an_error(self):
+        """Test a changed response is an error for the instrument."""
+        for text in ("not json", "[]", "{}", '{"distributions": {}}'):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "Invesco"):
+                    self.parse(text)
+
+    def test_malformed_rows_are_errors(self):
+        """Test a bad date or amount never becomes a row."""
+        bad = [
+            self.row(ex="21/09/2026"),
+            self.row(ex=None),
+            self.row(amount="x"),
+            self.row(amount=None),
+            self.row(amount=-1),
+            self.row(pay="soon"),
+            "text",
+        ]
+        for row in bad:
+            with self.subTest(row=row):
+                with self.assertRaisesRegex(ValueError, "Invesco"):
+                    self.parse(self.payload([row]))
+
+    def test_an_empty_list_is_an_empty_table(self):
+        """Test a fund with no distributions yet."""
+        self.assertEqual(self.parse(self.payload([])).rows, ())
+
+    def test_the_currency_may_be_absent(self):
+        """Test the row's currency then decides, as for iShares."""
+        self.assertEqual(self.parse(self.payload([], currency=None)).currency, "")
+
+
+class TestInvescoFetch(unittest.TestCase):
+    """Test the one request per instrument for IV (SPEC-012, #89)."""
+
+    def test_one_get_of_the_distribution_endpoint(self):
+        """Test the url carries the CUSIP and the call has a timeout."""
+        response = MagicMock(text=fixture_text("invesco_46090E103_qqq.json"))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            table = scrape_fund_price.fetch_invesco_distributions("46090E103")
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
+            "46090E103/distribution?idType=cusip&productType=ETF",
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(table.rows[-1].pay_date, "2026-10-08")
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_invesco_distributions("46090E103")
+
+
+class TestQ4Parsing(unittest.TestCase):
+    """Test reading a Q4 Inc investor-relations dividend feed (Q4, SPEC-012, #89)."""
+
+    def parse(self, text, symbol="KNSL"):
+        return scrape_fund_price.parse_q4_distributions(text, symbol)
+
+    @staticmethod
+    def payload(rows):
+        return json.dumps({"GetDividendListResult": rows})
+
+    @staticmethod
+    def row(ex="08/28/2026", record="08/28/2026", pay="09/14/2026", amount=0.25):
+        def stamp(value):
+            return None if value is None else f"{value} 00:00:00"
+
+        return {
+            "Currency": "USD",
+            "DeclaredDate": "08/12/2026 00:00:00",
+            "DividendAmount": amount,
+            "ExDate": stamp(ex),
+            "PayDate": stamp(pay),
+            "RecordDate": stamp(record),
+            "Type": "OrdinaryDividend",
+        }
+
+    def test_the_recorded_knsl_response(self):
+        """Test the real response: oldest first, newest with its pay date."""
+        table = self.parse(fixture_text("q4_knsl_dividends.json"))
+        self.assertEqual(table.source, "Q4")
+        self.assertEqual(table.currency, "USD")
+        self.assertEqual(len(table.rows), 41)
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution(
+                "2026-08-28", "2026-08-28", "2026-09-14", "0.25"
+            ),
+        )
+        self.assertEqual(table.rows[0].ex_date, "2016-09-13")
+
+    def test_rows_are_sorted_by_ex_date(self):
+        """Test the order does not depend on the feed's."""
+        text = self.payload([self.row("08/28/2026"), self.row("05/28/2026")])
+        self.assertEqual(
+            [r.ex_date for r in self.parse(text).rows], ["2026-05-28", "2026-08-28"]
+        )
+
+    def test_a_missing_pay_date_is_empty(self):
+        """Test a declared dividend whose pay date is not set."""
+        [row] = self.parse(self.payload([self.row(pay=None)])).rows
+        self.assertEqual(row.pay_date, "")
+
+    def test_mixed_currencies_are_an_error(self):
+        """Test a table is in one currency."""
+        other = dict(self.row("05/28/2026"), Currency="CAD")
+        with self.assertRaisesRegex(ValueError, "Q4.*currenc"):
+            self.parse(self.payload([self.row(), other]))
+
+    def test_a_changed_response_is_an_error(self):
+        """Test the shape check."""
+        bad = [
+            "not json",
+            "{}",
+            '{"GetDividendListResult": null}',
+            self.payload([self.row(ex="2026-08-28")]),
+            self.payload([self.row(amount="n/a")]),
+            self.payload([self.row(amount=-1)]),
+            self.payload([self.row(ex=None)]),
+            self.payload(["x"]),
+        ]
+        for text in bad:
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "Q4"):
+                    self.parse(text)
+
+    def test_an_empty_list_is_an_empty_table(self):
+        """Test a company with no dividends."""
+        table = self.parse(self.payload([]))
+        self.assertEqual((table.rows, table.currency), ((), ""))
+
+
+class TestQ4Fetch(unittest.TestCase):
+    """Test the one request per instrument for Q4 (SPEC-012, #89)."""
+
+    def test_one_get_of_the_feed(self):
+        """Test the url is built from the host/MIC and the symbol."""
+        response = MagicMock(text=fixture_text("q4_knsl_dividends.json"))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            table = scrape_fund_price.fetch_q4_distributions(
+                "ir.kinsalecapitalgroup.com/XNYS", "KNSL"
+            )
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://ir.kinsalecapitalgroup.com/feed/StockQuote.svc/"
+            "GetDividendList?exchange=XNYS&symbol=KNSL&pageSize=-1",
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(table.rows[-1].pay_date, "2026-09-14")
+
+    def test_the_symbol_is_url_encoded(self):
+        """Test an identifier with a punctuation mark cannot change the query."""
+        response = MagicMock(text='{"GetDividendListResult": []}')
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "A&B")
+        self.assertIn("symbol=A%26B&", get.call_args.args[0])
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "KNSL")
+
+
+class TestEtnetParsing(unittest.TestCase):
+    """Test reading etnet's dividend records (ET, SPEC-012, #89)."""
+
+    def parse(self, text, code="639"):
+        return scrape_fund_price.parse_etnet_distributions(text, code)
+
+    @staticmethod
+    def page(*rows):
+        """Build a page like etnet's from (announced, particular, ex, from, until, pay)."""
+        cells = "".join(f'<td align="left">{c}</td>' for c in ("x",))
+        del cells
+        body = "".join(
+            '<tr class="evenRow" align="right">'
+            + f'<td align="left">{r[0]}</td><td align="left">2026/12</td>'
+            + f'<td align="left" class="Text">{r[1]}</td>'
+            + "".join(f'<td align="left">{c}</td>' for c in r[2:])
+            + "</tr>"
+            for r in rows
+        )
+        return (
+            '<table class="figureTable"><tr>'
+            '<td><span class="TableHeader">Announcement Date</span></td>'
+            '<td><span class="TableHeader">Particular </span></td>'
+            '<td><span class="TableHeader">Ex-date</span></td>'
+            '<td><span class="TableHeader">Payable Date</span></td></tr>'
+            f"{body}</table>"
+        )
+
+    def test_the_recorded_shougang_page(self):
+        """Test the real page: cash dividends only, oldest first."""
+        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        self.assertEqual(table.source, "ET")
+        self.assertEqual(table.currency, "HKD")
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution("2026-09-18", "", "2026-11-05", "0.1"),
+        )
+        self.assertEqual(
+            [r.ex_date for r in table.rows], sorted(r.ex_date for r in table.rows)
+        )
+        self.assertNotIn("2024-10-10", [r.ex_date for r in table.rows])
+
+    def test_the_rights_issue_is_not_a_dividend(self):
+        """Test the Rts row (ex 2024-10-10) is skipped, its neighbours kept."""
+        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        ex_dates = [r.ex_date for r in table.rows]
+        self.assertIn("2024-10-03", ex_dates)
+        self.assertIn("2024-06-07", ex_dates)
+        self.assertNotIn("2024-10-10", ex_dates)
+
+    def test_a_special_and_a_final_dividend_on_one_ex_date_add_up(self):
+        """Test 2018-06-04: Fin 0.072 and Sp 0.063 are one entitlement date."""
+        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        [row] = [r for r in table.rows if r.ex_date == "2018-05-31"]
+        self.assertEqual((row.pay_date, row.amount), ("2018-07-12", "0.135"))
+
+    def test_no_dividend_rows_are_skipped(self):
+        """Test the 'No Int Div' placeholders carry no dates."""
+        text = self.page(
+            ("--", "No Int Div", "--", "--"),
+            ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026"),
+        )
+        self.assertEqual([r.ex_date for r in self.parse(text).rows], ["2026-09-18"])
+
+    def test_a_missing_pay_date_is_empty(self):
+        """Test an announced dividend whose payable date is not yet set."""
+        text = self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "--"))
+        [row] = self.parse(text).rows
+        self.assertEqual(row.pay_date, "")
+
+    def test_a_page_with_no_cash_dividend_is_an_empty_table(self):
+        """Test a listed company that has never paid."""
+        table = self.parse(self.page(("--", "No Fin Div", "--", "--")))
+        self.assertEqual((table.rows, table.currency), ((), ""))
+
+    def test_a_changed_page_is_an_error(self):
+        """Test a page without the dividend table, or with bad cells."""
+        bad = [
+            "<html>no table</html>",
+            self.page(("27/08/2026", "Int Div HKD 0.1", "2026-09-18", "05/11/2026")),
+            self.page(("27/08/2026", "Int Div HKD 0.1", "31/02/2026", "05/11/2026")),
+            self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "soon")),
+            self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026")),
+        ]
+        for text in bad:
+            with self.subTest(text=text[:60]):
+                with self.assertRaisesRegex(ValueError, "etnet"):
+                    self.parse(text)
+
+    def test_mixed_currencies_are_an_error(self):
+        """Test a table is in one currency."""
+        text = self.page(
+            ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026"),
+            ("27/03/2026", "Fin Div USD 0.1", "08/07/2026", "23/07/2026"),
+        )
+        with self.assertRaisesRegex(ValueError, "etnet.*currenc"):
+            self.parse(text)
+
+
+class TestEtnetFetch(unittest.TestCase):
+    """Test the one request per instrument for ET (SPEC-012, #89)."""
+
+    def test_one_get_of_the_dividend_page(self):
+        """Test the url carries the HK code and the call has a timeout."""
+        response = MagicMock(text=fixture_text("etnet_639_dividends.html"))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            table = scrape_fund_price.fetch_etnet_distributions("639")
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://www.etnet.com.hk/www/eng/stocks/realtime/"
+            "quote_dividend.php?code=639",
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(table.rows[-1].pay_date, "2026-11-05")
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_etnet_distributions("639")
+
+
+class TestSsgaParsing(unittest.TestCase):
+    """Test reading SSGA's historical-distributions workbook (SS, SPEC-012, #89)."""
+
+    HEADER = [
+        "FUND UMBRELLA",
+        "FUND NAME",
+        "TICKER",
+        "ISIN",
+        "CURRENCY",
+        "Announcement Date",
+        "EX-DATE",
+        "EX-DATE NAV",
+        "RECORD DATE",
+        "PAYMENT DATE",
+        "DISTRIBUTION",
+        "FREQUENCY",
+    ]
+
+    @classmethod
+    def line(
+        cls,
+        isin="IE00B6YX5L24",
+        ex="03/08/2026",
+        record="04/08/2026",
+        pay="17/08/2026",
+        amount="0.8811",
+        currency="GBP",
+    ):
+        return [
+            "U",
+            "N",
+            "T",
+            isin,
+            currency,
+            "27/07/2026",
+            ex,
+            32.8802,
+            record,
+            pay,
+            amount,
+            "Semi-Annually",
+        ]
+
+    def parse(self, content, isin="IE00B6YX5L24"):
+        return scrape_fund_price.parse_ssga_distributions(content, isin)
+
+    def test_the_recorded_workbook(self):
+        """Test the real workbook: GLTL.L's fund, oldest first."""
+        table = self.parse(fixture_bytes("ssga_historical_distributions.xlsx"))
+        self.assertEqual(table.source, "SS")
+        self.assertEqual(table.currency, "GBP")
+        self.assertEqual(
+            table.rows[-1],
+            scrape_fund_price.IssuerDistribution(
+                "2026-08-03", "2026-08-04", "2026-08-17", "0.8811"
+            ),
+        )
+        self.assertEqual(
+            [r.ex_date for r in table.rows], sorted(r.ex_date for r in table.rows)
+        )
+        self.assertEqual(len({r.ex_date for r in table.rows}), len(table.rows))
+
+    def test_only_the_funds_own_rows_are_read(self):
+        """Test the other funds of the workbook are ignored."""
+        content = make_xlsx(
+            [
+                self.HEADER,
+                self.line(isin="IE00OTHER000", amount="9"),
+                self.line(),
+            ]
+        )
+        [row] = self.parse(content).rows
+        self.assertEqual(row.amount, "0.8811")
+
+    def test_inline_strings_and_numeric_cells_are_read(self):
+        """Test a workbook written without a shared-strings table."""
+        line = self.line(amount=0.8811)
+        content = make_xlsx([self.HEADER, line], inline=True)
+        [row] = self.parse(content).rows
+        self.assertEqual(row.amount, "0.8811")
+
+    def test_the_columns_are_found_by_header_not_by_position(self):
+        """Test a reordered workbook still reads."""
+        order = [3, 4, 6, 8, 9, 10]
+        header = [self.HEADER[i] for i in order]
+        line = [self.line()[i] for i in order]
+        [row] = self.parse(make_xlsx([header, line])).rows
+        self.assertEqual((row.ex_date, row.pay_date), ("2026-08-03", "2026-08-17"))
+
+    def test_a_missing_pay_date_is_empty(self):
+        """Test an announced distribution whose payment date is blank."""
+        content = make_xlsx([self.HEADER, self.line(pay=None)])
+        [row] = self.parse(content).rows
+        self.assertEqual(row.pay_date, "")
+
+    def test_a_fund_with_no_rows_is_an_error(self):
+        """Test a wrong ISIN or a changed workbook is not an empty table."""
+        with self.assertRaisesRegex(ValueError, "SSGA.*IE00B6YX5L24"):
+            self.parse(make_xlsx([self.HEADER, self.line(isin="IE00OTHER000")]))
+
+    def test_a_changed_workbook_is_an_error(self):
+        """Test the shape checks."""
+        bad = {
+            "not a workbook": b"<html>moved</html>",
+            "no header": make_xlsx([["a", "b"], ["c", "d"]]),
+            "bad ex-date": make_xlsx([self.HEADER, self.line(ex="2026-08-03")]),
+            "bad pay date": make_xlsx([self.HEADER, self.line(pay="soon")]),
+            "bad amount": make_xlsx([self.HEADER, self.line(amount="n/a")]),
+            "negative": make_xlsx([self.HEADER, self.line(amount="-1")]),
+            "mixed currency": make_xlsx(
+                [self.HEADER, self.line(), self.line(ex="02/02/2026", currency="USD")]
+            ),
+        }
+        for name, content in bad.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, "SSGA"):
+                    self.parse(content)
+
+    def test_the_first_sheet_is_the_open_funds(self):
+        """Test the sheet is resolved from the workbook, not assumed by name."""
+        content = make_xlsx([self.HEADER, self.line()], sheet_name="Anything")
+        self.assertEqual(len(self.parse(content).rows), 1)
+
+
+class TestSsgaFetch(unittest.TestCase):
+    """Test the one download per run for SS (SPEC-012, #89)."""
+
+    URL = (
+        "https://www.ssga.com/library-content/products/fund-data/etfs/emea/"
+        "spdr-etf-historical-distributions-uk-en.xlsx"
+    )
+
+    def setUp(self):
+        scrape_fund_price.clear_issuer_caches()
+
+    def tearDown(self):
+        scrape_fund_price.clear_issuer_caches()
+
+    def test_one_get_of_the_workbook(self):
+        """Test the url, the timeout and the parsed table."""
+        response = MagicMock(
+            content=fixture_bytes("ssga_historical_distributions.xlsx")
+        )
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[0], self.URL)
+        self.assertEqual(get.call_args.kwargs["timeout"], 60)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(table.rows[-1].pay_date, "2026-08-17")
+
+    def test_a_second_instrument_reuses_the_download(self):
+        """Test one workbook serves every SPDR fund of the run."""
+        content = make_xlsx(
+            [
+                TestSsgaParsing.HEADER,
+                TestSsgaParsing.line(),
+                TestSsgaParsing.line(isin="IE00OTHER000", amount="2"),
+            ]
+        )
+        response = MagicMock(content=content)
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            first = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+            second = scrape_fund_price.fetch_ssga_distributions("IE00OTHER000")
+        get.assert_called_once()
+        self.assertEqual(first.rows[0].amount, "0.8811")
+        self.assertEqual(second.rows[0].amount, "2")
+
+    def test_clearing_the_cache_downloads_again(self):
+        """Test a new run does not reuse yesterday's workbook."""
+        response = MagicMock(
+            content=fixture_bytes("ssga_historical_distributions.xlsx")
+        )
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+            scrape_fund_price.clear_issuer_caches()
+            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        self.assertEqual(get.call_count, 2)
+
+    def test_a_failed_download_is_not_cached(self):
+        """Test the retry fetches again."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "404"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        good = MagicMock(content=fixture_bytes("ssga_historical_distributions.xlsx"))
+        with patch.object(scrape_fund_price.requests, "get", return_value=good):
+            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        self.assertTrue(table.rows)
+
+
+class TestIssuerDispatch(unittest.TestCase):
+    """Test fetch_issuer_table routes each code to its fetch (SPEC-012, #89)."""
+
+    def test_each_code_calls_its_fetch(self):
+        """Test the arguments each source needs."""
+        cases = [
+            (("QQQ", "IV", "46090E103"), "fetch_invesco_distributions", ("46090E103",)),
+            (
+                ("GLTL.L", "SS", "IE00B6YX5L24"),
+                "fetch_ssga_distributions",
+                ("IE00B6YX5L24",),
+            ),
+            (
+                ("KNSL", "Q4", "ir.kinsalecapitalgroup.com/XNYS"),
+                "fetch_q4_distributions",
+                ("ir.kinsalecapitalgroup.com/XNYS", "KNSL"),
+            ),
+            (("0639.HK", "ET", "639"), "fetch_etnet_distributions", ("639",)),
+        ]
+        for line, name, args in cases:
+            with self.subTest(source=line[1]):
+                source = scrape_fund_price.DividendSource(*line)
+                with patch.object(
+                    scrape_fund_price, name, return_value="table"
+                ) as fetch:
+                    result = scrape_fund_price.fetch_issuer_table(source)
+                self.assertEqual(result, "table")
+                fetch.assert_called_once_with(*args)
+
+    def test_an_unknown_code_is_an_error(self):
+        """Test a code with no fetch fails loudly rather than as iShares."""
+        source = scrape_fund_price.DividendSource("X", "ZZ", "1")
+        with self.assertRaisesRegex(ValueError, "ZZ"):
+            scrape_fund_price.fetch_issuer_table(source)
+
+
+class TestPayDateSourcesInTheRun(IssuerRunCase):
+    """Test the new sources through the daily run and the rebuild (SPEC-012, #89)."""
+
+    QQQ = scrape_fund_price.DividendSource("QQQ", "IV", "46090E103")
+    KNSL = scrape_fund_price.DividendSource(
+        "KNSL", "Q4", "ir.kinsalecapitalgroup.com/XNYS"
+    )
+
+    @staticmethod
+    def table(source, *rows, currency="USD"):
+        return scrape_fund_price.IssuerTable(
+            currency,
+            tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
+            source,
+        )
+
+    def test_the_table_carries_its_source_and_defaults_to_iShares(self):
+        """Test IssuerTable keeps SPEC-011's two-field construction working."""
+        self.assertEqual(scrape_fund_price.IssuerTable("GBP", ()).source, "IS")
+
+    def test_a_yahoo_row_gains_the_pay_date_and_the_source_of_the_table(self):
+        """Test the point of the issue, end to end for QQQ."""
+        past = ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143")
+        results = self._issuer_run(
+            [FundSpec("YA", "QQQ")],
+            [self.QQQ],
+            {"46090E103": self.table("IV", past)},
+            {"QQQ": [self.EVENT("2026-09-21", "0.75143", "USD")]},
+        )
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["QQQ", "2026-09-21", "2026-10-08", "0.75143", "USD", "IV"]],
+        )
+
+    def test_a_future_row_is_declared(self):
+        """Test FR7 holds for a new source: a future ex-date is announced."""
+        future = ("2026-11-27", "2026-11-27", "2026-12-15", "0.25")
+        self._issuer_run(
+            [FundSpec("YA", "KNSL")],
+            [self.KNSL],
+            {"ir.kinsalecapitalgroup.com/XNYS": self.table("Q4", future)},
+            {"KNSL": [self.EVENT("2026-08-28", "0.25", "USD")]},
+        )
+        [row] = self._read("dividends_upcoming.csv")
+        self.assertEqual(
+            row[:6], ["KNSL", "2026-11-27", "2026-12-15", "0.25", "USD", "declared"]
+        )
+
+    def test_a_pound_table_puts_pence_amounts_in_the_yahoo_currency(self):
+        """Test GLTL.L: SSGA states pounds, Yahoo's row is in pence."""
+        past = ("2026-08-03", "2026-08-04", "2026-08-17", "0.8811")
+        source = scrape_fund_price.DividendSource("GLTL.L", "SS", "IE00B6YX5L24")
+        self._issuer_run(
+            [FundSpec("YA", "GLTL.L")],
+            [source],
+            {"IE00B6YX5L24": self.table("SS", past, currency="GBP")},
+            {"GLTL.L": [self.EVENT("2026-08-03", "88.11", "GBp")]},
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["GLTL.L", "2026-08-03", "2026-08-17", "88.11", "GBp", "SS"]],
+        )
+
+    def test_yahoo_does_not_blank_the_pay_date_the_next_day(self):
+        """Test the new sources outrank Yahoo, as IS does."""
+        stored = {
+            ("QQQ", "2026-09-21"): [
+                "QQQ",
+                "2026-09-21",
+                "2026-10-08",
+                "0.75143",
+                "USD",
+                "IV",
+            ]
+        }
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["QQQ", "2026-09-21", "", "0.75143", "USD", "YA"]]
+        )
+        self.assertEqual(stored[("QQQ", "2026-09-21")][2], "2026-10-08")
+
+    def test_one_source_failing_leaves_the_others_and_the_yahoo_row(self):
+        """Test a changed response logs and keeps the instrument's rows."""
+        past = ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143")
+        results = self._issuer_run(
+            [FundSpec("YA", "QQQ"), FundSpec("YA", "KNSL")],
+            [self.QQQ, self.KNSL],
+            {
+                "46090E103": self.table("IV", past),
+                "ir.kinsalecapitalgroup.com/XNYS": ValueError("Q4: changed"),
+            },
+            {
+                "QQQ": [self.EVENT("2026-09-21", "0.75143", "USD")],
+                "KNSL": [self.EVENT("2026-08-28", "0.25", "USD")],
+            },
+        )
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("KNSL: pay dates: Q4: changed", results.failures[0])
+        by_fund = {r[0]: r for r in self._read("dividends_history.csv")}
+        self.assertEqual(by_fund["QQQ"][2], "2026-10-08")
+        self.assertEqual(by_fund["KNSL"][2:], ["", "0.25", "USD", "YA"])
+
+    def test_collecting_starts_each_run_with_empty_caches(self):
+        """Test the SSGA workbook is downloaded once per run, not once per process."""
+        with patch.object(scrape_fund_price, "clear_issuer_caches") as clear:
+            with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
+                fetch.return_value = scrape_fund_price.IssuerTable("USD", ())
+                with patch.object(scrape_fund_price.time, "sleep"):
+                    scrape_fund_price.collect_issuer_tables(
+                        [self.QQQ], [FundSpec("YA", "QQQ")]
+                    )
+        clear.assert_called_once_with()
+
+    def test_the_rebuild_replaces_rows_of_the_new_sources(self):
+        """Test --backfill-dividends owns IV rows like IS rows."""
+        history = {
+            ("QQQ", "2026-06-22"): [
+                "QQQ",
+                "2026-06-22",
+                "2026-07-10",
+                "0.81349",
+                "USD",
+                "IV",
+            ],
+            ("QQQ", "2026-09-21"): [
+                "QQQ",
+                "2026-09-21",
+                "",
+                "0.75143",
+                "USD",
+                "YA",
+            ],
+        }
+        table = self.table("IV", ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143"))
+        scrape_fund_price.apply_issuer_table(
+            history, "QQQ", table, "USD", date(2026, 10, 26)
+        )
+        self.assertEqual(history[("QQQ", "2026-09-21")][5], "IV")
+        self.assertEqual(history[("QQQ", "2026-09-21")][2], "2026-10-08")
 
 
 if __name__ == "__main__":
