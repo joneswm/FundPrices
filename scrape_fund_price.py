@@ -293,6 +293,173 @@ def read_closed_holdings(filename=None):
     return holdings
 
 
+DISTRIBUTIONS_FILE = "distributions.txt"
+# Payments a year for each frequency a distributions.txt line may name.
+DISTRIBUTION_FREQUENCIES = {"monthly": 12, "quarterly": 4, "semiannual": 2, "annual": 1}
+MAX_PAY_OFFSET_DAYS = 365
+
+
+class Distribution(NamedTuple):
+    """One instrument's hand-kept distribution schedule (SPEC-010).
+
+    For instruments no source covers, such as the FT-sourced OEICs, whose
+    ex-dividend and payment dates are fixed by the fund. `xd_dates` are
+    (month, day) pairs in calendar order and `amounts` holds one entry per
+    date, in the same order, "" where the amount is not known.
+    """
+
+    identifier: str
+    frequency: str
+    xd_dates: tuple
+    pay_offset_days: int
+    amounts: tuple
+    as_of: str  # "" when the amounts carry no date
+
+
+def parse_xd_date(text):
+    """Return (month, day) for an `MM-DD` text, or None when it is not one.
+
+    Validated against a leap year so 02-29 is accepted; a common year clamps
+    it to 28 February when the date is turned into a real one.
+    """
+    if not re.match(r"^\d{2}-\d{2}$", text):
+        return None
+    month, day = int(text[:2]), int(text[3:])
+    try:
+        datetime.date(2000, month, day)
+    except ValueError:
+        return None
+    return month, day
+
+
+def read_distributions(filename=None, known_identifiers=None):
+    """Read hand-kept distribution schedules.
+
+    Each line is
+    `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`
+    with `#` comments and blank lines ignored; see specs/010-dividends/spec.md
+    for the field rules. A missing file means no entries, so the file is
+    optional like fx_pairs.txt.
+
+    Args:
+        filename: Path to read (default: DISTRIBUTIONS_FILE)
+        known_identifiers: Identifiers a line may name (funds.txt and
+            closed_holdings.txt); None skips that check
+
+    Raises:
+        ValueError: naming the offending line, before any network call.
+    """
+    if filename is None:
+        filename = DISTRIBUTIONS_FILE
+
+    if not os.path.isfile(filename):
+        return []
+
+    distributions = []
+    seen = {}
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            def fail(message):
+                raise ValueError(f"distributions file line {number}: {message}")
+
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) not in (4, 5, 6) or not fields[0]:
+                fail(
+                    "expected '<identifier>,<frequency>,<xd-dates>,"
+                    f"<pay-offset-days>[,<last-amounts>[,<as-of>]]', got {line!r}"
+                )
+
+            identifier, frequency = fields[0], fields[1].lower()
+            if frequency not in DISTRIBUTION_FREQUENCIES:
+                fail(
+                    f"frequency {fields[1]!r} is not one of "
+                    f"{', '.join(DISTRIBUTION_FREQUENCIES)}"
+                )
+
+            xd_dates = []
+            for text in fields[2].split(";"):
+                parsed = parse_xd_date(text.strip())
+                if parsed is None:
+                    fail(f"ex-date {text.strip()!r} is not a valid MM-DD date")
+                if parsed in xd_dates:
+                    fail(f"ex-date {text.strip()!r} repeats")
+                xd_dates.append(parsed)
+            expected = DISTRIBUTION_FREQUENCIES[frequency]
+            if len(xd_dates) != expected:
+                fail(
+                    f"{frequency} needs {expected} ex-date(s) but "
+                    f"{len(xd_dates)} ex-dates were given"
+                )
+
+            offset_text = fields[3]
+            if (
+                not re.match(r"^[0-9]{1,4}$", offset_text)
+                or int(offset_text) > MAX_PAY_OFFSET_DAYS
+            ):
+                fail(
+                    f"pay offset {offset_text!r} must be a whole number of days "
+                    f"from 0 to {MAX_PAY_OFFSET_DAYS}"
+                )
+
+            amounts = [""] * len(xd_dates)
+            if len(fields) > 4:
+                if not fields[4]:
+                    fail(
+                        "amounts field is empty; remove the trailing comma if "
+                        "no amounts are known"
+                    )
+                texts = [text.strip() for text in fields[4].split(";")]
+                if len(texts) != len(xd_dates):
+                    fail(f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)")
+                for text in texts:
+                    if not text:
+                        continue
+                    try:
+                        value = decimal.Decimal(text)
+                    except decimal.InvalidOperation:
+                        value = None
+                    if value is None or not value.is_finite() or value <= 0:
+                        fail(f"amount {text!r} is not a positive decimal")
+                amounts = texts
+
+            as_of = ""
+            if len(fields) > 5:
+                as_of = fields[5]
+                try:
+                    datetime.date.fromisoformat(as_of)
+                except ValueError:
+                    fail(f"as-of date {as_of!r} is not a valid YYYY-MM-DD date")
+
+            if known_identifiers is not None and identifier not in known_identifiers:
+                fail(
+                    f"identifier {identifier!r} is in neither funds.txt nor "
+                    f"closed_holdings.txt"
+                )
+            if identifier in seen:
+                fail(
+                    f"identifier {identifier!r} already used on line {seen[identifier]}"
+                )
+            seen[identifier] = number
+
+            order = sorted(range(len(xd_dates)), key=lambda i: xd_dates[i])
+            distributions.append(
+                Distribution(
+                    identifier,
+                    frequency,
+                    tuple(xd_dates[i] for i in order),
+                    int(offset_text),
+                    tuple(amounts[i] for i in order),
+                    as_of,
+                )
+            )
+
+    return distributions
+
+
 def as_fund_spec(entry):
     """Accept a FundSpec or a plain (source, identifier) pair.
 
