@@ -4541,6 +4541,17 @@ class TestYahooDividendEvents(unittest.TestCase):
         self.assertEqual([e.amount for e in events], ["3", "0.00001", "0.1234567"])
 
     @patch("scrape_fund_price.yf.Ticker")
+    def test_float32_noise_is_removed_like_it_is_for_prices(self, mock_ticker):
+        """Test 12.349999, what Yahoo serves for FLOS.L's 12.35p, is stored as 12.35."""
+        self._ticker(
+            mock_ticker,
+            [("2025-11-13", 12.349999), ("2026-05-21", 9.91), ("2026-06-01", 2.4146)],
+            currency="GBp",
+        )
+        events = scrape_fund_price.fetch_yahoo_dividends("FLOS.L", "2025-01-01")
+        self.assertEqual([e.amount for e in events], ["12.35", "9.91", "2.4146"])
+
+    @patch("scrape_fund_price.yf.Ticker")
     def test_requests_actions_unadjusted_for_the_window(self, mock_ticker):
         """Test the same call as the bars, with the corporate actions on."""
         inst = self._ticker(mock_ticker, [("2026-09-18", 0.5)])
