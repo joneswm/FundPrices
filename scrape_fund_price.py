@@ -332,6 +332,11 @@ def parse_xd_date(text):
     return month, day
 
 
+def distribution_error(number, message):
+    """Build the ValueError for a bad distributions.txt line."""
+    return ValueError(f"distributions file line {number}: {message}")
+
+
 def read_distributions(filename=None, known_identifiers=None):
     """Read hand-kept distribution schedules.
 
@@ -363,36 +368,40 @@ def read_distributions(filename=None, known_identifiers=None):
             if not line:
                 continue
 
-            def fail(message):
-                raise ValueError(f"distributions file line {number}: {message}")
-
             fields = [field.strip() for field in line.split(",")]
             if len(fields) not in (4, 5, 6) or not fields[0]:
-                fail(
+                raise distribution_error(
+                    number,
                     "expected '<identifier>,<frequency>,<xd-dates>,"
-                    f"<pay-offset-days>[,<last-amounts>[,<as-of>]]', got {line!r}"
+                    f"<pay-offset-days>[,<last-amounts>[,<as-of>]]', got {line!r}",
                 )
 
             identifier, frequency = fields[0], fields[1].lower()
             if frequency not in DISTRIBUTION_FREQUENCIES:
-                fail(
+                raise distribution_error(
+                    number,
                     f"frequency {fields[1]!r} is not one of "
-                    f"{', '.join(DISTRIBUTION_FREQUENCIES)}"
+                    f"{', '.join(DISTRIBUTION_FREQUENCIES)}",
                 )
 
             xd_dates = []
             for text in fields[2].split(";"):
                 parsed = parse_xd_date(text.strip())
                 if parsed is None:
-                    fail(f"ex-date {text.strip()!r} is not a valid MM-DD date")
+                    raise distribution_error(
+                        number, f"ex-date {text.strip()!r} is not a valid MM-DD date"
+                    )
                 if parsed in xd_dates:
-                    fail(f"ex-date {text.strip()!r} repeats")
+                    raise distribution_error(
+                        number, f"ex-date {text.strip()!r} repeats"
+                    )
                 xd_dates.append(parsed)
             expected = DISTRIBUTION_FREQUENCIES[frequency]
             if len(xd_dates) != expected:
-                fail(
+                raise distribution_error(
+                    number,
                     f"{frequency} needs {expected} ex-date(s) but "
-                    f"{len(xd_dates)} ex-dates were given"
+                    f"{len(xd_dates)} ex-dates were given",
                 )
 
             offset_text = fields[3]
@@ -400,21 +409,26 @@ def read_distributions(filename=None, known_identifiers=None):
                 not re.match(r"^[0-9]{1,4}$", offset_text)
                 or int(offset_text) > MAX_PAY_OFFSET_DAYS
             ):
-                fail(
+                raise distribution_error(
+                    number,
                     f"pay offset {offset_text!r} must be a whole number of days "
-                    f"from 0 to {MAX_PAY_OFFSET_DAYS}"
+                    f"from 0 to {MAX_PAY_OFFSET_DAYS}",
                 )
 
             amounts = [""] * len(xd_dates)
             if len(fields) > 4:
                 if not fields[4]:
-                    fail(
+                    raise distribution_error(
+                        number,
                         "amounts field is empty; remove the trailing comma if "
-                        "no amounts are known"
+                        "no amounts are known",
                     )
                 texts = [text.strip() for text in fields[4].split(";")]
                 if len(texts) != len(xd_dates):
-                    fail(f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)")
+                    raise distribution_error(
+                        number,
+                        f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)",
+                    )
                 for text in texts:
                     if not text:
                         continue
@@ -423,7 +437,9 @@ def read_distributions(filename=None, known_identifiers=None):
                     except decimal.InvalidOperation:
                         value = None
                     if value is None or not value.is_finite() or value <= 0:
-                        fail(f"amount {text!r} is not a positive decimal")
+                        raise distribution_error(
+                            number, f"amount {text!r} is not a positive decimal"
+                        )
                 amounts = texts
 
             as_of = ""
@@ -432,16 +448,21 @@ def read_distributions(filename=None, known_identifiers=None):
                 try:
                     datetime.date.fromisoformat(as_of)
                 except ValueError:
-                    fail(f"as-of date {as_of!r} is not a valid YYYY-MM-DD date")
+                    raise distribution_error(
+                        number, f"as-of date {as_of!r} is not a valid YYYY-MM-DD date"
+                    )
 
             if known_identifiers is not None and identifier not in known_identifiers:
-                fail(
+                raise distribution_error(
+                    number,
                     f"identifier {identifier!r} is in neither funds.txt nor "
-                    f"closed_holdings.txt"
+                    f"closed_holdings.txt",
                 )
             if identifier in seen:
-                fail(
-                    f"identifier {identifier!r} already used on line {seen[identifier]}"
+                raise distribution_error(
+                    number,
+                    f"identifier {identifier!r} already used on line "
+                    f"{seen[identifier]}",
                 )
             seen[identifier] = number
 
