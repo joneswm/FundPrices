@@ -5,6 +5,7 @@ import shutil
 from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 import csv
+import decimal
 import html
 import json
 import datetime
@@ -6865,6 +6866,345 @@ class TestIsharesPageFetch(unittest.TestCase):
         ) as fetch:
             self.assertEqual(scrape_fund_price.fetch_issuer_table(source), "table")
         fetch.assert_called_once_with("251804")
+
+
+def issuer_table(*rows, currency="GBP"):
+    """Build an IssuerTable from (ex, record, pay, amount) rows, oldest first."""
+    return scrape_fund_price.IssuerTable(
+        currency,
+        tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
+    )
+
+
+class TestIssuerAmounts(unittest.TestCase):
+    """Test the issuer's amount in the stored row's currency (SPEC-011, #87)."""
+
+    def convert(self, text, class_currency, target):
+        return scrape_fund_price.issuer_amount(text, class_currency, target)
+
+    def test_an_equal_currency_is_unchanged(self):
+        """Test GBP for a GBP row."""
+        amount = self.convert("2.4146", "GBP", "GBP")
+        self.assertEqual((amount.text, amount.currency), ("2.4146", "GBP"))
+
+    def test_pounds_become_pence_for_a_pence_row(self):
+        """Test the factor of 100 and the rounding it brings."""
+        amount = self.convert("0.0991", "GBP", "GBp")
+        self.assertEqual((amount.text, amount.currency), ("9.91", "GBp"))
+        self.assertEqual(amount.tolerance, decimal.Decimal("0.005"))
+        self.assertEqual(self.convert("0.1", "GBP", "GBp").text, "10")
+
+    def test_a_page_that_names_no_currency_is_taken_in_the_row_currency(self):
+        """Test the shipped pages without a share-class entry."""
+        self.assertEqual(self.convert("1.5", "", "USD").currency, "USD")
+        self.assertEqual(self.convert("0.015", "", "GBp").text, "1.5")
+
+    def test_no_target_currency_takes_the_issuers(self):
+        """Test an instrument with no stored currency."""
+        amount = self.convert("1.5", "USD", "")
+        self.assertEqual((amount.text, amount.currency), ("1.5", "USD"))
+
+    def test_different_currencies_cannot_be_compared(self):
+        """Test USD against GBP is no amount."""
+        self.assertIsNone(self.convert("1.5", "USD", "GBP"))
+        self.assertIsNone(self.convert("1.5", "USD", "GBp"))
+
+    def test_zero_is_no_amount(self):
+        """Test the 0.0 rows the issuer lists for a fund's first, empty period."""
+        self.assertIsNone(self.convert("0.0", "GBP", "GBP"))
+
+    def test_the_tolerance_is_half_the_last_decimal_place(self):
+        """Test agreement means equal within the issuer's rounding."""
+        amount = self.convert("0.0128", "GBP", "GBp")
+        self.assertTrue(scrape_fund_price.amounts_agree("1.2841", amount))
+        self.assertTrue(scrape_fund_price.amounts_agree("1.28", amount))
+        self.assertFalse(scrape_fund_price.amounts_agree("1.29", amount))
+        self.assertFalse(scrape_fund_price.amounts_agree("x", amount))
+
+
+class TestApplyIssuerTable(unittest.TestCase):
+    """Test merging an issuer's table into the history (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
+        return scrape_fund_price.apply_issuer_table(
+            history, identifier, table, currency, self.TODAY, start
+        )
+
+    @staticmethod
+    def keyed(*rows):
+        return {(row[0], row[1]): list(row) for row in rows}
+
+    def test_a_yahoo_row_gains_its_pay_date(self):
+        """Test the point of the spec."""
+        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        written = self.apply(
+            history, issuer_table(("2026-07-16", "2026-07-17", "2026-07-29", "2.4146"))
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(
+            history[("IGLS.L", "2026-07-16")],
+            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+        )
+
+    def test_yahoos_amount_is_kept_when_they_agree(self):
+        """Test the more precise figure stays."""
+        history = self.keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
+        self.apply(
+            history,
+            issuer_table(("2017-07-13", "", "2017-07-27", "0.0128")),
+            identifier="IWDG.L",
+        )
+        self.assertEqual(
+            history[("IWDG.L", "2017-07-13")],
+            ["IWDG.L", "2017-07-13", "2017-07-27", "1.2841", "GBp", "IS"],
+        )
+
+    def test_the_issuers_amount_wins_when_they_differ(self):
+        """Test IWDG.L 2020-01-16: Yahoo 1.77p, the issuer 1.75p."""
+        history = self.keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
+        self.apply(
+            history,
+            issuer_table(("2020-01-16", "", "2020-01-30", "0.0175")),
+            identifier="IWDG.L",
+        )
+        self.assertEqual(history[("IWDG.L", "2020-01-16")][3], "1.75")
+        self.assertEqual(history[("IWDG.L", "2020-01-16")][4], "GBp")
+
+    def test_an_amount_in_another_currency_is_left_alone(self):
+        """Test the dates are taken and the figure that cannot be compared stays."""
+        history = self.keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
+        self.apply(
+            history,
+            issuer_table(("2026-07-16", "", "2026-07-29", "1.9")),
+            identifier="X",
+        )
+        self.assertEqual(
+            history[("X", "2026-07-16")],
+            ["X", "2026-07-16", "2026-07-29", "2.4", "USD", "IS"],
+        )
+
+    def test_a_zero_issuer_amount_leaves_the_stored_amount(self):
+        """Test IDTG.L 2019-12-12: Yahoo 0.0037, the issuer 0.0."""
+        history = self.keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
+        self.apply(
+            history,
+            issuer_table(("2019-12-12", "", "2019-12-30", "0.0")),
+            identifier="IDTG.L",
+        )
+        self.assertEqual(history[("IDTG.L", "2019-12-12")][3], "0.0037")
+
+    def test_a_blank_pay_date_keeps_the_stored_one(self):
+        """Test the issuer cannot take a date away."""
+        history = self.keyed(
+            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4146", "GBP", "YA"]
+        )
+        self.apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
+        self.assertEqual(history[("IGLS.L", "2026-07-16")][2], "2026-07-30")
+
+    def test_a_row_yahoo_lacks_is_inserted_in_the_price_currency(self):
+        """Test the gaps in Yahoo's history (INXG.L lacks 18)."""
+        history = {}
+        self.apply(
+            history,
+            issuer_table(("2026-05-21", "2026-05-22", "2026-05-29", "0.0991")),
+            currency="GBp",
+            identifier="FLOS.L",
+        )
+        self.assertEqual(
+            history[("FLOS.L", "2026-05-21")],
+            ["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"],
+        )
+
+    def test_an_inserted_row_without_a_price_currency_takes_the_issuers(self):
+        """Test an instrument with no stored price."""
+        history = {}
+        self.apply(
+            history,
+            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
+            currency="",
+        )
+        self.assertEqual(history[("IGLS.L", "2026-05-21")][3:5], ["0.5", "USD"])
+
+    def test_nothing_is_inserted_without_a_usable_amount(self):
+        """Test a zero, or an amount that cannot be put in the currency."""
+        history = {}
+        self.apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
+        self.apply(
+            history,
+            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
+        )
+        self.assertEqual(history, {})
+
+    def test_a_blank_stored_currency_is_filled(self):
+        """Test Yahoo gave none."""
+        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
+        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertEqual(history[("IGLS.L", "2026-07-16")][4], "GBP")
+
+    def test_a_date_a_day_out_is_one_dividend(self):
+        """Test FLOS.L and IUAG.L 2021: Yahoo 11-12, the issuer 11-11."""
+        history = self.keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
+        written = self.apply(
+            history,
+            issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
+            identifier="FLOS.L",
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(
+            history,
+            self.keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
+        )
+
+    def test_a_twin_is_removed_beside_an_exact_match(self):
+        """Test the YA twin Yahoo's window would re-insert every day."""
+        history = self.keyed(
+            ["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"],
+            ["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"],
+        )
+        self.apply(
+            history,
+            issuer_table(("2021-11-11", "", "2021-11-25", "0.071")),
+            identifier="FLOS.L",
+        )
+        self.assertEqual(list(history), [("FLOS.L", "2021-11-11")])
+
+    def test_a_near_row_with_another_amount_is_a_different_dividend(self):
+        """Test a special dividend two days away stays."""
+        history = self.keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
+        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("IGLS.L", "2026-07-18"), history)
+        self.assertIn(("IGLS.L", "2026-07-16"), history)
+
+    def test_a_near_row_that_is_itself_an_issuer_date_stays(self):
+        """Test a monthly payer's neighbours are not twins."""
+        history = self.keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
+        self.apply(
+            history,
+            issuer_table(
+                ("2026-06-02", "", "2026-06-20", "1.0"),
+                ("2026-06-04", "", "2026-06-22", "1.0"),
+            ),
+            identifier="X",
+        )
+        self.assertEqual(sorted(ex for _, ex in history), ["2026-06-02", "2026-06-04"])
+
+    def test_another_funds_and_other_sources_rows_are_not_twins(self):
+        """Test only this fund's Yahoo rows are candidates."""
+        history = self.keyed(
+            ["OTHER", "2026-07-17", "", "2.4146", "GBP", "YA"],
+            ["IGLS.L", "2026-07-17", "2026-07-30", "2.4146", "GBP", "config"],
+        )
+        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("OTHER", "2026-07-17"), history)
+        self.assertIn(("IGLS.L", "2026-07-17"), history)
+
+    def test_a_config_row_on_the_same_date_gives_way(self):
+        """Test the issuer beats the owner's schedule."""
+        history = self.keyed(
+            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4", "GBP", "config"]
+        )
+        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertEqual(
+            history[("IGLS.L", "2026-07-16")],
+            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+        )
+
+    def test_future_rows_are_not_history(self):
+        """Test a declared dividend belongs to the upcoming file."""
+        history = {}
+        written = self.apply(
+            history, issuer_table(("2026-10-27", "", "2026-11-10", "2.4146"))
+        )
+        self.assertEqual((written, history), (0, {}))
+
+    def test_today_is_history(self):
+        """Test the boundary matches Yahoo's."""
+        history = {}
+        self.apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
+        self.assertIn(("IGLS.L", "2026-10-26"), history)
+
+    def test_rows_before_the_start_date_are_not_touched(self):
+        """Test a rebuild from a date."""
+        history = {}
+        self.apply(
+            history,
+            issuer_table(
+                ("2025-07-17", "", "2025-07-30", "2.4917"),
+                ("2026-01-15", "", "2026-01-28", "2.5662"),
+            ),
+            start="2026-01-01",
+        )
+        self.assertEqual(list(history), [("IGLS.L", "2026-01-15")])
+
+    def test_a_second_apply_changes_nothing(self):
+        """Test idempotence."""
+        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        self.apply(history, table)
+        before = {key: list(row) for key, row in history.items()}
+        self.assertEqual(self.apply(history, table), 0)
+        self.assertEqual(history, before)
+
+    def test_a_damaged_history_row_is_skipped_not_fatal(self):
+        """Test an unreadable ex-date among the neighbours."""
+        history = self.keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
+        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("IGLS.L", "soon"), history)
+        self.assertIn(("IGLS.L", "2026-07-16"), history)
+
+    def test_the_recorded_igls_page_agrees_with_yahoos_rows(self):
+        """Test the real table over the rows the committed history holds."""
+        history = self.keyed(
+            ["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"],
+            ["IGLS.L", "2026-01-15", "", "2.5662", "GBP", "YA"],
+        )
+        table = scrape_fund_price.parse_ishares_distributions(
+            fixture_text("ishares_251804_igls.html"), "251804"
+        )
+        self.apply(history, table)
+        self.assertEqual(len(history), 36)
+        self.assertEqual(
+            history[("IGLS.L", "2026-01-15")],
+            ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
+        )
+        self.assertEqual({row[5] for row in history.values()}, {"IS"})
+
+
+class TestSourceAuthority(unittest.TestCase):
+    """Test IS beats YA beats config in the history merge (SPEC-011, #87)."""
+
+    def test_yahoo_does_not_replace_an_issuer_row(self):
+        """Test the daily upsert cannot blank a pay date."""
+        stored = {
+            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
+        }
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "", "9", "GBP", "YA"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-29", "2"])
+
+    def test_config_does_not_replace_an_issuer_row(self):
+        """Test the owner's schedule is below the issuer."""
+        stored = {
+            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
+        }
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "", "9", "GBP", "config"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][5], "IS")
+
+    def test_an_issuer_row_replaces_yahoo_and_itself(self):
+        """Test the order the other way, and a correction."""
+        stored = {("Q", "2026-07-16"): ["Q", "2026-07-16", "", "9", "GBP", "YA"]}
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]]
+        )
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "2026-07-30", "3", "GBP", "IS"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-30", "3"])
 
 
 if __name__ == "__main__":
