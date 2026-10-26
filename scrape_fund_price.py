@@ -2399,6 +2399,138 @@ def import_closed_holdings(holdings, data_dir=None):
     return report
 
 
+DIVIDENDS_HISTORY_FILE = "dividends_history.csv"
+DIVIDENDS_UPCOMING_FILE = "dividends_upcoming.csv"
+DIVIDEND_HISTORY_HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+DIVIDEND_UPCOMING_HEADER = [
+    "Fund",
+    "ExDate",
+    "PayDate",
+    "Amount",
+    "Currency",
+    "Status",
+    "AsOf",
+]
+# The daily run re-reads this many days of Yahoo's dividend events; the whole
+# history is read only when there is no dividends_history.csv yet.
+DIVIDEND_WINDOW_DAYS = 400
+
+
+class DividendResults(list):
+    """The day's dividend fetch: history rows plus what else Yahoo said.
+
+    Rows are [identifier, ex_date, pay_date, amount, currency, source].
+    `declared` maps a lookup identifier to its announced next dividend and
+    `fetched` holds the lookup identifiers whose events were read, so a
+    failed instrument can be told from one that simply pays nothing.
+    """
+
+    def __init__(self, rows=None, failures=None, declared=None, fetched=None):
+        super().__init__(rows or [])
+        self.failures = failures or []
+        self.declared = declared or {}
+        self.fetched = fetched or set()
+
+
+def read_dividend_history(data_dir):
+    """Read dividends_history.csv keyed on (Fund, ExDate).
+
+    A missing file is an empty history, and a row without a fund or an
+    ex-date cannot be keyed, so it is skipped rather than stopping the run.
+    """
+    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
+    if not os.path.isfile(path):
+        return {}
+
+    rows = {}
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * len(DIVIDEND_HISTORY_HEADER))[
+                : len(DIVIDEND_HISTORY_HEADER)
+            ]
+            if row[0] and row[1]:
+                rows[(row[0], row[1])] = row
+    return rows
+
+
+def write_dividend_history(rows, data_dir):
+    """Write dividends_history.csv sorted by ex-date then fund."""
+    os.makedirs(data_dir, exist_ok=True)
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(DIVIDEND_HISTORY_HEADER)
+        writer.writerows(ordered)
+
+
+def merge_dividend_rows(stored, incoming):
+    """Upsert incoming history rows into `stored`, keyed on (Fund, ExDate).
+
+    An incoming row replaces the stored one, so a corrected amount applies and
+    a rerun cannot duplicate. The one exception: a `config` row, which is the
+    owner's assertion from distributions.txt, never replaces a row a source
+    supplied, because the source is authoritative once it knows the dividend.
+    """
+    for row in incoming:
+        current = stored.get((row[0], row[1]))
+        if current is not None and current[5] != "config" and row[5] == "config":
+            continue
+        stored[(row[0], row[1])] = list(row)
+
+
+def collect_dividends(specs, today, start=None):
+    """Fetch Yahoo's dividend events and declared dividends for each YA fund.
+
+    One fetch per instrument, published under every alias. Only YA has a
+    dividend route; the other sources are covered by distributions.txt.
+    Failures are isolated per instrument, as for prices. A calendar lookup
+    that fails is only a warning: Yahoo has no calendar for most funds, and
+    failing the run every day for an optional fact would hide real failures.
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        today: The run date; events dated after it are ignored
+        start: Inclusive ISO start of the events window, None for all of them
+    """
+    results = DividendResults()
+
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if spec.source != "YA":
+            continue
+
+        events, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            results.failures.append(f"{spec.lookup_id}: dividends: {error}")
+            continue
+        results.fetched.add(spec.lookup_id)
+
+        for event in events:
+            if event.ex_date > today.isoformat():
+                continue
+            for identifier in spec.publish_ids:
+                results.append(
+                    [identifier, event.ex_date, "", event.amount, event.currency, "YA"]
+                )
+
+        declared, error = fetch_with_retries(
+            lambda: fetch_yahoo_declared(spec.lookup_id, today)
+        )
+        if error:
+            print(
+                f"Warning: {spec.lookup_id}: declared dividend lookup failed: {error}"
+            )
+        elif declared is not None:
+            results.declared[spec.lookup_id] = declared
+
+    return results
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
