@@ -4925,5 +4925,296 @@ class TestDividendCollection(unittest.TestCase):
         self.assertEqual(results.declared, {})
 
 
+class TestAddMonths(unittest.TestCase):
+    """Test calendar-month arithmetic for projecting ex-dates (SPEC-010, #85)."""
+
+    def test_adds_whole_months(self):
+        """Test the plain case and a year wrap."""
+        add = scrape_fund_price.add_months
+        self.assertEqual(add(date(2026, 9, 18), 3), date(2026, 12, 18))
+        self.assertEqual(add(date(2026, 11, 30), 3), date(2027, 2, 28))
+        self.assertEqual(add(date(2026, 12, 15), 12), date(2027, 12, 15))
+
+    def test_clamps_to_the_end_of_a_shorter_month(self):
+        """Test 31 January plus one month is the last day of February."""
+        add = scrape_fund_price.add_months
+        self.assertEqual(add(date(2026, 1, 31), 1), date(2026, 2, 28))
+        self.assertEqual(add(date(2028, 1, 31), 1), date(2028, 2, 29))
+        self.assertEqual(add(date(2028, 2, 29), 12), date(2029, 2, 28))
+
+
+class TestDividendFrequency(unittest.TestCase):
+    """Test reading the payment frequency from ex-date spacing (SPEC-010, #85)."""
+
+    def _period(self, *days):
+        return scrape_fund_price.detect_period_months(
+            [date.fromisoformat(day) for day in days]
+        )
+
+    def test_monthly(self):
+        """Test gaps of about a month."""
+        self.assertEqual(self._period("2026-07-10", "2026-08-11", "2026-09-10"), 1)
+
+    def test_quarterly(self):
+        """Test gaps of about three months."""
+        self.assertEqual(
+            self._period("2025-12-18", "2026-03-19", "2026-06-18", "2026-09-17"), 3
+        )
+
+    def test_semi_annual(self):
+        """Test gaps of about six months."""
+        self.assertEqual(self._period("2026-03-05", "2026-09-03"), 6)
+
+    def test_annual(self):
+        """Test gaps of about a year."""
+        self.assertEqual(self._period("2025-06-12", "2026-06-11"), 12)
+
+    def test_a_single_ex_date_is_read_as_annual(self):
+        """Test one date in the window cannot show a spacing."""
+        self.assertEqual(self._period("2026-06-11"), 12)
+
+    def test_a_special_dividend_does_not_change_the_frequency(self):
+        """Test the median gap, not the shortest, decides."""
+        self.assertEqual(
+            self._period(
+                "2025-12-18", "2026-03-19", "2026-03-29", "2026-06-18", "2026-09-17"
+            ),
+            3,
+        )
+
+    def test_the_band_edges(self):
+        """Test the thresholds: 45, 135 and 270 days."""
+        base = date(2026, 1, 1)
+
+        def period(gap):
+            return scrape_fund_price.detect_period_months(
+                [base, base + timedelta(days=gap)]
+            )
+
+        self.assertEqual([period(45), period(46)], [1, 3])
+        self.assertEqual([period(135), period(136)], [3, 6])
+        self.assertEqual([period(270), period(271)], [6, 12])
+
+
+class TestEstimateNextDividend(unittest.TestCase):
+    """Test projecting the next dividend from the history (SPEC-010, #85)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _rows(self, *specs):
+        """History rows [fund, ex, pay, amount, currency, source] for one fund."""
+        return [
+            ["IGLS.L", ex, pay, amount, currency, "YA"]
+            for ex, pay, amount, currency in specs
+        ]
+
+    def _estimate(self, rows, today=None):
+        return scrape_fund_price.estimate_next_dividend(rows, today or self.TODAY)
+
+    def test_quarterly_payer_next_ex_date_is_the_last_plus_three_months(self):
+        """Test the rule: last ex-date plus the period, last amount paid."""
+        rows = self._rows(
+            ("2025-12-18", "", "0.30", "GBP"),
+            ("2026-03-19", "", "0.31", "GBP"),
+            ("2026-06-18", "", "0.32", "GBP"),
+            ("2026-09-17", "", "0.33", "GBP"),
+        )
+        self.assertEqual(
+            self._estimate(rows),
+            scrape_fund_price.EstimatedDividend("2026-12-17", "", "0.33", "GBP"),
+        )
+
+    def test_a_pence_amount_and_currency_are_carried_unchanged(self):
+        """Test GBp stays GBp."""
+        rows = self._rows(
+            ("2026-03-05", "", "24.5", "GBp"), ("2026-09-03", "", "25", "GBp")
+        )
+        estimate = self._estimate(rows)
+        self.assertEqual((estimate.amount, estimate.currency), ("25", "GBp"))
+        self.assertEqual(estimate.ex_date, "2027-03-03")
+
+    def test_input_order_does_not_matter(self):
+        """Test the newest row is found, not the last one given."""
+        rows = self._rows(
+            ("2026-09-03", "", "25", "GBp"), ("2026-03-05", "", "24.5", "GBp")
+        )
+        self.assertEqual(self._estimate(rows).amount, "25")
+
+    def test_a_missed_period_rolls_forward_to_the_next_future_date(self):
+        """Test a projected date already past is moved on by whole periods."""
+        rows = self._rows(
+            ("2026-02-20", "", "0.30", "GBP"),
+            ("2026-05-21", "", "0.31", "GBP"),
+            ("2026-08-20", "", "0.32", "GBP"),
+        )
+        self.assertEqual(self._estimate(rows, date(2026, 11, 30)).ex_date, "2027-02-20")
+
+    def test_the_projected_date_may_be_today(self):
+        """Test a dividend due today is still upcoming."""
+        rows = self._rows(
+            ("2026-01-26", "", "1", "USD"), ("2026-07-26", "", "1", "USD")
+        )
+        self.assertEqual(self._estimate(rows).ex_date, "2027-01-26")
+        self.assertEqual(self._estimate(rows, date(2027, 1, 26)).ex_date, "2027-01-26")
+
+    def test_the_pay_date_follows_the_last_offset_when_it_is_known(self):
+        """Test a source that gives pay dates carries their spacing forward."""
+        rows = self._rows(
+            ("2026-03-01", "2026-03-31", "0.08", "GBP"),
+            ("2026-09-01", "2026-10-01", "0.08", "GBP"),
+        )
+        estimate = self._estimate(rows)
+        self.assertEqual(
+            (estimate.ex_date, estimate.pay_date), ("2027-03-01", "2027-03-31")
+        )
+
+    def test_the_period_comes_from_the_twelve_months_to_the_last_ex_date(self):
+        """Test old irregular payments do not set the frequency."""
+        rows = self._rows(
+            ("2024-01-10", "", "1", "USD"),
+            ("2024-02-01", "", "1", "USD"),
+            ("2026-03-05", "", "2", "USD"),
+            ("2026-09-03", "", "2", "USD"),
+        )
+        self.assertEqual(self._estimate(rows).ex_date, "2027-03-03")
+
+    def test_a_payer_that_missed_a_whole_period_has_stopped(self):
+        """Test no estimate once the last ex-date is a period and 45 days old."""
+        rows = self._rows(
+            ("2026-03-19", "", "1", "USD"), ("2026-06-18", "", "1", "USD")
+        )
+        # Quarterly: the guard is 3 * 31 + 45 = 138 days after 18 June.
+        self.assertIsNotNone(self._estimate(rows, date(2026, 11, 3)))
+        self.assertIsNone(self._estimate(rows, date(2026, 11, 4)))
+
+    def test_an_annual_payer_is_given_a_little_more_than_a_year(self):
+        """Test a payment two days late does not end the series."""
+        rows = self._rows(("2025-10-24", "", "1", "USD"))
+        self.assertEqual(self._estimate(rows).ex_date, "2027-10-24")
+
+    def test_an_unreadable_pay_date_is_left_empty(self):
+        """Test a damaged pay date cannot break the projection."""
+        rows = self._rows(
+            ("2026-03-01", "n/a", "1", "USD"), ("2026-09-01", "n/a", "1", "USD")
+        )
+        self.assertEqual(self._estimate(rows).pay_date, "")
+
+    def test_nothing_to_project_from_gives_none(self):
+        """Test no rows, and rows without a usable date."""
+        self.assertIsNone(self._estimate([]))
+        self.assertIsNone(self._estimate(self._rows(("soon", "", "1", "USD"))))
+
+    def test_rows_dated_after_today_are_not_history(self):
+        """Test a future row cannot be the last payment."""
+        rows = self._rows(
+            ("2026-09-03", "", "1", "USD"), ("2027-03-03", "", "9", "USD")
+        )
+        self.assertEqual(self._estimate(rows).amount, "1")
+
+
+class TestDistributionSchedules(unittest.TestCase):
+    """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _dist(self, text):
+        """Parse a single distributions.txt line."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "distributions.txt")
+            with open(path, "w") as f:
+                f.write(text + "\n")
+            [dist] = scrape_fund_price.read_distributions(path, None)
+        return dist
+
+    def test_the_estimate_is_the_next_occurrence_of_an_ex_date(self):
+        """Test next XD on or after today, paid the offset later, for its amount."""
+        dist = self._dist("X,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01")
+        self.assertEqual(
+            scrape_fund_price.distribution_estimate(dist, "GBP", self.TODAY),
+            scrape_fund_price.EstimatedDividend(
+                "2027-03-01", "2027-03-31", "0.0821", "GBP"
+            ),
+        )
+
+    def test_an_ex_date_today_is_the_estimate(self):
+        """Test the boundary."""
+        dist = self._dist("X,semiannual,03-01;09-01,30,0.0821;0.0794")
+        estimate = scrape_fund_price.distribution_estimate(
+            dist, "GBP", date(2026, 9, 1)
+        )
+        self.assertEqual((estimate.ex_date, estimate.amount), ("2026-09-01", "0.0794"))
+
+    def test_an_unknown_amount_is_left_empty(self):
+        """Test no amount is invented for a slot with none."""
+        dist = self._dist("X,annual,12-15,28")
+        estimate = scrape_fund_price.distribution_estimate(dist, "GBP", self.TODAY)
+        self.assertEqual(
+            (estimate.ex_date, estimate.pay_date), ("2026-12-15", "2027-01-12")
+        )
+        self.assertEqual(estimate.amount, "")
+
+    def test_the_search_crosses_the_year_end(self):
+        """Test the next date may be next year's earliest."""
+        dist = self._dist("X,quarterly,01-15;04-15;07-15;10-15,20")
+        estimate = scrape_fund_price.distribution_estimate(
+            dist, "GBP", date(2026, 10, 16)
+        )
+        self.assertEqual(estimate.ex_date, "2027-01-15")
+
+    def test_a_leap_day_is_the_28th_in_a_common_year(self):
+        """Test 02-29 clamps, and is exact in a leap year."""
+        dist = self._dist("X,annual,02-29,10")
+        self.assertEqual(
+            scrape_fund_price.distribution_estimate(dist, "GBP", self.TODAY).ex_date,
+            "2027-02-28",
+        )
+        self.assertEqual(
+            scrape_fund_price.distribution_estimate(
+                dist, "GBP", date(2027, 10, 1)
+            ).ex_date,
+            "2028-02-29",
+        )
+
+    def test_history_rows_come_from_the_latest_occurrence_on_or_before_as_of(self):
+        """Test each amount becomes the config row for its last occurrence."""
+        dist = self._dist("X,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01")
+        rows = scrape_fund_price.distribution_history_rows(dist, "GBP", self.TODAY)
+        self.assertEqual(
+            rows,
+            [
+                ["X", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"],
+                ["X", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"],
+            ],
+        )
+
+    def test_as_of_bounds_the_history(self):
+        """Test an occurrence after as-of is not asserted, one on it is."""
+        dist = self._dist("X,semiannual,03-01;09-01,30,0.0821;0.0794,2026-09-01")
+        rows = scrape_fund_price.distribution_history_rows(dist, "GBP", self.TODAY)
+        self.assertEqual([row[1] for row in rows], ["2026-03-01", "2026-09-01"])
+        earlier = self._dist("X,semiannual,03-01;09-01,30,0.0821;0.0794,2026-08-31")
+        rows = scrape_fund_price.distribution_history_rows(earlier, "GBP", self.TODAY)
+        self.assertEqual([row[1] for row in rows], ["2026-03-01", "2025-09-01"])
+
+    def test_today_bounds_the_history_when_as_of_is_later(self):
+        """Test a future as-of cannot assert a dividend that has not happened."""
+        dist = self._dist("X,annual,12-15,28,0.5,2027-01-01")
+        rows = scrape_fund_price.distribution_history_rows(dist, "GBP", self.TODAY)
+        self.assertEqual([row[1] for row in rows], ["2025-12-15"])
+
+    def test_no_as_of_asserts_no_history(self):
+        """Test amounts without a date feed estimates only."""
+        dist = self._dist("X,annual,12-15,28,0.5")
+        self.assertEqual(
+            scrape_fund_price.distribution_history_rows(dist, "GBP", self.TODAY), []
+        )
+
+    def test_a_slot_with_no_amount_asserts_nothing(self):
+        """Test only dividends with a stated amount enter the history."""
+        dist = self._dist("X,semiannual,03-01;09-01,30,;0.0794,2026-10-01")
+        rows = scrape_fund_price.distribution_history_rows(dist, "GBP", self.TODAY)
+        self.assertEqual([row[1] for row in rows], ["2026-09-01"])
+
+
 if __name__ == "__main__":
     unittest.main()
