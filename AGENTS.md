@@ -40,10 +40,11 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   FT-sourced OEICs): `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`,
   validated before any network call
 - `dividend_sources.txt` (SPEC-011) adds the issuer's own distribution table per instrument,
-  `<identifier>,<source>,<source-id>` (source `IS`: iShares UK, the id its product id): the
-  real pay dates, the amount where it differs from Yahoo's, and a distribution the issuer has
-  announced as a `declared` row. Validated with `funds.txt` before any network call. QQQ,
-  GLTL.L, KNSL and 0639.HK have no reachable, allowed source: see
+  `<identifier>,<source>,<source-id>` (source `IS`: iShares UK, the id its product id; `IV`
+  Invesco by CUSIP, `SS` SSGA by ISIN, `Q4` a Q4 Inc IR site as `host/MIC`, `ET` etnet by
+  HK code, SPEC-012): the real pay dates, the amount where it differs from Yahoo's, and a distribution the issuer has
+  announced as a `declared` row. Validated with `funds.txt` before any network call. Every
+  instrument that pays has a source; how they were found is
   `docs/research/dividend_pay_date_sources.md`
 
 ### Importing Closed Holdings

@@ -26,6 +26,26 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
+**Status**: ✅ **COMPLETED** (on branch `pay-date-sources`, not yet merged)  
+**Created**: 2026-10-27  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/012-pay-date-sources/`  
+**Tracking**: [#89](https://github.com/joneswm/FundPrices/issues/89)  
+**Research**: `docs/research/dividend_pay_date_sources.md`
+
+**Implementation Details**:
+- ✅ Four source codes in `dividend_sources.txt`: `IV` (Invesco API, CUSIP: QQQ), `SS` (SSGA workbook, ISIN: GLTL.L), `Q4` (Q4 Inc IR feed, host/MIC: KNSL), `ET` (etnet, HK code: 0639.HK), each validated before any network call
+- ✅ Wired as `IS` is: one request per instrument per run (the SSGA workbook once per run, shared), retried and paced, a changed response an isolated, reported failure that keeps the Yahoo row, rows ranked with `IS` above `YA`, a future ex-date a `declared` row
+- ✅ Rights-issue rows (etnet) skipped; a special and a final dividend on one ex-date are one row
+- ✅ No new dependency: the workbook is read with `zipfile` and `ElementTree`
+
+**Evidence**: `parse_invesco_distributions()`, `parse_ssga_distributions()`,
+`parse_q4_distributions()`, `parse_etnet_distributions()` and `fetch_issuer_table()` in
+`scrape_fund_price.py`; the classes `TestPayDateSourceConfiguration` to
+`TestPayDateSourcesInTheRun` in `test_scrape_fund_price.py`, against four documents recorded
+in `fixtures/`. Run `make test-coverage` for the figures.
+
 ### SPEC-011: Dividend Pay Dates from the Issuer
 **Status**: ✅ **COMPLETED** (on branch `pay-dates`, not yet merged)  
 **Created**: 2026-10-26  
@@ -40,7 +60,7 @@ This document tracks the implementation status of all features for the Fund Pric
 - ✅ A distribution the issuer has announced becomes the `declared` row of `dividends_upcoming.csv` with its pay date and stated amount, replacing the estimate and Yahoo's date; it is listed once in the summary's Dividends section
 - ✅ Source authority `IS` > `YA` > `config`: a day the issuer fails takes no pay date away; a failing page is reported and costs nothing else
 - ✅ `--backfill-dividends` rebuilds the `IS` rows too; an FT-priced fund (`IE00B0M63516`) is rebuilt from the issuer alone
-- ❌ QQQ, GLTL.L, KNSL and 0639.HK: no source that is both reachable and allowed (research page)
+- ➡️ QQQ, GLTL.L, KNSL and 0639.HK: no source at the time; SPEC-012 added one for each (research page)
 
 **Evidence**: `read_dividend_sources()`, `parse_ishares_distributions()`, `apply_issuer_table()`,
 `collect_issuer_tables()`, `update_dividends()` and `backfill_dividends()` in
@@ -600,7 +620,7 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 
 #### Spec Kit Specifications
 - **Active Specs**: 11
-- **Completed**: 11 (SPEC-001 to SPEC-011; see [`specs/README.md`](../../specs/README.md))
+- **Completed**: 12 (SPEC-001 to SPEC-012; see [`specs/README.md`](../../specs/README.md))
 - **In Progress**: 0
 - **Planned**: 0
 

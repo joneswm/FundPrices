@@ -429,7 +429,7 @@ sorts by ex-date then fund, with LF endings.
 
 Upserts into a history dict. An incoming row replaces the stored one, except that a row
 from a source that knows less never replaces one from a source that knows more
-(`SOURCE_AUTHORITY`: `IS` 2, `YA` 1, `config` 0; `source_authority(row)`).
+(`SOURCE_AUTHORITY`: `IS`, `IV`, `SS`, `Q4`, `ET` 2, `YA` 1, `config` 0; `source_authority(row)`).
 
 ### `estimate_next_dividend(rows, today)`
 
@@ -491,16 +491,16 @@ distribution with its ex-date, record date, pay date and amount.
 
 One line of `dividend_sources.txt` (`<identifier>,<source>,<source-id>`), read from
 `DIVIDEND_SOURCES_FILE` by default. A missing file has no entries. `source` is one of
-`DIVIDEND_SOURCE_CODES` (`IS`), uppercased; `source_id` is 1 to 9 digits. With `specs`
+`DIVIDEND_SOURCE_CODES` (`IS`, `IV`, `SS`, `Q4`, `ET`), uppercased; `source_id` must match `DIVIDEND_SOURCE_ID_RULES[source]` (IS: 1 to 9 digits; IV: CUSIP; SS: ISIN; Q4: `host/MIC`; ET: HK code). With `specs`
 the identifier must be one `funds.txt` publishes and two lines may not name one instrument.
 Raises `ValueError` naming the line, before any network call.
 
-### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows)`
+### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows, source="IS")`
 
 One distribution as the issuer states it (ISO dates, `""` for a missing record or pay date
 or a pay date before the ex-date; `amount` is decimal text in the share class's currency in
 major units) and a share class's rows, oldest first, with the class currency (`""` when the
-page does not say).
+page does not say), and the source code the rows came from (`IS`, `IV`, `SS`, `Q4`, `ET`).
 
 ### `parse_ishares_distributions(text, product_id)`
 
@@ -513,8 +513,22 @@ a bad date or amount.
 ### `fetch_ishares_distributions(product_id)` and `fetch_issuer_table(source)`
 
 One GET of `https://www.ishares.com/uk/individual/en/products/<id>` (30 s timeout,
-`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` dispatches on the source code.
-Errors propagate so `fetch_with_retries()` can retry them.
+`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` dispatches on the source code
+(`ValueError` for a code it does not know). Errors propagate so `fetch_with_retries()` can
+retry them.
+
+### SPEC-012 sources: `fetch_invesco_distributions(cusip)`, `fetch_ssga_distributions(isin)`, `fetch_q4_distributions(source_id, symbol)`, `fetch_etnet_distributions(code)`
+
+Each is one GET (30 s; 60 s for SSGA's workbook, which is kept for the run and shared:
+`clear_issuer_caches()` empties it, `collect_issuer_tables()` calls that first), parsed by
+`parse_invesco_distributions(text, cusip)`, `parse_ssga_distributions(content, isin)`,
+`parse_q4_distributions(text, symbol)` or `parse_etnet_distributions(text, code)`. Every
+parser returns an `IssuerTable` oldest first with one row per ex-date (same-day amounts
+add up, `combine_same_ex_date()`) and raises `ValueError` naming the source for a response
+that is not the recorded shape; `read_xlsx_rows(content)` reads the first sheet of a
+workbook with the standard library. Invesco: URLs `INVESCO_DISTRIBUTION_URL`; SSGA:
+`SSGA_WORKBOOK_URL`; Q4: `Q4_DIVIDEND_URL`; etnet: `ETNET_DIVIDEND_URL`, cash-dividend rows
+only.
 
 ### `collect_issuer_tables(sources, specs)`
 
@@ -532,7 +546,7 @@ a unit of the issuer's last decimal place; `amounts_agree` is true within it.
 ### `apply_issuer_table(history, identifier, table, price_currency, today, start=None)`
 
 Merges the table's distributions dated today or earlier (and on or after `start`) into one
-identifier's history rows: pay date added, `Source` `IS`, a missing distribution inserted,
+identifier's history rows: pay date added, `Source` the table's code, a missing distribution inserted,
 Yahoo's amount kept when it agrees and the issuer's when it differs, and a `YA` twin
 within `ISSUER_TWIN_DAYS` with the same amount removed. Returns the number of rows added,
 changed or removed.

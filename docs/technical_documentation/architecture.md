@@ -77,7 +77,7 @@ the line.
   `funds.txt` or `closed_holdings.txt`. A missing file means no entries.
 - **`dividend_sources.txt`** —
   `<identifier>,<source>,<source-id>` (SPEC-011). The issuer's own distribution table for
-  one instrument: source `IS` is the iShares UK product page, the id its product id.
+  one instrument: source `IS` is the iShares UK product page (the id its product id); SPEC-012 adds `IV` (Invesco, CUSIP), `SS` (SSGA workbook, ISIN), `Q4` (Q4 Inc IR feed, host/MIC) and `ET` (etnet, HK code).
   Separate from `funds.txt` because that file's source names where a *price* comes from
   and an instrument has exactly one; a dividend source is a second fact (an FT-priced fund
   can take its dividends from iShares). The identifier must be published by `funds.txt`,
@@ -113,8 +113,8 @@ them.)
 - **The dividend files follow the same rules.** The history is a keyed upsert on
   `(Fund, ExDate)`, the daily run only ever adds or corrects, and a rebuild replaces only
   the Yahoo rows (`Source` `YA`) and, where the issuer's page was read, the issuer's
-  (`IS`), never the `config` rows from `distributions.txt`. Which source may replace
-  which is a ranking: `IS` beats `YA` beats `config`, so Yahoo's daily upsert cannot blank
+  (`IS`, `IV`, `SS`, `Q4`, `ET`), never the `config` rows from `distributions.txt`. Which source may replace
+  which is a ranking: an issuer beats `YA` beats `config`, so Yahoo's daily upsert cannot blank
   a pay date the issuer supplied. The
   upcoming file is a state, not a log: projections are recomputed every run and a
   declared row stays until Yahoo names another date or the dividend is a week past and in
