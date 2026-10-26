@@ -6017,5 +6017,151 @@ class TestDividendBackfill(DividendRunCase):
         self.assertTrue(os.path.isfile(self._file("dividends_history.csv")))
 
 
+class TestDividendSummary(unittest.TestCase):
+    """Test the daily summary's Dividends section (SPEC-010, #85)."""
+
+    def _row(self, fund, ex, pay="", amount="0.9", ccy="USD", status="estimated"):
+        return [fund, ex, pay, amount, ccy, status, "2026-10-26"]
+
+    def _build(self, previous, upcoming, specs=None):
+        specs = specs or [FundSpec("YA", "QQQ")]
+        return scrape_fund_price.build_dividend_summary(previous, upcoming, specs)
+
+    def test_a_new_ex_date_is_listed(self):
+        """Test the headline case: nothing before, a row today."""
+        rows = self._build([], [self._row("QQQ", "2026-12-22")])
+        self.assertEqual(
+            rows,
+            [
+                scrape_fund_price.DividendSummaryRow(
+                    "QQQ", (), "2026-12-22", "", "0.9", "USD", "estimated"
+                )
+            ],
+        )
+
+    def test_an_unchanged_row_is_not_news(self):
+        """Test yesterday's row repeated today is left out."""
+        same = [self._row("QQQ", "2026-12-22")]
+        self.assertEqual(self._build(same, same), [])
+
+    def test_a_new_pay_date_is_listed(self):
+        """Test the pay date arriving for a known ex-date."""
+        before = [self._row("QQQ", "2026-11-12", status="declared")]
+        after = [self._row("QQQ", "2026-11-12", pay="2026-11-28", status="declared")]
+        [row] = self._build(before, after)
+        self.assertEqual((row.ex_date, row.pay_date), ("2026-11-12", "2026-11-28"))
+
+    def test_an_estimate_that_becomes_declared_is_listed(self):
+        """Test the status change is news even with the same dates."""
+        before = [self._row("QQQ", "2026-11-12", pay="2026-11-28")]
+        after = [self._row("QQQ", "2026-11-12", pay="2026-11-28", status="declared")]
+        [row] = self._build(before, after)
+        self.assertEqual(row.status, "declared")
+
+    def test_a_changed_amount_alone_is_not_news(self):
+        """Test only dates and status make an entry."""
+        before = [self._row("QQQ", "2026-12-22", amount="0.9")]
+        after = [self._row("QQQ", "2026-12-22", amount="0.95")]
+        self.assertEqual(self._build(before, after), [])
+
+    def test_an_instrument_is_listed_once_under_its_aliases(self):
+        """Test the aliases carry identical rows and appear in the name."""
+        specs = [FundSpec("YA", "0P00000YAN", ("JFM0003373",))]
+        upcoming = [
+            self._row("0P00000YAN", "2027-03-03", ccy="GBP"),
+            self._row("JFM0003373", "2027-03-03", ccy="GBP"),
+        ]
+        [row] = self._build([], upcoming, specs)
+        self.assertEqual((row.name, row.aliases), ("0P00000YAN", ("JFM0003373",)))
+
+    def test_rows_follow_the_order_of_funds_txt_then_ex_date(self):
+        """Test a stable, readable order."""
+        specs = [FundSpec("YA", "QQQ"), FundSpec("YA", "AAA")]
+        upcoming = [
+            self._row("AAA", "2026-11-01"),
+            self._row("QQQ", "2026-12-22"),
+            self._row("QQQ", "2026-11-12"),
+        ]
+        rows = self._build([], upcoming, specs)
+        self.assertEqual(
+            [(r.name, r.ex_date) for r in rows],
+            [("QQQ", "2026-11-12"), ("QQQ", "2026-12-22"), ("AAA", "2026-11-01")],
+        )
+
+    def test_markdown_gains_a_dividends_section(self):
+        """Test the section, with dashes for the cells that are empty."""
+        rows = [
+            scrape_fund_price.DividendSummaryRow(
+                "0P00000YAN",
+                ("JFM0003373",),
+                "2027-03-03",
+                "",
+                "1.1",
+                "GBP",
+                "estimated",
+            ),
+            scrape_fund_price.DividendSummaryRow(
+                "QQQ", (), "2026-11-12", "2026-11-28", "", "", "declared"
+            ),
+        ]
+        text = render_summary_markdown([], [], "2026-10-26", dividend_rows=rows)
+        self.assertIn("## Dividends", text)
+        self.assertIn("| Name | Ex-date | Pay date | Amount | Ccy | Status |", text)
+        self.assertIn(
+            "| 0P00000YAN (JFM0003373) | 2027-03-03 | - | 1.1 | GBP | estimated |", text
+        )
+        self.assertIn("| QQQ | 2026-11-12 | 2026-11-28 | - | - | declared |", text)
+
+    def test_markdown_says_none_when_nothing_changed(self):
+        """Test an empty list is a section that reads None."""
+        text = render_summary_markdown([], [], "2026-10-26", dividend_rows=[])
+        self.assertIn("## Dividends\n\nNone\n", text)
+
+    def test_markdown_is_unchanged_without_dividend_rows(self):
+        """Test callers that know nothing of dividends see the old output."""
+        self.assertNotIn("Dividends", render_summary_markdown([], [], "2026-10-26"))
+
+    def test_write_summary_puts_the_section_in_the_markdown_only(self):
+        """Test the CSV keeps one row per instrument and its header."""
+        rows = [
+            scrape_fund_price.DividendSummaryRow(
+                "QQQ", (), "2026-11-12", "", "0.9", "USD", "declared"
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            write_summary([], [], "2026-10-26", directory, dividend_rows=rows)
+            with open(
+                os.path.join(directory, "daily_summary.md"), encoding="utf-8"
+            ) as f:
+                self.assertIn(
+                    "| QQQ | 2026-11-12 | - | 0.9 | USD | declared |", f.read()
+                )
+            with open(os.path.join(directory, "daily_summary.csv")) as f:
+                self.assertNotIn("QQQ", f.read())
+
+
+class TestDailyDividendSummaryFlow(DividendRunCase):
+    """Test the update hands the summary what is new today (SPEC-010, #85)."""
+
+    def test_the_first_run_lists_every_row_and_the_second_none(self):
+        """Test news is the difference from the previous file."""
+        events = {"QQQ": [scrape_fund_price.DividendEvent("2026-09-22", "0.9", "USD")]}
+        first = self._run([FundSpec("YA", "QQQ")], events)
+        self.assertEqual([row.name for row in first.summary], ["QQQ"])
+        second = self._run([FundSpec("YA", "QQQ")], events)
+        self.assertEqual(second.summary, [])
+
+    def test_a_declaration_appearing_later_is_listed_that_day(self):
+        """Test the estimate-to-declared hand-over reaches the summary."""
+        events = {"QQQ": [scrape_fund_price.DividendEvent("2026-09-22", "0.9", "USD")]}
+        self._run([FundSpec("YA", "QQQ")], events)
+        declared = {
+            "QQQ": scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
+        }
+        third = self._run([FundSpec("YA", "QQQ")], events, declared)
+        [row] = third.summary
+        self.assertEqual((row.ex_date, row.status), ("2026-11-12", "declared"))
+
+
 if __name__ == "__main__":
     unittest.main()
