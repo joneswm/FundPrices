@@ -6526,5 +6526,32 @@ class TestDividendBackfillMainMode(unittest.TestCase):
         mock_backfill.assert_not_called()
 
 
+class TestDividendEdgeCases(unittest.TestCase):
+    """Test the corners of the dividend code that the main cases skip."""
+
+    def test_distributions_are_read_from_the_configured_file_by_default(self):
+        """Test the production call names no file."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "distributions.txt")
+            with open(path, "w") as f:
+                f.write("X,annual,03-01,30\n")
+            with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
+                [dist] = scrape_fund_price.read_distributions()
+        self.assertEqual(dist.identifier, "X")
+
+    def test_a_stored_upcoming_row_with_an_unreadable_date_is_dropped(self):
+        """Test a damaged file heals itself instead of stopping the run."""
+        rows = scrape_fund_price.upcoming_rows_for(
+            "X",
+            [["X", "soon", "", "1", "GBP", "declared", "2026-10-01"]],
+            set(),
+            ("", ""),
+            None,
+            None,
+            date(2026, 10, 26),
+        )
+        self.assertEqual(rows, [])
+
+
 if __name__ == "__main__":
     unittest.main()
