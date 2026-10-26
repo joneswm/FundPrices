@@ -5624,6 +5624,10 @@ class DividendRunCase(unittest.TestCase):
     def _file(self, name):
         return os.path.join(self.test_dir, name)
 
+    def _text(self, name):
+        with open(self._file(name), newline="") as f:
+            return f.read()
+
     def _read(self, name):
         with open(self._file(name), newline="") as f:
             return list(csv.reader(f))[1:]
@@ -5744,15 +5748,10 @@ class TestDailyDividendUpdate(DividendRunCase):
         """Test the files are byte-identical on a second identical run."""
         events = {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
         self._run([FundSpec("YA", "QQQ")], events)
-        first = [
-            open(self._file(n)).read()
-            for n in ("dividends_history.csv", "dividends_upcoming.csv")
-        ]
+        names = ("dividends_history.csv", "dividends_upcoming.csv")
+        first = [self._text(name) for name in names]
         self._run([FundSpec("YA", "QQQ")], events)
-        second = [
-            open(self._file(n)).read()
-            for n in ("dividends_history.csv", "dividends_upcoming.csv")
-        ]
+        second = [self._text(name) for name in names]
         self.assertEqual(first, second)
 
     def test_a_changed_amount_replaces_the_stored_row(self):

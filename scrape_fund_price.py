@@ -2867,9 +2867,7 @@ def build_dividend_upcoming(
             (schedule_for[i] for i in identifiers if i in schedule_for), None
         )
         if schedule is not None:
-            currency = next(
-                (currencies[i] for i in identifiers if currencies.get(i)), ""
-            )
+            currency = first_currency(identifiers, currencies)
             estimate = distribution_estimate(schedule, currency, today)
         else:
             estimate = estimate_next_dividend(ordered, today)
