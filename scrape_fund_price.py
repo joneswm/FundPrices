@@ -1711,11 +1711,8 @@ def _dividend_table(rows):
         "|---|---|---|---|---|---|",
     ]
     for row in rows:
-        name = row.name
-        if row.aliases:
-            name = f"{name} ({', '.join(row.aliases)})"
         cells = [
-            name,
+            display_name(row.name, row.aliases),
             row.ex_date,
             row.pay_date or "-",
             row.amount or "-",
@@ -1724,6 +1721,11 @@ def _dividend_table(rows):
         ]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
+
+
+def display_name(name, aliases):
+    """Return an instrument's name with its aliases, as the tables show it."""
+    return f"{name} ({', '.join(aliases)})" if aliases else name
 
 
 def _summary_table(rows, value_label, include_currency):
@@ -1739,9 +1741,7 @@ def _summary_table(rows, value_label, include_currency):
     ]
 
     for row in rows:
-        name = row.name
-        if row.aliases:
-            name = f"{name} ({', '.join(row.aliases)})"
+        name = display_name(row.name, row.aliases)
         if row.failed:
             name += " !"
         elif row.stale:
