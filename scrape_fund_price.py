@@ -2562,17 +2562,26 @@ def write_dividend_history(rows, data_dir):
         writer.writerows(ordered)
 
 
+# Which source a history row came from decides whether another may replace it:
+# the issuer states the dividend, Yahoo reports it, the owner asserts it
+# (distributions.txt). A row is replaced by an equal or higher source only.
+SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2}
+
+
 def merge_dividend_rows(stored, incoming):
     """Upsert incoming history rows into `stored`, keyed on (Fund, ExDate).
 
     An incoming row replaces the stored one, so a corrected amount applies and
-    a rerun cannot duplicate. The one exception: a `config` row, which is the
-    owner's assertion from distributions.txt, never replaces a row a source
-    supplied, because the source is authoritative once it knows the dividend.
+    a rerun cannot duplicate. The exception is authority: a row from a source
+    that knows less never replaces one from a source that knows more
+    (SOURCE_AUTHORITY), so the owner's `config` row gives way to Yahoo's, and
+    Yahoo's daily upsert cannot blank the pay date the issuer supplied.
     """
     for row in incoming:
         current = stored.get((row[0], row[1]))
-        if current is not None and current[5] != "config" and row[5] == "config":
+        if current is not None and SOURCE_AUTHORITY.get(
+            row[5], 1
+        ) < SOURCE_AUTHORITY.get(current[5], 1):
             continue
         stored[(row[0], row[1])] = list(row)
 
@@ -2864,6 +2873,146 @@ def fetch_ishares_distributions(product_id):
 def fetch_issuer_table(source):
     """Fetch the distribution table of a configured DividendSource."""
     return fetch_ishares_distributions(source.source_id)
+
+
+# An issuer date this many days from a Yahoo row with the same amount is the
+# same dividend dated differently (SPEC-011).
+ISSUER_TWIN_DAYS = 3
+
+
+class IssuerAmount(NamedTuple):
+    """An issuer's amount put in the currency of the row it is compared with."""
+
+    text: str
+    currency: str
+    tolerance: decimal.Decimal  # half a unit of the issuer's last decimal place
+
+
+def issuer_amount(text, class_currency, target_currency):
+    """Return an issuer amount in `target_currency`, or None when it has none.
+
+    The issuer states a distribution in the share class's currency in major
+    units; the history holds Yahoo's in the instrument's price currency, which
+    for a London line is often pence. A page that names no currency is taken
+    to be in the row's. Zero is no amount (the issuer lists the empty first
+    period of a fund as 0.0), and two unrelated currencies cannot be compared.
+
+    Args:
+        text: The issuer's decimal text
+        class_currency: The share class's currency, "" when the page gives none
+        target_currency: The stored row's currency, "" when it has none
+    """
+    value = decimal.Decimal(text)
+    if value <= 0:
+        return None
+
+    if target_currency == "GBp" and class_currency in ("", "GBP"):
+        factor, currency = 100, "GBp"
+    elif target_currency == "":
+        factor, currency = 1, class_currency
+    elif class_currency in ("", target_currency):
+        factor, currency = 1, target_currency
+    else:
+        return None
+
+    places = max(0, -value.as_tuple().exponent)
+    tolerance = decimal.Decimal(factor) / decimal.Decimal(10) ** places / 2
+    return IssuerAmount(format((value * factor).normalize(), "f"), currency, tolerance)
+
+
+def amounts_agree(stored_text, amount):
+    """Return whether a stored amount equals an issuer's within its rounding."""
+    try:
+        stored = decimal.Decimal(stored_text)
+    except decimal.InvalidOperation:
+        return False
+    return abs(stored - decimal.Decimal(amount.text)) <= amount.tolerance
+
+
+def day_gap(first, second):
+    """Return the days between two ISO dates, or None when either is not one."""
+    try:
+        return abs(
+            (
+                datetime.date.fromisoformat(first) - datetime.date.fromisoformat(second)
+            ).days
+        )
+    except ValueError:
+        return None
+
+
+def apply_issuer_table(history, identifier, table, price_currency, today, start=None):
+    """Merge an issuer's past distributions into one identifier's history rows.
+
+    Each distribution dated today or earlier (and on or after `start`) becomes
+    the row for its ex-date with Source `IS`: a Yahoo row gains the pay date;
+    a distribution Yahoo lacks is inserted; the amount stays Yahoo's when the
+    two agree within the issuer's rounding and is the issuer's when they
+    differ. A Yahoo row within ISSUER_TWIN_DAYS of an issuer date, with the
+    same amount and a date the issuer does not list, is the same dividend dated
+    differently: the issuer's date wins and the twin goes, so none is left to
+    be written again from Yahoo's window tomorrow.
+
+    Args:
+        history: dividends_history rows keyed on (Fund, ExDate), changed in place
+        identifier: The Fund value the rows are stored under
+        table: IssuerTable from the issuer's page
+        price_currency: The instrument's price currency, for rows it inserts
+        today: The run date; later distributions are not history
+        start: Inclusive ISO date to apply from, None for all of them
+
+    Returns:
+        The number of rows added, changed or removed
+    """
+    issuer_dates = {row.ex_date for row in table.rows}
+    changed = 0
+
+    for row in table.rows:
+        if row.ex_date > today.isoformat() or row.ex_date < (start or ""):
+            continue
+
+        current = history.get((identifier, row.ex_date))
+        twins = []
+        for (fund, ex_date), stored in history.items():
+            if fund != identifier or stored[5] != "YA" or ex_date in issuer_dates:
+                continue
+            gap = day_gap(ex_date, row.ex_date)
+            if gap is None or gap > ISSUER_TWIN_DAYS:
+                continue
+            amount = issuer_amount(
+                row.amount, table.currency, stored[4] or price_currency
+            )
+            if amount is not None and amounts_agree(stored[3], amount):
+                twins.append((gap, ex_date))
+        twins.sort()
+        base = current or (history[(identifier, twins[0][1])] if twins else None)
+
+        amount = issuer_amount(
+            row.amount, table.currency, (base[4] if base else "") or price_currency
+        )
+        if amount is not None and (base is None or not amounts_agree(base[3], amount)):
+            text, currency = amount.text, amount.currency
+        elif base is not None:
+            text, currency = base[3], base[4] or (amount.currency if amount else "")
+        else:
+            continue
+
+        merged = [
+            identifier,
+            row.ex_date,
+            row.pay_date or (base[2] if base else ""),
+            text,
+            currency,
+            "IS",
+        ]
+        for _, ex_date in twins:
+            del history[(identifier, ex_date)]
+            changed += 1
+        if merged != current:
+            history[(identifier, row.ex_date)] = merged
+            changed += 1
+
+    return changed
 
 
 # The frequency and the next dividend are read from the twelve months of

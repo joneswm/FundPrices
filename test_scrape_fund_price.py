@@ -7051,7 +7051,7 @@ class TestApplyIssuerTable(unittest.TestCase):
             issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
             identifier="FLOS.L",
         )
-        self.assertEqual(written, 1)
+        self.assertEqual(written, 2)  # the new row, and the twin removed
         self.assertEqual(
             history,
             self.keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
