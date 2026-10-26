@@ -694,6 +694,137 @@ def fetch_yahoo_hourly(symbol, start, end=None):
     return bars
 
 
+class DividendEvent(NamedTuple):
+    """One dividend Yahoo reports: the ex-date and the gross amount per share."""
+
+    ex_date: str  # ISO YYYY-MM-DD
+    amount: str  # plain decimal text, in `currency`
+    currency: str  # the instrument's price currency; "" when Yahoo gives none
+
+
+class DeclaredDividend(NamedTuple):
+    """The next dividend Yahoo has announced."""
+
+    ex_date: str
+    pay_date: str  # "" when Yahoo gives none or it does not follow the ex-date
+
+
+def format_dividend_amount(value):
+    """Format a per-share amount as plain decimal text.
+
+    Yahoo reports dividends as float64. Going through repr() recovers the
+    shortest text that identifies the float, so 0.0821 stays 0.0821, and the
+    Decimal keeps a small value out of exponent notation.
+    """
+    return format(decimal.Decimal(repr(float(value))).normalize(), "f")
+
+
+def ticker_currency(ticker):
+    """Return the currency Yahoo quotes a ticker in, or "" when it will not say."""
+    try:
+        return ticker.fast_info["currency"] or ""
+    except Exception:
+        return ""
+
+
+def fetch_yahoo_dividends(symbol, start, end=None):
+    """Fetch the dividend events of a symbol from Yahoo Finance.
+
+    The same call as the daily bars with the corporate actions switched on:
+    the bar of an ex-date carries the gross amount per share in its Dividends
+    column. The amount is in the instrument's price currency, so a pence line
+    stays in GBp exactly as its prices do.
+
+    Args:
+        symbol: Yahoo ticker (e.g. "IGLS.L", "QQQ")
+        start: Inclusive ISO start date, or None for everything Yahoo has
+        end: Exclusive ISO end date, or None for the latest bar; ignored
+            when start is None
+
+    Returns:
+        list[DividendEvent], oldest first
+
+    Raises:
+        Exception: transport and API errors propagate so fetch_with_retries
+            can retry them
+    """
+    ticker = yf.Ticker(symbol)
+    if start is None:
+        history = ticker.history(period="max", auto_adjust=False, actions=True)
+    else:
+        history = ticker.history(start=start, end=end, auto_adjust=False, actions=True)
+
+    if "Dividends" not in history:
+        return []
+
+    currency = ticker_currency(ticker)
+    events = []
+    for timestamp, value in history["Dividends"].items():
+        if value is None or math.isnan(float(value)) or float(value) <= 0:
+            continue
+        events.append(
+            DividendEvent(
+                timestamp.date().isoformat(), format_dividend_amount(value), currency
+            )
+        )
+    return events
+
+
+def parse_yahoo_date(value):
+    """Return a date from the shapes Yahoo uses for one, or None.
+
+    The calendar holds dates, the info endpoint epoch seconds. Anything else,
+    including a value too large to be a time, is no date.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        if isinstance(value, str):
+            return datetime.date.fromisoformat(value[:10])
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).date()
+    except (ValueError, OverflowError, OSError):
+        return None
+    return None
+
+
+def fetch_yahoo_declared(symbol, today=None):
+    """Return the next dividend Yahoo has announced, or None.
+
+    `Ticker.calendar` first, then `Ticker.info` (`exDividendDate`,
+    `dividendDate`) when the calendar has no ex-date still to come: Yahoo has
+    a calendar for stocks and rarely for ETFs, and it raises for some funds.
+    Only an ex-date today or later counts; the others are the last dividend,
+    which the history already holds. Neither endpoint carries the declared
+    amount.
+
+    Raises:
+        Exception: an info failure propagates so fetch_with_retries can retry
+            it; a calendar failure is not an error, because info is asked next
+    """
+    today = today or datetime.date.today()
+    ticker = yf.Ticker(symbol)
+    try:
+        calendar = ticker.calendar or {}
+    except Exception:
+        calendar = {}
+
+    ex_date = parse_yahoo_date(calendar.get("Ex-Dividend Date"))
+    pay_date = parse_yahoo_date(calendar.get("Dividend Date"))
+    if ex_date is None or ex_date < today:
+        info = ticker.info or {}
+        ex_date = parse_yahoo_date(info.get("exDividendDate"))
+        pay_date = parse_yahoo_date(info.get("dividendDate"))
+
+    if ex_date is None or ex_date < today:
+        return None
+    if pay_date is None or pay_date < ex_date:
+        return DeclaredDividend(ex_date.isoformat(), "")
+    return DeclaredDividend(ex_date.isoformat(), pay_date.isoformat())
+
+
 FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
 FT_HISTORICAL_AJAX = (
     "https://markets.ft.com/data/equities/ajax/get-historical-prices"
