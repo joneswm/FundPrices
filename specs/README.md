@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-011: Dividend Pay Dates from the Issuer
+**Status**: ✅ Built (branch `pay-dates`, not yet merged)
+**Location**: [011-pay-dates/](011-pay-dates/)
+**Description**: Add the issuer's own distribution table (iShares UK, source `IS`, configured per instrument in `dividend_sources.txt`) to the dividend files: the real pay date of every distribution, the amount where it differs from Yahoo's, and a distribution the issuer has announced as a `declared` upcoming row. Research in [docs/research/dividend_pay_date_sources.md](../docs/research/dividend_pay_date_sources.md) (#87).
+
 ### SPEC-010: The Dividend Calendar
 **Status**: ✅ Built (branch `dividends-calendar`, not yet merged)
 **Location**: [010-dividends/](010-dividends/)

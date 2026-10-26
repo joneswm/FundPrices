@@ -74,7 +74,7 @@ Verified against Yahoo, all nine distributing LSE ETFs (the fetch is
 
 | Fund | Yahoo rows | iShares rows | Same ex-date | Notes |
 |------|-----------|--------------|--------------|-------|
-| IGLS.L | 27 | 36 | 27 | amounts equal; the issuer reaches back to 2011 |
+| IGLS.L | 27 | 36 | 27 | amounts equal; the issuer reaches back to 2009 |
 | FLOS.L | 17 | 18 | 16 | one ex-date a day apart (Yahoo 2021-11-12, issuer 2021-11-11) |
 | INXG.L | 22 | 40 | 22 | amounts equal |
 | AGBP.L | 18 | 18 | 18 | amounts equal |
@@ -201,7 +201,7 @@ dates and amounts, equal to Yahoo's wherever they overlap), plain HTTP, permitte
 `robots.txt`, identified by a stable product id, and covers 10 of the 14 instruments that
 pay, including one the FT cannot describe. It also corrects Yahoo (two ex-dates a day out, one
 amount that differs) and fills its gaps (INXG.L: 18 rows Yahoo lacks, the latest 2023-05-19;
-IGLS.L: 9 older rows, back to 2011).
+IGLS.L: 9 older rows, back to 2009).
 
 **Fallback for the rest: Yahoo's calendar**, which SPEC-010 already reads. It gives KNSL's pay
 date when the dividend is declared; it gives 0639.HK's ex-date but not its pay date; it gives

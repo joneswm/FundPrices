@@ -1,6 +1,6 @@
 # SPEC-011: Dividend Pay Dates from the Issuer
 
-**Status**: 🚧 In progress, on branch `pay-dates`
+**Status**: ✅ Built, on branch `pay-dates` (not yet merged)
 **Created**: 2026-10-26
 **Type**: Feature
 **Tracking**: [#87](https://github.com/joneswm/FundPrices/issues/87) (option 2)
@@ -157,6 +157,27 @@ lines, that every ex-date and amount equals Yahoo's (research page).
 | GHYS.L | 253488 | iShares Global High Yield Corp Bond GBP Hedged UCITS ETF (Dist) |
 | IUAG.L | 251750 | iShares US Aggregate Bond UCITS ETF USD (Dist) |
 | IE00B0M63516 | 251853 | iShares MSCI Brazil UCITS ETF USD (Dist), FT-priced |
+
+## Validation Performed
+
+One real run of `update_dividends()` against a scratch copy of the committed `data/` (the
+repository's `data/` untouched), with the live Yahoo and iShares UK pages, for IGLS.L,
+FLOS.L, QQQ and `IE00B0M63516`, on 2026-10-27:
+
+| Instrument | Before | After |
+|------------|--------|-------|
+| IGLS.L | 27 rows, none with a pay date | 36 rows, all `IS` with a pay date (the nine older ones from 2009-06-24 to 2012-12-27 are new); no amount changed |
+| FLOS.L | 17 rows, none | 17 rows, all with a pay date (2026-05-21 paid 2026-05-29, 2025-11-13 paid 2025-11-26); Yahoo's 2021-11-12 row replaced by the issuer's 2021-11-11 |
+| IE00B0M63516 | no rows (FT-priced) | 81 rows from the issuer, all with a pay date; a new `estimated` upcoming row, 2026-12-17 paid 2026-12-30 |
+| QQQ | 90 rows, none | unchanged: no issuer source |
+
+The upcoming file: FLOS.L 2026-11-21 `estimated` gained the pay date 2026-11-29 and IGLS.L
+2027-01-16 the pay date 2027-01-29 (FR12: projected from the last real lag, which is 8 days
+for FLOS.L's May dividend and 13 for its November one, so it is an estimate like the row).
+**No `declared` row appeared**: none of the three issuers had announced its next
+distribution (their newest ex-dates are 2026-05-21, 2026-07-16 and 2026-09-17), so the
+declared path is covered by the unit tests and the recorded-page shapes only, and will first
+run for real when iShares publishes one. No failures; no other instrument's rows changed.
 
 ## Out of Scope
 

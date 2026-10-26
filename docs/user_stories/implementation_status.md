@@ -26,6 +26,30 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-011: Dividend Pay Dates from the Issuer
+**Status**: ✅ **COMPLETED** (on branch `pay-dates`, not yet merged)  
+**Created**: 2026-10-26  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/011-pay-dates/`  
+**Tracking**: [#87](https://github.com/joneswm/FundPrices/issues/87) (option 2)  
+**Research**: `docs/research/dividend_pay_date_sources.md`
+
+**Implementation Details**:
+- ✅ `dividend_sources.txt`: `<identifier>,<source>,<source-id>`, validated with `funds.txt` before any network call; source `IS` is the iShares UK product page. Ships with the ten verified iShares instruments
+- ✅ The issuer's distribution table (ex, record and payable date, amount) is fetched once per instrument, retried and paced, and merged into `dividends_history.csv`: pay dates added, distributions Yahoo lacks inserted, Yahoo's amount kept when they agree and the issuer's when they differ, a Yahoo row a day out from the issuer's date corrected
+- ✅ A distribution the issuer has announced becomes the `declared` row of `dividends_upcoming.csv` with its pay date and stated amount, replacing the estimate and Yahoo's date; it is listed once in the summary's Dividends section
+- ✅ Source authority `IS` > `YA` > `config`: a day the issuer fails takes no pay date away; a failing page is reported and costs nothing else
+- ✅ `--backfill-dividends` rebuilds the `IS` rows too; an FT-priced fund (`IE00B0M63516`) is rebuilt from the issuer alone
+- ❌ QQQ, GLTL.L, KNSL and 0639.HK: no source that is both reachable and allowed (research page)
+
+**Evidence**: `read_dividend_sources()`, `parse_ishares_distributions()`, `apply_issuer_table()`,
+`collect_issuer_tables()`, `update_dividends()` and `backfill_dividends()` in
+`scrape_fund_price.py`; the classes `TestDividendSourceConfiguration` to
+`TestIssuerSourcesInMain` in `test_scrape_fund_price.py`, against two pages recorded in
+`fixtures/`. Run `make test-coverage` for the figures.
+
+---
+
 ### SPEC-010: The Dividend Calendar
 **Status**: ✅ **COMPLETED** (on branch `dividends-calendar`, awaiting merge)  
 **Created**: 2026-10-26  
@@ -575,8 +599,8 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 ### Overall Status
 
 #### Spec Kit Specifications
-- **Active Specs**: 10
-- **Completed**: 10 (SPEC-001 to SPEC-010; see [`specs/README.md`](../../specs/README.md))
+- **Active Specs**: 11
+- **Completed**: 11 (SPEC-001 to SPEC-011; see [`specs/README.md`](../../specs/README.md))
 - **In Progress**: 0
 - **Planned**: 0
 

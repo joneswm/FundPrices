@@ -39,6 +39,12 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 - `distributions.txt` holds the hand-kept schedules for instruments no source covers (the
   FT-sourced OEICs): `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`,
   validated before any network call
+- `dividend_sources.txt` (SPEC-011) adds the issuer's own distribution table per instrument,
+  `<identifier>,<source>,<source-id>` (source `IS`: iShares UK, the id its product id): the
+  real pay dates, the amount where it differs from Yahoo's, and a distribution the issuer has
+  announced as a `declared` row. Validated with `funds.txt` before any network call. QQQ,
+  GLTL.L, KNSL and 0639.HK have no reachable, allowed source: see
+  `docs/research/dividend_pay_date_sources.md`
 
 ### Importing Closed Holdings
 - `python scrape_fund_price.py --import-closed` - one-off import of the windows in
@@ -73,6 +79,7 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 - `fx_pairs.txt` - FX pairs snapped by the daily run
 - `closed_holdings.txt` - Instruments imported once and never fetched again
 - `distributions.txt` - Hand-kept distribution schedules for instruments no source covers
+- `dividend_sources.txt` - Issuer sources of dividend dates, per instrument (SPEC-011)
 - `requirements.txt` - Python dependencies
 
 ### Key Directories
