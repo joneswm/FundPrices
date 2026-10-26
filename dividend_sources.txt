@@ -11,19 +11,28 @@
 #
 #   identifier  an identifier published in funds.txt (lookup id or alias). A fund
 #               priced from the FT may be named too: its dividends come from here
-#   source      IS: iShares UK (www.ishares.com/uk), allowed by its robots.txt
-#   source-id   for IS, the product id in the fund page's URL,
-#               https://www.ishares.com/uk/individual/en/products/<id>/...
-#               One id per share class: take the one of the distributing class
-#               that matches the instrument (GBP hedged, USD, ...). A class that
-#               accumulates has no table and fails the instrument's fetch
+#   source      the issuer, or its exchange partner, that states the pay date:
+#                 IS  iShares UK (www.ishares.com/uk), allowed by its robots.txt
+#                 IV  Invesco (the fund-data API its product pages call)
+#                 SS  SSGA (the SPDR EMEA historical-distributions workbook)
+#                 Q4  a Q4 Inc investor-relations site (the company's own feed)
+#                 ET  etnet (HKEX Information Services partner; cash dividends)
+#   source-id   what names the instrument at that source:
+#                 IS  the product id in the fund page's URL,
+#                     https://www.ishares.com/uk/individual/en/products/<id>/...
+#                     One id per share class: take the one of the distributing
+#                     class that matches the instrument (GBP hedged, USD, ...). A
+#                     class that accumulates has no table and fails the fetch
+#                 IV  the fund's CUSIP (the API answers nothing for a ticker)
+#                 SS  the fund's ISIN; one download serves every SS line
+#                 Q4  <ir host>/<exchange MIC>; the ticker is the identifier
+#                 ET  the HK stock code without leading zeros (0639.HK is 639)
 #
-# One line per instrument. Product ids come from
+# One line per instrument. iShares product ids come from
 # https://www.ishares.com/uk/product-sitemap.xml; the page names the ISIN, and
 # the ex-dates and amounts of a right id equal Yahoo's. See
-# docs/research/dividend_pay_date_sources.md for why only the iShares funds are
-# here: QQQ, GLTL.L, KNSL and 0639.HK have no source that is both reachable and
-# allowed.
+# docs/research/dividend_pay_date_sources.md and specs/012-pay-date-sources/ for
+# how each source was found and what it costs.
 IGLS.L,IS,251804          # iShares UK Gilts 0-5yr UCITS ETF GBP (Dist)
 FLOS.L,IS,290356          # iShares $ Floating Rate Bond UCITS ETF GBP Hedged (Dist)
 INXG.L,IS,251717          # iShares £ Index-Linked Gilts UCITS ETF GBP (Dist)
@@ -34,3 +43,7 @@ IWDG.L,IS,287737          # iShares Core MSCI World UCITS ETF GBP Hedged (Dist)
 GHYS.L,IS,253488          # iShares Global High Yield Corp Bond GBP Hedged UCITS ETF (Dist)
 IUAG.L,IS,251750          # iShares US Aggregate Bond UCITS ETF USD (Dist)
 IE00B0M63516,IS,251853    # iShares MSCI Brazil UCITS ETF USD (Dist), priced from the FT
+QQQ,IV,46090E103          # Invesco QQQ Trust
+GLTL.L,SS,IE00B6YX5L24    # State Street SPDR Bloomberg 15+ Year Gilt UCITS ETF (Dist)
+KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS  # Kinsale Capital Group
+0639.HK,ET,639            # Shougang Fushan Resources Group

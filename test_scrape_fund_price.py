@@ -8230,24 +8230,22 @@ class TestEtnetParsing(unittest.TestCase):
 
     @staticmethod
     def page(*rows):
-        """Build a page like etnet's from (announced, particular, ex, from, until, pay)."""
-        cells = "".join(f'<td align="left">{c}</td>' for c in ("x",))
-        del cells
-        body = "".join(
-            '<tr class="evenRow" align="right">'
-            + f'<td align="left">{r[0]}</td><td align="left">2026/12</td>'
-            + f'<td align="left" class="Text">{r[1]}</td>'
-            + "".join(f'<td align="left">{c}</td>' for c in r[2:])
-            + "</tr>"
-            for r in rows
-        )
+        """Build a page like etnet's from (announced, particular, ex, pay) rows."""
+
+        def line(announced, particular, ex, pay):
+            cells = [announced, "2026/12", particular, ex, ex, "--", pay]
+            return (
+                '<tr class="evenRow" align="right">'
+                + "".join(f'<td align="left">{cell}</td>' for cell in cells)
+                + "</tr>"
+            )
+
         return (
             '<table class="figureTable"><tr>'
             '<td><span class="TableHeader">Announcement Date</span></td>'
-            '<td><span class="TableHeader">Particular </span></td>'
-            '<td><span class="TableHeader">Ex-date</span></td>'
             '<td><span class="TableHeader">Payable Date</span></td></tr>'
-            f"{body}</table>"
+            + "".join(line(*row) for row in rows)
+            + "</table>"
         )
 
     def test_the_recorded_shougang_page(self):
@@ -8304,7 +8302,9 @@ class TestEtnetParsing(unittest.TestCase):
             self.page(("27/08/2026", "Int Div HKD 0.1", "2026-09-18", "05/11/2026")),
             self.page(("27/08/2026", "Int Div HKD 0.1", "31/02/2026", "05/11/2026")),
             self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "soon")),
-            self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026")),
+            self.page(
+                ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026")
+            ).replace('<td align="left">2026/12</td>', ""),
         ]
         for text in bad:
             with self.subTest(text=text[:60]):

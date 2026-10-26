@@ -7,6 +7,9 @@ import json
 import math
 import os
 import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+import zipfile
 import numpy as np
 import requests
 import yfinance as yf
@@ -2570,7 +2573,7 @@ def write_dividend_history(rows, data_dir):
 # Which source a history row came from decides whether another may replace it:
 # the issuer states the dividend, Yahoo reports it, the owner asserts it
 # (distributions.txt). A row is replaced by an equal or higher source only.
-SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2}
+SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2, "IV": 2, "SS": 2, "Q4": 2, "ET": 2}
 
 
 def source_authority(row):
@@ -2645,15 +2648,35 @@ def collect_dividends(specs, today, start=None):
 
 
 DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
-# Source codes a dividend_sources.txt line may name (SPEC-011).
-DIVIDEND_SOURCE_CODES = ("IS",)
+# Source codes a dividend_sources.txt line may name (SPEC-011, SPEC-012): the
+# issuer or its exchange partner that states the pay date.
+DIVIDEND_SOURCE_CODES = ("IS", "IV", "SS", "Q4", "ET")
+# What each code's source-id must look like, and how the error names it.
+DIVIDEND_SOURCE_ID_RULES = {
+    "IS": (
+        r"[1-9][0-9]{0,8}",
+        "the product id from the fund's URL (1 to 9 digits)",
+    ),
+    "IV": (r"[0-9A-Z]{9}", "the fund's CUSIP (9 capitals or digits)"),
+    "SS": (r"[A-Z]{2}[0-9A-Z]{9}[0-9]", "the fund's ISIN (12 characters)"),
+    "Q4": (
+        r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}/[A-Z]{4}",
+        "the investor-relations host/MIC (ir.example.com/XNYS)",
+    ),
+    "ET": (
+        r"[1-9][0-9]{0,4}",
+        "the HK code without leading zeros (1 to 5 digits)",
+    ),
+}
 
 
 class DividendSource(NamedTuple):
     """One instrument's issuer source for dividend dates (SPEC-011).
 
-    `source_id` is the issuer's own id for the share class: for IS (iShares
-    UK), the product id in the fund page's URL.
+    `source_id` is the issuer's own id for the instrument: for IS (iShares
+    UK) the product id in the fund page's URL, for IV (Invesco) the CUSIP, for
+    SS (SSGA) the ISIN, for Q4 (Q4 Inc) the IR host and exchange MIC, for ET
+    (etnet) the HK stock code. See DIVIDEND_SOURCE_ID_RULES.
     """
 
     identifier: str
@@ -2719,11 +2742,10 @@ def read_dividend_sources(filename=None, specs=None):
                     f"source {fields[1]!r} is not one of "
                     f"{', '.join(DIVIDEND_SOURCE_CODES)}",
                 )
-            if not re.match(r"^[1-9][0-9]{0,8}$", source_id):
+            pattern, meaning = DIVIDEND_SOURCE_ID_RULES[source]
+            if not re.fullmatch(pattern, source_id):
                 raise dividend_source_error(
-                    number,
-                    f"source id {source_id!r} must be the product id from the "
-                    f"fund's URL (1 to 9 digits)",
+                    number, f"source id {source_id!r} must be {meaning}"
                 )
             if instrument_of is not None and identifier not in instrument_of:
                 raise dividend_source_error(
@@ -2775,6 +2797,7 @@ class IssuerTable(NamedTuple):
 
     currency: str  # the share class's currency; "" when the page does not say
     rows: tuple
+    source: str = "IS"  # the DIVIDEND_SOURCE_CODES entry the rows came from
 
 
 def parse_ishares_date(value):
@@ -2878,9 +2901,448 @@ def fetch_ishares_distributions(product_id):
     return parse_ishares_distributions(response.text, product_id)
 
 
+INVESCO_DISTRIBUTION_URL = (
+    "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
+    "{cusip}/distribution?idType=cusip&productType=ETF"
+)
+SSGA_WORKBOOK_URL = (
+    "https://www.ssga.com/library-content/products/fund-data/etfs/emea/"
+    "spdr-etf-historical-distributions-uk-en.xlsx"
+)
+Q4_DIVIDEND_URL = (
+    "https://{host}/feed/StockQuote.svc/GetDividendList"
+    "?exchange={mic}&symbol={symbol}&pageSize=-1"
+)
+ETNET_DIVIDEND_URL = (
+    "https://www.etnet.com.hk/www/eng/stocks/realtime/quote_dividend.php?code={code}"
+)
+ISSUER_REQUEST_TIMEOUT = 30
+SSGA_REQUEST_TIMEOUT = 60  # the workbook is 300 KB of zipped XML
+
+
+def issuer_row(ex_date, record_date, pay_date, amount):
+    """Build an IssuerDistribution, with a pay date before the ex-date as absent."""
+    return IssuerDistribution(
+        ex_date, record_date, pay_date if pay_date >= ex_date else "", amount
+    )
+
+
+def combine_same_ex_date(rows):
+    """Return distribution rows with one per ex-date, oldest first.
+
+    The history is keyed on (Fund, ExDate), so a final and a special dividend
+    that go ex on one day are one entitlement: the amounts add and the later
+    pay date stands.
+    """
+    by_date = {}
+    for row in rows:
+        kept = by_date.get(row.ex_date)
+        if kept is None:
+            by_date[row.ex_date] = row
+            continue
+        total = decimal.Decimal(kept.amount) + decimal.Decimal(row.amount)
+        by_date[row.ex_date] = IssuerDistribution(
+            row.ex_date,
+            kept.record_date or row.record_date,
+            max(kept.pay_date, row.pay_date),
+            format(total, "f"),
+        )
+    return tuple(by_date[ex_date] for ex_date in sorted(by_date))
+
+
+def parse_issuer_amount(value, label):
+    """Return a non-negative finite amount as decimal text, or raise ValueError."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{label}: malformed amount {value!r}")
+    try:
+        amount = decimal.Decimal(value.strip() if isinstance(value, str) else value)
+    except (decimal.InvalidOperation, TypeError):
+        raise ValueError(f"{label}: malformed amount {value!r}")
+    if not amount.is_finite() or amount < 0:
+        raise ValueError(f"{label}: malformed amount {value!r}")
+    return format(amount, "f")
+
+
+def parse_issuer_date(value, pattern, label, required=True):
+    """Return an ISO date from text in `pattern`; "" when absent and not required."""
+    if value is None or (isinstance(value, str) and value.strip() in ("", "--")):
+        if required:
+            raise ValueError(f"{label}: missing date")
+        return ""
+    try:
+        return (
+            datetime.datetime.strptime(str(value).strip(), pattern).date().isoformat()
+        )
+    except ValueError:
+        raise ValueError(f"{label}: malformed date {value!r}")
+
+
+def single_currency(currencies, label):
+    """Return the one currency of a table ("" for none); several are an error."""
+    distinct = set(currencies)
+    if len(distinct) > 1:
+        raise ValueError(f"{label}: mixed currencies {', '.join(sorted(distinct))}")
+    return distinct.pop() if distinct else ""
+
+
+def parse_invesco_distributions(text, cusip):
+    """Read the distribution list of Invesco's fund-data API (source IV).
+
+    The API behind the product page answers a JSON object whose
+    `distributions` list holds `exDate`, `recordDate`, `payDate` (ISO dates)
+    and `distributionAmountPerUnit`, newest first, with the fund's
+    `currencyCode`. Amounts are read as exact decimals.
+
+    Returns:
+        IssuerTable, oldest row first
+
+    Raises:
+        ValueError: not JSON, no list, or a row without a real date and amount
+    """
+    label = f"Invesco {cusip}"
+    try:
+        data = json.loads(text, parse_float=decimal.Decimal)
+    except ValueError:
+        raise ValueError(f"{label}: not JSON")
+    listing = data.get("distributions") if isinstance(data, dict) else None
+    if not isinstance(listing, list):
+        raise ValueError(f"{label}: no distributions list")
+
+    rows = []
+    for entry in listing:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{label}: malformed distribution {entry!r}")
+        ex_date = parse_issuer_date(entry.get("exDate"), "%Y-%m-%d", label)
+        rows.append(
+            issuer_row(
+                ex_date,
+                parse_issuer_date(
+                    entry.get("recordDate"), "%Y-%m-%d", label, required=False
+                ),
+                parse_issuer_date(
+                    entry.get("payDate"), "%Y-%m-%d", label, required=False
+                ),
+                parse_issuer_amount(entry.get("distributionAmountPerUnit"), label),
+            )
+        )
+    currency = data.get("currencyCode")
+    return IssuerTable(
+        currency if isinstance(currency, str) else "", combine_same_ex_date(rows), "IV"
+    )
+
+
+def fetch_invesco_distributions(cusip):
+    """Fetch Invesco's distribution list for a CUSIP: one plain GET.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    response = requests.get(
+        INVESCO_DISTRIBUTION_URL.format(cusip=cusip), timeout=ISSUER_REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    return parse_invesco_distributions(response.text, cusip)
+
+
+def parse_q4_distributions(text, symbol):
+    """Read the dividend list of a Q4 Inc investor-relations feed (source Q4).
+
+    `GetDividendListResult` holds `ExDate`, `RecordDate`, `PayDate`
+    (`mm/dd/yyyy HH:MM:SS`, null when unset), `DividendAmount` and `Currency`
+    per dividend.
+
+    Returns:
+        IssuerTable, oldest row first
+
+    Raises:
+        ValueError: not JSON, no list, or a row without a real date and amount
+    """
+    label = f"Q4 {symbol}"
+    stamp = "%m/%d/%Y %H:%M:%S"
+    try:
+        data = json.loads(text, parse_float=decimal.Decimal)
+    except ValueError:
+        raise ValueError(f"{label}: not JSON")
+    listing = data.get("GetDividendListResult") if isinstance(data, dict) else None
+    if not isinstance(listing, list):
+        raise ValueError(f"{label}: no dividend list")
+
+    rows = []
+    currencies = []
+    for entry in listing:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{label}: malformed dividend {entry!r}")
+        rows.append(
+            issuer_row(
+                parse_issuer_date(entry.get("ExDate"), stamp, label),
+                parse_issuer_date(entry.get("RecordDate"), stamp, label, False),
+                parse_issuer_date(entry.get("PayDate"), stamp, label, False),
+                parse_issuer_amount(entry.get("DividendAmount"), label),
+            )
+        )
+        if isinstance(entry.get("Currency"), str) and entry["Currency"]:
+            currencies.append(entry["Currency"])
+    return IssuerTable(
+        single_currency(currencies, label), combine_same_ex_date(rows), "Q4"
+    )
+
+
+def fetch_q4_distributions(source_id, symbol):
+    """Fetch a Q4-hosted IR site's dividend list: one plain GET.
+
+    Args:
+        source_id: `<ir host>/<exchange MIC>`, e.g. ir.kinsalecapitalgroup.com/XNYS
+        symbol: The ticker (the identifier on the dividend_sources.txt line)
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    host, mic = source_id.split("/", 1)
+    response = requests.get(
+        Q4_DIVIDEND_URL.format(
+            host=host, mic=mic, symbol=urllib.parse.quote(symbol, safe="")
+        ),
+        timeout=ISSUER_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_q4_distributions(response.text, symbol)
+
+
+# A cash dividend as etnet words it: "Int Div HKD 0.1", "Fin Div HKD 0.06",
+# "Sp Div HKD 0.063". A rights issue ("Rts 1 for 30 @HKD 2.6"), a bonus issue
+# and the "No Int Div" placeholder do not match.
+ETNET_CASH_DIVIDEND = re.compile(r"\bDiv\s+([A-Z]{3})\s+(\d+(?:\.\d+)?)")
+
+
+def parse_etnet_distributions(text, code):
+    """Read the dividend records table of an etnet quote page (source ET).
+
+    The table's columns are Announcement Date, Financial Year, Particular,
+    Ex-date, Book Closed Date (From), Book Closed Date (Until) and Payable
+    Date, dates `dd/mm/yyyy` or `--`. Only cash-dividend rows are kept, the
+    amount and currency read from the Particular text. The book-closed dates
+    are not the record date, which etnet does not state, so none is read.
+
+    Returns:
+        IssuerTable, oldest row first (an empty table for a company that has
+        never paid)
+
+    Raises:
+        ValueError: not the dividend page, or a cash row with a bad date
+    """
+    label = f"etnet {code}"
+    if "Payable Date" not in text or "figureTable" not in text:
+        raise ValueError(f"{label}: no dividend records table")
+
+    rows = []
+    currencies = []
+    for record in re.findall(r'<tr class="(?:even|odd)Row".*?</tr>', text, re.S):
+        cells = [
+            html.unescape(re.sub(r"<[^>]+>", "", cell)).strip()
+            for cell in re.findall(r"<td[^>]*>(.*?)</td>", record, re.S)
+        ]
+        if len(cells) != 7:
+            raise ValueError(f"{label}: malformed row {cells!r}")
+        match = ETNET_CASH_DIVIDEND.search(cells[2])
+        if not match:
+            continue
+        currencies.append(match.group(1))
+        rows.append(
+            issuer_row(
+                parse_issuer_date(cells[3], "%d/%m/%Y", label),
+                "",
+                parse_issuer_date(cells[6], "%d/%m/%Y", label, required=False),
+                parse_issuer_amount(match.group(2), label),
+            )
+        )
+    return IssuerTable(
+        single_currency(currencies, label), combine_same_ex_date(rows), "ET"
+    )
+
+
+def fetch_etnet_distributions(code):
+    """Fetch an HK stock's etnet dividend records: one plain GET.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    response = requests.get(
+        ETNET_DIVIDEND_URL.format(code=code), timeout=ISSUER_REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    return parse_etnet_distributions(response.text, code)
+
+
+SSGA_COLUMNS = {
+    "ISIN": "isin",
+    "CURRENCY": "currency",
+    "EX-DATE": "ex",
+    "RECORD DATE": "record",
+    "PAYMENT DATE": "pay",
+    "DISTRIBUTION": "amount",
+}
+_SPREADSHEET = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_PACKAGE_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_DOCUMENT_RELS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def read_xlsx_rows(content):
+    """Yield the first sheet's rows of an .xlsx as {column letter: text} dicts.
+
+    The standard library reads the zip and its XML: no spreadsheet package is
+    a dependency. Shared strings, inline strings and numbers are supported,
+    which is all a data export uses.
+
+    Raises:
+        ValueError: not a workbook
+    """
+    import io
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            relationships = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            sheet = workbook.find(f"{_SPREADSHEET}sheets/{_SPREADSHEET}sheet")
+            target = {
+                rel.get("Id"): rel.get("Target")
+                for rel in relationships.iter(f"{_PACKAGE_RELS}Relationship")
+            }[sheet.get(f"{_DOCUMENT_RELS}id")]
+            strings = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                strings = [
+                    "".join(t.text or "" for t in item.iter(f"{_SPREADSHEET}t"))
+                    for item in ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                ]
+            rows = []
+            path = "xl/" + target.lstrip("/").removeprefix("xl/")
+            for _, element in ET.iterparse(archive.open(path)):
+                if element.tag != f"{_SPREADSHEET}row":
+                    continue
+                cells = {}
+                for cell in element.findall(f"{_SPREADSHEET}c"):
+                    column = "".join(c for c in cell.get("r", "") if c.isalpha())
+                    if cell.get("t") == "inlineStr":
+                        text = "".join(
+                            t.text or "" for t in cell.iter(f"{_SPREADSHEET}t")
+                        )
+                    else:
+                        value = cell.find(f"{_SPREADSHEET}v")
+                        if value is None or value.text is None:
+                            continue
+                        text = (
+                            strings[int(value.text)]
+                            if cell.get("t") == "s"
+                            else value.text
+                        )
+                    cells[column] = text
+                rows.append(cells)
+                element.clear()
+            return rows
+    except (zipfile.BadZipFile, KeyError, AttributeError, ET.ParseError, IndexError):
+        raise ValueError("not a readable workbook")
+
+
+def parse_ssga_distributions(content, isin):
+    """Read one fund's rows from SSGA's historical-distributions workbook (SS).
+
+    One workbook covers every SPDR ETF in EMEA: a header row names the
+    columns (ISIN, CURRENCY, EX-DATE, RECORD DATE, PAYMENT DATE, DISTRIBUTION),
+    dates are `dd/mm/yyyy` text. The fund's rows are those of its ISIN.
+
+    Returns:
+        IssuerTable, oldest row first
+
+    Raises:
+        ValueError: not a workbook, a missing column, a bad cell in the fund's
+            rows, or no row for the ISIN (a wrong id is not an empty table)
+    """
+    label = f"SSGA {isin}"
+    try:
+        sheet = read_xlsx_rows(content)
+    except ValueError as error:
+        raise ValueError(f"{label}: {error}")
+
+    columns = None
+    rows = []
+    currencies = []
+    for cells in sheet:
+        if columns is None:
+            found = {
+                SSGA_COLUMNS[text.strip().upper()]: letter
+                for letter, text in cells.items()
+                if text.strip().upper() in SSGA_COLUMNS
+            }
+            if len(found) == len(SSGA_COLUMNS):
+                columns = found
+            continue
+        if cells.get(columns["isin"], "").strip() != isin:
+            continue
+        rows.append(
+            issuer_row(
+                parse_issuer_date(cells.get(columns["ex"]), "%d/%m/%Y", label),
+                parse_issuer_date(
+                    cells.get(columns["record"]), "%d/%m/%Y", label, required=False
+                ),
+                parse_issuer_date(
+                    cells.get(columns["pay"]), "%d/%m/%Y", label, required=False
+                ),
+                parse_issuer_amount(cells.get(columns["amount"]), label),
+            )
+        )
+        currencies.append(cells.get(columns["currency"], "").strip())
+    if columns is None:
+        raise ValueError(f"{label}: no header row")
+    if not rows:
+        raise ValueError(f"{label}: no distributions for this ISIN")
+    return IssuerTable(
+        single_currency([c for c in currencies if c], label),
+        combine_same_ex_date(rows),
+        "SS",
+    )
+
+
+# The workbook is one download per run, shared by every SPDR instrument.
+_ssga_workbook = {}
+
+
+def clear_issuer_caches():
+    """Forget what the run cached: the SSGA workbook."""
+    _ssga_workbook.clear()
+
+
+def fetch_ssga_distributions(isin):
+    """Return a fund's table from SSGA's workbook, downloading it once per run.
+
+    robots.txt allows /library-content/products/fund-data/. A failed download
+    is not cached, so the retry fetches again.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    if "content" not in _ssga_workbook:
+        response = requests.get(SSGA_WORKBOOK_URL, timeout=SSGA_REQUEST_TIMEOUT)
+        response.raise_for_status()
+        _ssga_workbook["content"] = response.content
+    return parse_ssga_distributions(_ssga_workbook["content"], isin)
+
+
 def fetch_issuer_table(source):
     """Fetch the distribution table of a configured DividendSource."""
-    return fetch_ishares_distributions(source.source_id)
+    if source.source == "IS":
+        return fetch_ishares_distributions(source.source_id)
+    if source.source == "IV":
+        return fetch_invesco_distributions(source.source_id)
+    if source.source == "SS":
+        return fetch_ssga_distributions(source.source_id)
+    if source.source == "Q4":
+        return fetch_q4_distributions(source.source_id, source.identifier)
+    if source.source == "ET":
+        return fetch_etnet_distributions(source.source_id)
+    raise ValueError(f"{source.identifier}: no fetch for source {source.source!r}")
 
 
 # An issuer date this many days from a Yahoo row with the same amount is the
@@ -2972,7 +3434,8 @@ def apply_issuer_table(history, identifier, table, price_currency, today, start=
     """Merge an issuer's past distributions into one identifier's history rows.
 
     Each distribution dated today or earlier (and on or after `start`) becomes
-    the row for its ex-date with Source `IS`: a Yahoo row gains the pay date;
+    the row for its ex-date with the table's Source (`IS`, `IV`, `SS`, `Q4` or
+    `ET`): a Yahoo row gains the pay date;
     a distribution Yahoo lacks is inserted; the amount stays Yahoo's when the
     two agree within the issuer's rounding and is the issuer's when they
     differ. A Yahoo row within ISSUER_TWIN_DAYS of an issuer date, with the
@@ -3030,7 +3493,7 @@ def apply_issuer_table(history, identifier, table, price_currency, today, start=
             row.pay_date or (base[2] if base else ""),
             text,
             currency,
-            "IS",
+            table.source,
         ]
         for _, ex_date in twins:
             del history[(identifier, ex_date)]
@@ -3078,6 +3541,7 @@ def collect_issuer_tables(sources, specs):
             instrument_of[identifier] = spec.lookup_id
 
     results = IssuerResults()
+    clear_issuer_caches()
     for index, source in enumerate(sources):
         lookup_id = instrument_of[source.identifier]
         results.requested.add(lookup_id)
@@ -3600,7 +4064,7 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
             [
                 key
                 for key in existing
-                if history[key][5] == "IS" and key[1] >= (start or "")
+                if history[key][5] in DIVIDEND_SOURCE_CODES and key[1] >= (start or "")
             ]
             if table is not None
             else []
@@ -3629,7 +4093,7 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
                 row
                 for key, row in history.items()
                 if key[0] == item["identifier"]
-                and row[5] == "IS"
+                and row[5] in DIVIDEND_SOURCE_CODES
                 and key[1] >= (start or "")
             )
             item.update(
@@ -3699,7 +4163,7 @@ def backfill_dividends(
             report.failures.append(f"{spec.lookup_id}: dividends: {error}")
         else:
             events = [event for event in events if event.ex_date <= today.isoformat()]
-        owned = ("YA",) if table is None else ("YA", "IS")
+        owned = ("YA",) if table is None else ("YA",) + DIVIDEND_SOURCE_CODES
 
         for identifier in spec.publish_ids:
             existing = [key for key in history if key[0] == identifier]
