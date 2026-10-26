@@ -2573,6 +2573,11 @@ def write_dividend_history(rows, data_dir):
 SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2}
 
 
+def source_authority(row):
+    """Return how much a history row's source knows; an unknown source counts as YA."""
+    return SOURCE_AUTHORITY.get(row[5], 1)
+
+
 def merge_dividend_rows(stored, incoming):
     """Upsert incoming history rows into `stored`, keyed on (Fund, ExDate).
 
@@ -2584,9 +2589,7 @@ def merge_dividend_rows(stored, incoming):
     """
     for row in incoming:
         current = stored.get((row[0], row[1]))
-        if current is not None and SOURCE_AUTHORITY.get(
-            row[5], 1
-        ) < SOURCE_AUTHORITY.get(current[5], 1):
+        if current is not None and source_authority(row) < source_authority(current):
             continue
         stored[(row[0], row[1])] = list(row)
 
@@ -3363,9 +3366,9 @@ def upcoming_rows_for(
         rows[row[1]] = [identifier] + row[1:7]
 
     if declared is not None:
-        amount, currency = (
-            (declared.amount, declared.currency) if (declared.amount) else last_paid
-        )
+        amount, currency = last_paid
+        if declared.amount:
+            amount, currency = declared.amount, declared.currency
         rows[declared.ex_date] = [
             identifier,
             declared.ex_date,
