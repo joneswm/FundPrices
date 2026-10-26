@@ -6675,6 +6675,7 @@ class TestDividendSourceConfiguration(unittest.TestCase):
         sources = scrape_fund_price.read_dividend_sources(
             _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
         )
+        self.assertTrue(sources)
         self.assertTrue(all(source.source == "IS" for source in sources))
 
 
