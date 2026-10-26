@@ -2897,6 +2897,186 @@ def build_dividend_upcoming(
     return sorted(rows, key=lambda row: (row[1], row[0]))
 
 
+def stored_currencies(data_dir):
+    """Return identifier -> the currency of its newest stored price."""
+    return {fund: row[3] for fund, row in newest_stored_rows(data_dir).items()}
+
+
+def first_currency(identifiers, currencies):
+    """Return the first known currency among an instrument's identifiers."""
+    return next((currencies[i] for i in identifiers if currencies.get(i)), "")
+
+
+def published_identifiers(identifier, specs):
+    """Return every identifier the instrument behind `identifier` is published under.
+
+    A line in distributions.txt may use the lookup id or an alias; either way
+    the rows go out under all of them. A closed holding has only itself.
+    """
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if identifier in spec.publish_ids:
+            return spec.publish_ids
+    return (identifier,)
+
+
+def config_history_rows(distributions, specs, currencies, today):
+    """Return the `config` history rows of every distributions.txt line."""
+    rows = []
+    for dist in distributions:
+        identifiers = published_identifiers(dist.identifier, specs)
+        currency = first_currency(identifiers, currencies)
+        for row in distribution_history_rows(dist, currency, today):
+            rows.extend([identifier] + row[1:] for identifier in identifiers)
+    return rows
+
+
+def publish_upcoming(specs, distributions, history, declared, data_dir, today):
+    """Rebuild dividends_upcoming.csv and return (previous rows, new rows)."""
+    previous = read_dividend_upcoming(data_dir)
+    upcoming = build_dividend_upcoming(
+        specs,
+        distributions,
+        history,
+        previous,
+        declared,
+        today,
+        stored_currencies(data_dir),
+    )
+    write_dividend_upcoming(upcoming, data_dir)
+    return previous, upcoming
+
+
+def update_dividends(specs, distributions, data_dir=None, today=None):
+    """Run the daily dividend update and write both dividend files.
+
+    Upserts Yahoo's events into dividends_history.csv, adds the rows
+    distributions.txt asserts, then rebuilds dividends_upcoming.csv. The
+    history is read whole only when there is none yet; afterwards the daily
+    run re-reads DIVIDEND_WINDOW_DAYS, enough to pick up a correction, and
+    never deletes (a rebuild does that: backfill_dividends).
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        data_dir: Directory for output files (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        DividendResults whose `failures` lists the instruments that could not
+        be fetched; their stored rows are untouched
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    os.makedirs(data_dir, exist_ok=True)
+    first_run = not os.path.isfile(os.path.join(data_dir, DIVIDENDS_HISTORY_FILE))
+    window = datetime.timedelta(days=DIVIDEND_WINDOW_DAYS)
+    start = None if first_run else (today - window).isoformat()
+
+    results = collect_dividends(specs, today, start)
+    history = read_dividend_history(data_dir)
+    merge_dividend_rows(history, results)
+    currencies = stored_currencies(data_dir)
+    merge_dividend_rows(
+        history, config_history_rows(distributions, specs, currencies, today)
+    )
+    write_dividend_history(list(history.values()), data_dir)
+
+    publish_upcoming(specs, distributions, history, results.declared, data_dir, today)
+    return results
+
+
+def backfill_dividends(specs, distributions, start=None, data_dir=None, today=None):
+    """Rebuild the Yahoo rows of dividends_history.csv from the source.
+
+    For each YA instrument that fetches, its source rows from `start` (all of
+    them without one) are replaced by what Yahoo reports now, so a dividend
+    Yahoo dropped or re-dated goes. `config` rows are the owner's and stay, and
+    an instrument that fails keeps everything it had. The upcoming file is then
+    rebuilt from the new history (no calendar lookup: it keeps its declared
+    rows).
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        start: Inclusive ISO date to rebuild from, None for everything
+        data_dir: Directory for output files (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    os.makedirs(data_dir, exist_ok=True)
+    history = read_dividend_history(data_dir)
+    report = BackfillReport()
+
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        if spec.source != "YA":
+            continue
+
+        events, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            report.failures.append(f"{spec.lookup_id}: dividends: {error}")
+        else:
+            events = [event for event in events if event.ex_date <= today.isoformat()]
+
+        for identifier in spec.publish_ids:
+            existing = [key for key in history if key[0] == identifier]
+            item = {
+                "identifier": identifier,
+                "before": len(existing),
+                "deleted": 0,
+                "retained": len(existing),
+                "inserted": 0,
+                "first": min((key[1] for key in existing), default="-"),
+                "last": max((key[1] for key in existing), default="-"),
+                "currency": "-",
+                "status": "failed, kept existing",
+            }
+            if not error:
+                doomed = [
+                    key
+                    for key in existing
+                    if history[key][5] != "config" and key[1] >= (start or "")
+                ]
+                for key in doomed:
+                    del history[key]
+                merge_dividend_rows(
+                    history,
+                    (
+                        [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
+                        for e in events
+                    ),
+                )
+                item.update(
+                    deleted=len(doomed),
+                    retained=len(existing) - len(doomed),
+                    inserted=len(events),
+                    first=events[0].ex_date if events else "-",
+                    last=events[-1].ex_date if events else "-",
+                    currency=events[0].currency if events else "-",
+                    status="rebuilt",
+                )
+            report.entries.append(item)
+
+    merge_dividend_rows(
+        history,
+        config_history_rows(distributions, specs, stored_currencies(data_dir), today),
+    )
+    write_dividend_history(list(history.values()), data_dir)
+    publish_upcoming(specs, distributions, history, {}, data_dir, today)
+    return report
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
