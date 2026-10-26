@@ -2701,6 +2701,190 @@ def distribution_history_rows(dist, currency, today):
     return rows
 
 
+# A row stays in dividends_upcoming.csv this many days past its ex-date once it
+# is in the history (the downstream matches a receipt against it), and for
+# this many days whether or not it ever arrives (a "missing" dividend is
+# visible for a month, not for ever).
+UPCOMING_GRACE_DAYS = 7
+UPCOMING_MAX_AGE_DAYS = 30
+
+
+def read_dividend_upcoming(data_dir):
+    """Read dividends_upcoming.csv as a list of rows.
+
+    A missing file has no rows, and a row without a fund or an ex-date is
+    skipped rather than stopping the run.
+    """
+    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
+    if not os.path.isfile(path):
+        return []
+
+    width = len(DIVIDEND_UPCOMING_HEADER)
+    rows = []
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            if row[0] and row[1]:
+                rows.append(row)
+    return rows
+
+
+def write_dividend_upcoming(rows, data_dir):
+    """Write dividends_upcoming.csv sorted by ex-date then fund."""
+    os.makedirs(data_dir, exist_ok=True)
+    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
+    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(DIVIDEND_UPCOMING_HEADER)
+        writer.writerows(ordered)
+
+
+def upcoming_rows_for(
+    identifier, stored, history_dates, last_paid, declared, estimate, today
+):
+    """Return one instrument's upcoming rows, oldest ex-date first.
+
+    The file is a state, not a log: a projection is recomputed every run, so a
+    stored estimate with an ex-date still to come is dropped and replaced by
+    today's. A stored declaration is kept until Yahoo names a different one,
+    so a day on which the calendar lookup fails does not retract it. A row
+    past its ex-date leaves once it is in the history and a week old, or at
+    any rate after a month. A declaration not yet in the history stands for
+    the period: no estimate is written beside it.
+
+    Args:
+        identifier: The Fund value of the rows
+        stored: The instrument's rows from the previous run
+        history_dates: Its ex-dates in dividends_history.csv
+        last_paid: (amount, currency) of its latest history row
+        declared: Today's DeclaredDividend, or None
+        estimate: Today's EstimatedDividend, or None
+        today: The run date, which is also the rows' AsOf
+    """
+    as_of = today.isoformat()
+    rows = {}
+
+    for row in stored:
+        try:
+            age = (today - datetime.date.fromisoformat(row[1])).days
+        except ValueError:
+            continue
+        if age <= 0:
+            if row[5] == "estimated" or declared is not None:
+                continue
+        elif age > UPCOMING_MAX_AGE_DAYS:
+            continue
+        elif age > UPCOMING_GRACE_DAYS and row[1] in history_dates:
+            continue
+        rows[row[1]] = [identifier] + row[1:7]
+
+    if declared is not None:
+        amount, currency = last_paid
+        rows[declared.ex_date] = [
+            identifier,
+            declared.ex_date,
+            declared.pay_date,
+            amount,
+            currency,
+            "declared",
+            as_of,
+        ]
+
+    pending = any(
+        row[5] == "declared" and row[1] >= as_of and row[1] not in history_dates
+        for row in rows.values()
+    )
+    if estimate is not None and not pending:
+        rows[estimate.ex_date] = [
+            identifier,
+            estimate.ex_date,
+            estimate.pay_date,
+            estimate.amount,
+            estimate.currency,
+            "estimated",
+            as_of,
+        ]
+
+    return [rows[ex_date] for ex_date in sorted(rows)]
+
+
+def build_dividend_upcoming(
+    specs, distributions, history, stored, declared, today, currencies
+):
+    """Build dividends_upcoming.csv from the day's inputs.
+
+    Only the instruments in funds.txt get rows: a closed holding is not held,
+    so nothing is expected of it, and a fund removed from funds.txt loses its
+    rows. An instrument with a line in distributions.txt takes its estimate
+    from that line; the others from the pattern of their history. Everything
+    is computed once on the lookup identifier and published under every alias.
+
+    Args:
+        specs: FundSpec instances, or plain (source, identifier) pairs
+        distributions: Distribution lines from distributions.txt
+        history: dividends_history.csv rows keyed on (Fund, ExDate)
+        stored: The previous run's upcoming rows
+        declared: Lookup identifier -> DeclaredDividend for today
+        today: The run date
+        currencies: Identifier -> the currency of its newest stored price
+    """
+    history_by_fund = {}
+    for (fund, ex_date), row in history.items():
+        history_by_fund.setdefault(fund, {})[ex_date] = row
+    stored_by_fund = {}
+    for row in stored:
+        stored_by_fund.setdefault(row[0], []).append(row)
+    schedule_for = {dist.identifier: dist for dist in distributions}
+
+    rows = []
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        identifiers = spec.publish_ids
+
+        # An alias may carry history the lookup identifier does not, so the
+        # instrument's history is the union, one row per ex-date.
+        instrument_history = {}
+        for identifier in identifiers:
+            instrument_history.update(history_by_fund.get(identifier, {}))
+        ordered = [
+            instrument_history[ex_date] for ex_date in sorted(instrument_history)
+        ]
+        last_paid = (ordered[-1][3], ordered[-1][4]) if ordered else ("", "")
+
+        schedule = next(
+            (schedule_for[i] for i in identifiers if i in schedule_for), None
+        )
+        if schedule is not None:
+            currency = next(
+                (currencies[i] for i in identifiers if currencies.get(i)), ""
+            )
+            estimate = distribution_estimate(schedule, currency, today)
+        else:
+            estimate = estimate_next_dividend(ordered, today)
+
+        instrument_stored = {}
+        for identifier in reversed(identifiers):
+            for row in stored_by_fund.get(identifier, []):
+                instrument_stored[row[1]] = row
+
+        merged = upcoming_rows_for(
+            spec.lookup_id,
+            list(instrument_stored.values()),
+            set(instrument_history),
+            last_paid,
+            declared.get(spec.lookup_id),
+            estimate,
+            today,
+        )
+        for identifier in identifiers:
+            rows.extend([identifier] + row[1:] for row in merged)
+
+    return sorted(rows, key=lambda row: (row[1], row[0]))
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
