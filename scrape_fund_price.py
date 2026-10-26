@@ -2582,6 +2582,18 @@ def detect_period_months(ex_dates):
     return 12
 
 
+def next_period_start(last_ex, months, today):
+    """Return `last_ex` plus whole periods: the first such date on or after today.
+
+    Counted from `last_ex` each time rather than stepping from the previous
+    result, so month-end clamping does not drift (31 January, 30 April).
+    """
+    periods = 1
+    while add_months(last_ex, months * periods) < today:
+        periods += 1
+    return add_months(last_ex, months * periods)
+
+
 def estimate_next_dividend(rows, today):
     """Project an instrument's next dividend from its history (SPEC-010).
 
@@ -2619,11 +2631,7 @@ def estimate_next_dividend(rows, today):
     if (today - last_ex).days > months * 31 + ESTIMATE_STOP_MARGIN_DAYS:
         return None
 
-    periods = 1
-    next_ex = add_months(last_ex, months)
-    while next_ex < today:
-        periods += 1
-        next_ex = add_months(last_ex, months * periods)
+    next_ex = next_period_start(last_ex, months, today)
 
     pay_date = ""
     try:
