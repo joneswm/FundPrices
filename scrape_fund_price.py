@@ -1652,6 +1652,80 @@ def build_fx_summary(fx_rows, pairs, failures, run_date):
     ]
 
 
+class DividendSummaryRow(NamedTuple):
+    """One dividend that is new, or newly dated, in today's run."""
+
+    name: str
+    aliases: tuple
+    ex_date: str
+    pay_date: str
+    amount: str
+    currency: str
+    status: str
+
+
+def build_dividend_summary(previous, upcoming, specs):
+    """List the upcoming dividends that are news today (SPEC-010).
+
+    A row is news when its (Fund, ExDate) was not in the previous file or its
+    pay date or status changed: a new ex-date, a pay date appearing, an
+    estimate turning into a declared dividend. A different amount alone is
+    not. An aliased instrument is reported once, under its lookup identifier,
+    as in the price table.
+
+    Args:
+        previous: The previous run's dividends_upcoming.csv rows
+        upcoming: Today's rows
+        specs: FundSpec instances, or plain (source, identifier) pairs
+    """
+    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
+    rows = []
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        for row in sorted(upcoming, key=lambda row: row[1]):
+            if row[0] != spec.lookup_id:
+                continue
+            if before.get((row[0], row[1])) == (row[2], row[5]):
+                continue
+            rows.append(
+                DividendSummaryRow(
+                    spec.lookup_id,
+                    tuple(spec.aliases),
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                )
+            )
+    return rows
+
+
+def _dividend_table(rows):
+    """Render the Dividends section's lines: a table, or None when empty."""
+    if not rows:
+        return ["None"]
+
+    lines = [
+        "| Name | Ex-date | Pay date | Amount | Ccy | Status |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        name = row.name
+        if row.aliases:
+            name = f"{name} ({', '.join(row.aliases)})"
+        cells = [
+            name,
+            row.ex_date,
+            row.pay_date or "-",
+            row.amount or "-",
+            row.currency or "-",
+            row.status,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
 def _summary_table(rows, value_label, include_currency):
     """Render one Markdown table of summary rows."""
     columns = ["Name"]
@@ -1688,8 +1762,12 @@ def _summary_table(rows, value_label, include_currency):
     return lines
 
 
-def render_summary_markdown(price_rows, fx_rows, run_date):
-    """Render the day's movements for reading directly on GitHub."""
+def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
+    """Render the day's movements for reading directly on GitHub.
+
+    `dividend_rows` (DividendSummaryRow, possibly none) adds a Dividends
+    section; without it the output is what it was before dividends existed.
+    """
     lines = [f"# Daily Price Summary - {run_date}", ""]
 
     lines += ["## Prices", ""]
@@ -1702,6 +1780,10 @@ def render_summary_markdown(price_rows, fx_rows, run_date):
             "",
         ]
         lines += _summary_table(fx_rows, "Rate", include_currency=False)
+
+    if dividend_rows is not None:
+        lines += ["", "## Dividends", ""]
+        lines += _dividend_table(dividend_rows)
 
     attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
     lines += ["", "## Attention", ""]
@@ -1738,8 +1820,11 @@ def render_summary_markdown(price_rows, fx_rows, run_date):
     return "\n".join(lines) + "\n"
 
 
-def write_summary(price_rows, fx_rows, run_date, data_dir=None):
+def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=None):
     """Write the daily summary as CSV and Markdown.
+
+    The CSV has one row per instrument and a header consumers read, so the
+    Dividends section goes in the Markdown only.
 
     Past summaries stay recoverable from git history and can be recomputed
     from prices_history.csv, so no dated archive is kept.
@@ -1770,7 +1855,7 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None):
                 ]
             )
 
-    markdown = render_summary_markdown(price_rows, fx_rows, run_date)
+    markdown = render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows)
     with open_for_write(
         os.path.join(data_dir, "daily_summary.md"), encoding="utf-8"
     ) as file:
@@ -2431,6 +2516,7 @@ class DividendResults(list):
         self.failures = failures or []
         self.declared = declared or {}
         self.fetched = fetched or set()
+        self.summary = []  # DividendSummaryRow, set by update_dividends
 
 
 def read_dividend_history(data_dir):
@@ -2982,7 +3068,10 @@ def update_dividends(specs, distributions, data_dir=None, today=None):
     )
     write_dividend_history(list(history.values()), data_dir)
 
-    publish_upcoming(specs, distributions, history, results.declared, data_dir, today)
+    previous, upcoming = publish_upcoming(
+        specs, distributions, history, results.declared, data_dir, today
+    )
+    results.summary = build_dividend_summary(previous, upcoming, specs)
     return results
 
 
