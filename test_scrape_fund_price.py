@@ -7320,5 +7320,510 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
         )
 
 
+class IssuerRunCase(DividendRunCase):
+    """Run the dividend update with Yahoo and the issuer's pages faked."""
+
+    IGLS = scrape_fund_price.DividendSource("IGLS.L", "IS", "251804")
+    FLOS = scrape_fund_price.DividendSource("FLOS.L", "IS", "290356")
+    EVENT = scrape_fund_price.DividendEvent
+
+    PAST = ("2026-07-16", "2026-07-17", "2026-07-29", "2.4146")
+    NEXT = ("2026-11-12", "2026-11-13", "2026-11-25", "2.5")
+
+    def _issuer_run(
+        self,
+        specs,
+        sources,
+        tables=None,
+        events=None,
+        declared=None,
+        runner=None,
+        distributions=(),
+    ):
+        """Run update_dividends (or `runner`), `tables` keyed by source id."""
+        tables = tables or {}
+        self.fetched = []
+        self.sleeps = []
+
+        def fake_fetch(source):
+            self.fetched.append(source.source_id)
+            value = tables[source.source_id]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def update(specs, dists, data_dir, today):
+            return scrape_fund_price.update_dividends(
+                specs, dists, data_dir, today, sources=sources
+            )
+
+        with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
+            with patch.object(scrape_fund_price.time, "sleep", self.sleeps.append):
+                return self._run(
+                    specs,
+                    events,
+                    declared,
+                    distributions,
+                    runner=runner or update,
+                )
+
+
+class TestDailyIssuerDates(IssuerRunCase):
+    """Test the daily run with an issuer source (SPEC-011, #87)."""
+
+    def test_the_pay_date_and_the_declared_row_reach_both_files(self):
+        """Test the point of the spec, end to end."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+        self.assertEqual(
+            self._read("dividends_upcoming.csv"),
+            [
+                [
+                    "IGLS.L",
+                    "2026-11-12",
+                    "2026-11-25",
+                    "2.5",
+                    "GBP",
+                    "declared",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_the_issuer_declaration_replaces_yahoos_and_the_estimate(self):
+        """Test one declared row, the issuer's."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
+        )
+        rows = self._read("dividends_upcoming.csv")
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
+        )
+
+    def test_yahoos_declaration_stands_when_the_issuer_has_none(self):
+        """Test the issuer adds, it does not retract."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
+        )
+        rows = self._read("dividends_upcoming.csv")
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-19", "declared")]
+        )
+
+    def test_rows_are_published_under_every_alias(self):
+        """Test a source line may name an alias; every identifier gets the rows."""
+        source = scrape_fund_price.DividendSource("JFM0003373", "IS", "251804")
+        self._issuer_run(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
+            [source],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+        )
+        self.assertEqual(
+            [(row[0], row[1], row[5]) for row in self._read("dividends_history.csv")],
+            [
+                ("0P00000YAN", "2026-07-16", "IS"),
+                ("JFM0003373", "2026-07-16", "IS"),
+            ],
+        )
+        self.assertEqual(
+            [(row[0], row[1]) for row in self._read("dividends_upcoming.csv")],
+            [("0P00000YAN", "2026-11-12"), ("JFM0003373", "2026-11-12")],
+        )
+
+    def test_an_instrument_with_no_yahoo_route_is_filled_from_the_issuer(self):
+        """Test the FT-priced iShares fund, in its stored price currency."""
+        self._write(
+            "latest_prices.csv",
+            "Fund,Date,Price,Currency\nIE00B0M63516,2026-10-23,40.5,USD\n",
+        )
+        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
+        self._issuer_run(
+            [FundSpec("FT", "IE00B0M63516", ("IDBZ",))],
+            [source],
+            {
+                "251853": issuer_table(
+                    ("2026-03-19", "2026-03-20", "2026-03-27", "0.26"),
+                    ("2026-09-17", "2026-09-18", "2026-09-30", "0.31"),
+                    currency="USD",
+                )
+            },
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IDBZ", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+                ["IDBZ", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
+                ["IE00B0M63516", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
+            ],
+        )
+
+    def test_a_pence_line_takes_the_issuers_pounds_as_pence(self):
+        """Test the declared amount of a GBp instrument."""
+        self._write(
+            "latest_prices.csv",
+            "Fund,Date,Price,Currency\nFLOS.L,2026-10-23,5000,GBp\n",
+        )
+        self._issuer_run(
+            [FundSpec("YA", "FLOS.L")],
+            [self.FLOS],
+            {
+                "290356": issuer_table(
+                    ("2026-05-21", "", "2026-05-29", "0.0991"),
+                    ("2026-11-12", "", "2026-11-25", "0.1"),
+                )
+            },
+            {"FLOS.L": [self.EVENT("2026-05-21", "9.91", "GBp")]},
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"]],
+        )
+        [row] = self._read("dividends_upcoming.csv")
+        self.assertEqual(row[3:6], ["10", "GBp", "declared"])
+
+    def test_one_failing_page_costs_nothing_else(self):
+        """Test the failure is reported and the other instrument is written."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
+            [self.IGLS, self.FLOS],
+            {
+                "251804": RuntimeError("boom"),
+                "290356": issuer_table(("2026-05-21", "", "2026-05-29", "0.0991")),
+            },
+            {
+                "IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")],
+                "FLOS.L": [self.EVENT("2026-05-21", "0.0991", "GBP")],
+            },
+        )
+        self.assertEqual(results.failures, ["IGLS.L: pay dates: boom"])
+        self.assertEqual(self.fetched.count("251804"), 3)
+        self.assertEqual(
+            {(row[0], row[2]) for row in self._read("dividends_history.csv")},
+            {("IGLS.L", ""), ("FLOS.L", "2026-05-29")},
+        )
+
+    def test_a_page_that_has_changed_is_a_reported_failure(self):
+        """Test a parse error is handled like any other fetch error."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": ValueError("iShares product 251804: no distributions table")},
+        )
+        self.assertEqual(
+            results.failures,
+            ["IGLS.L: pay dates: iShares product 251804: no distributions table"],
+        )
+
+    def test_a_day_the_issuer_fails_does_not_take_the_pay_dates_away(self):
+        """Test Yahoo's daily upsert cannot blank what the issuer gave."""
+        specs = [FundSpec("YA", "IGLS.L")]
+        events = {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]}
+        self._issuer_run(
+            specs, [self.IGLS], {"251804": issuer_table(self.PAST)}, events
+        )
+        self._issuer_run(specs, [self.IGLS], {"251804": OSError("down")}, events)
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+
+    def test_the_pages_are_fetched_a_second_apart(self):
+        """Test a pause between instruments, none before the first."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
+            [self.IGLS, self.FLOS],
+            {"251804": issuer_table(self.PAST), "290356": issuer_table(self.PAST)},
+        )
+        self.assertEqual(self.sleeps, [scrape_fund_price.ISSUER_PAUSE_SECONDS])
+        self.assertEqual(scrape_fund_price.ISSUER_PAUSE_SECONDS, 1)
+
+    def test_no_sources_means_no_requests(self):
+        """Test the file is optional."""
+        self._issuer_run([FundSpec("YA", "IGLS.L")], [])
+        self.assertEqual((self.fetched, self.sleeps), ([], []))
+
+    def test_a_second_run_changes_nothing_and_reports_nothing(self):
+        """Test the declared row is news once."""
+        args = (
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        first = self._issuer_run(*args)
+        files = {
+            name: self._text(name)
+            for name in ("dividends_history.csv", "dividends_upcoming.csv")
+        }
+        second = self._issuer_run(*args)
+        self.assertEqual(
+            files,
+            {name: self._text(name) for name in files},
+        )
+        [news] = first.summary
+        self.assertEqual(
+            (news.name, news.ex_date, news.pay_date, news.amount, news.status),
+            ("IGLS.L", "2026-11-12", "2026-11-25", "2.5", "declared"),
+        )
+        self.assertEqual(second.summary, [])
+
+
+class TestIssuerDatesInTheRebuild(IssuerRunCase):
+    """Test --backfill-dividends with an issuer source (SPEC-011, #87)."""
+
+    def _rebuild(self, specs, sources, tables, events=None, start=None):
+        def runner(specs, dists, data_dir, today):
+            return scrape_fund_price.backfill_dividends(
+                specs, dists, start, data_dir, today, sources=sources
+            )
+
+        return self._issuer_run(specs, sources, tables, events, runner=runner)
+
+    def test_yahoo_and_issuer_rows_from_the_start_are_replaced(self):
+        """Test the rebuild applies the issuer last and drops what it dropped."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IGLS.L,2025-07-17,2025-07-30,2.4917,GBP,IS\n"
+            "IGLS.L,2026-01-15,2026-01-28,9,GBP,IS\n"
+            "IGLS.L,2026-02-02,2026-02-20,1,GBP,IS\n"
+            "IGLS.L,2026-03-03,,1,GBP,config\n",
+        )
+        report = self._rebuild(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {
+                "251804": issuer_table(
+                    ("2025-07-17", "", "2025-07-30", "2.4917"),
+                    ("2026-01-15", "", "2026-01-28", "2.5662"),
+                    self.PAST,
+                    self.NEXT,
+                )
+            },
+            {
+                "IGLS.L": [
+                    self.EVENT("2026-01-15", "2.5662", "GBP"),
+                    self.EVENT("2026-07-16", "2.4146", "GBP"),
+                ]
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IGLS.L", "2025-07-17", "2025-07-30", "2.4917", "GBP", "IS"],
+                ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
+                ["IGLS.L", "2026-03-03", "", "1", "GBP", "config"],
+                ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+            ],
+        )
+        [entry] = report.entries
+        self.assertEqual((entry["deleted"], entry["status"]), (2, "rebuilt"))
+        self.assertEqual(report.failures, [])
+        [upcoming] = self._read("dividends_upcoming.csv")
+        self.assertEqual(upcoming[1:3], ["2026-11-12", "2026-11-25"])
+        self.assertEqual(upcoming[5], "declared")
+
+    def test_an_instrument_with_no_yahoo_route_is_rebuilt_from_the_issuer(self):
+        """Test the FT-priced fund has its own line in the report."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IE00B0M63516,2025-09-18,2025-09-30,0.2,USD,IS\n"
+            "IE00B0M63516,2026-03-19,2026-03-27,9,USD,IS\n"
+            "IE00B0M63516,2026-04-01,2026-04-10,1,USD,IS\n",
+        )
+        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
+        report = self._rebuild(
+            [FundSpec("FT", "IE00B0M63516")],
+            [source],
+            {
+                "251853": issuer_table(
+                    ("2025-09-18", "", "2025-09-30", "0.2"),
+                    ("2026-03-19", "", "2026-03-27", "0.26"),
+                    currency="USD",
+                )
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IE00B0M63516", "2025-09-18", "2025-09-30", "0.2", "USD", "IS"],
+                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+            ],
+        )
+        [entry] = report.entries
+        self.assertEqual(
+            entry,
+            {
+                "identifier": "IE00B0M63516",
+                "before": 3,
+                "deleted": 2,
+                "retained": 1,
+                "inserted": 1,
+                "first": "2026-03-19",
+                "last": "2026-03-19",
+                "currency": "USD",
+                "status": "rebuilt",
+            },
+        )
+
+    def test_a_failing_page_keeps_its_rows_and_fails_the_report(self):
+        """Test nothing is lost when the issuer does not answer."""
+        text = (
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IE00B0M63516,2026-03-19,2026-03-27,0.26,USD,IS\n"
+            "IGLS.L,2026-07-16,2026-07-29,2.4146,GBP,IS\n"
+        )
+        self._write("dividends_history.csv", text)
+        report = self._rebuild(
+            [FundSpec("FT", "IE00B0M63516"), FundSpec("YA", "IGLS.L")],
+            [
+                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
+                self.IGLS,
+            ],
+            {"251853": OSError("down"), "251804": OSError("down")},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        self.assertEqual(self._text("dividends_history.csv"), text)
+        self.assertEqual(
+            report.failures,
+            ["IE00B0M63516: pay dates: down", "IGLS.L: pay dates: down"],
+        )
+        self.assertEqual(
+            [entry["status"] for entry in report.entries],
+            ["failed, kept existing", "rebuilt"],
+        )
+
+    def test_a_failing_yahoo_fetch_still_takes_the_issuers_rows(self):
+        """Test the two sources are independent."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IGLS.L,2026-07-16,,2.4146,GBP,YA\n",
+        )
+        report = self._rebuild(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST)},
+            {"IGLS.L": RuntimeError("down")},
+        )
+        self.assertEqual(report.failures, ["IGLS.L: dividends: down"])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+
+
+class TestIssuerSourcesInMain(unittest.TestCase):
+    """Test main() reads and passes dividend_sources.txt (SPEC-011, #87)."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.sources_file = os.path.join(self.test_dir, "dividend_sources.txt")
+        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _write(self, text):
+        with open(self.sources_file, "w") as f:
+            f.write(text)
+
+    def _args(self, backfill):
+        return MagicMock(
+            history=None,
+            start="2024-01-01" if backfill else None,
+            end=None,
+            backfill=False,
+            import_closed=False,
+            backfill_dividends=backfill,
+        )
+
+    def _main(self, backfill=False):
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch("scrape_fund_price.DIVIDEND_SOURCES_FILE", self.sources_file))
+            enter(
+                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=self._args(backfill),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "IGLS.L")],
+                )
+            )
+            self.scrape = enter(
+                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
+            )
+            enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
+            enter(patch("scrape_fund_price.write_summary"))
+            enter(patch("builtins.print"))
+            self.update = enter(
+                patch(
+                    "scrape_fund_price.update_dividends",
+                    return_value=scrape_fund_price.DividendResults(),
+                )
+            )
+            self.rebuild = enter(
+                patch(
+                    "scrape_fund_price.backfill_dividends",
+                    return_value=BackfillReport(),
+                )
+            )
+            main()
+
+    def test_the_daily_run_passes_the_validated_sources(self):
+        """Test update_dividends gets them by keyword."""
+        self._write("IGLS.L,IS,251804\n")
+        self._main()
+        [source] = self.update.call_args.kwargs["sources"]
+        self.assertEqual((source.identifier, source.source_id), ("IGLS.L", "251804"))
+
+    def test_the_rebuild_passes_the_validated_sources(self):
+        """Test --backfill-dividends gets them by keyword."""
+        self._write("IGLS.L,IS,251804\n")
+        self._main(backfill=True)
+        [source] = self.rebuild.call_args.kwargs["sources"]
+        self.assertEqual(source.identifier, "IGLS.L")
+
+    def test_a_bad_file_fails_before_any_network_call(self):
+        """Test validation comes first, in both modes."""
+        self._write("NOPE,IS,251804\n")
+        for backfill in (False, True):
+            with self.subTest(backfill=backfill):
+                with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
+                    self._main(backfill)
+        self.scrape.assert_not_called()
+        self.update.assert_not_called()
+        self.rebuild.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
