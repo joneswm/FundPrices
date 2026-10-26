@@ -1867,6 +1867,22 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=No
             file.write(markdown)
 
 
+def validate_start_date(value):
+    """Return an error message for an unusable --from date, else None."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    try:
+        start = datetime.date.fromisoformat(value)
+    except ValueError:
+        return "Invalid --from date format. Use YYYY-MM-DD"
+
+    if start > datetime.date.today():
+        return "--from date is in the future"
+
+    return None
+
+
 def validate_backfill_args(args):
     """Return an error message for an invalid backfill invocation, else None."""
     if not getattr(args, "backfill", False):
@@ -1878,18 +1894,7 @@ def validate_backfill_args(args):
     if not args.start:
         return "--from is required when using --backfill"
 
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.start):
-        return "Invalid --from date format. Use YYYY-MM-DD"
-
-    try:
-        start = datetime.date.fromisoformat(args.start)
-    except ValueError:
-        return "Invalid --from date format. Use YYYY-MM-DD"
-
-    if start > datetime.date.today():
-        return "--from date is in the future"
-
-    return None
+    return validate_start_date(args.start)
 
 
 def check_quoting_unit(identifier, quotes):
@@ -3193,17 +3198,7 @@ def validate_dividend_backfill_args(args):
             "--history or --import-closed"
         )
 
-    if args.start:
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.start):
-            return "Invalid --from date format. Use YYYY-MM-DD"
-        try:
-            start = datetime.date.fromisoformat(args.start)
-        except ValueError:
-            return "Invalid --from date format. Use YYYY-MM-DD"
-        if start > datetime.date.today():
-            return "--from date is in the future"
-
-    return None
+    return validate_start_date(args.start) if args.start else None
 
 
 def parse_arguments(args=None):
