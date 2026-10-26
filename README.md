@@ -10,7 +10,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **Daily summary**: new price, old price, delta and percent delta for every instrument
 - **History rebuild**: stored history can be rebuilt from the sources back to any date
 - **Closed holdings**: one-off imports for instruments no longer held, kept out of the daily run
-- **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does
+- **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does, and `dividend_sources.txt` adds the issuer's real pay dates and declared amounts (SPEC-011)
 - **Identifier aliases**: one fetch published under several identifiers
 - **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
@@ -115,13 +115,16 @@ every alias.
 
 - **History**: one row per instrument and ex-date, the gross amount per share **in the
   instrument's price currency**, so a pence line stays in `GBp` exactly as its prices
-  do. Yahoo does not give pay dates for past dividends, so `PayDate` is empty.
-  Re-running replaces a row whose amount changed and never duplicates one.
+  do. Yahoo does not give pay dates for past dividends, so `PayDate` is empty unless the
+  issuer's table fills it in (see `dividend_sources.txt` below). Re-running replaces a
+  row whose amount changed and never duplicates one.
 - **Upcoming**: `declared` when Yahoo names a next ex-date (and pay date, where it has
   one); otherwise `estimated`, projected from the last twelve months: the frequency is
   read from the spacing of the ex-dates (monthly, quarterly, semi-annual or annual),
   the next ex-date is the last plus that period, the amount is the last paid. Yahoo's
-  calendar carries no declared amount, so a declared row shows the last paid amount.
+  calendar carries no declared amount, so a declared row shows the last paid amount,
+  unless the issuer has announced it (`dividend_sources.txt`), in which case the row
+  carries the issuer's pay date and stated amount.
   An instrument that has paid nothing and has nothing declared has no row. A row
   leaves a week after its ex-date once the dividend is in the history.
 - The first run reads Yahoo's whole dividend history; later runs re-read the last 400
@@ -133,9 +136,55 @@ python scrape_fund_price.py --backfill-dividends                  # everything
 python scrape_fund_price.py --backfill-dividends --from 2021-12-01
 ```
 
+#### `dividend_sources.txt`: the issuer's own dates
+
+Yahoo gives a past dividend's ex-date and amount and nothing else. For the iShares UK
+ETFs the issuer's fund page lists every distribution with its ex-date, record date,
+payable date and amount, so a line in `dividend_sources.txt` adds the real pay date.
+One line per instrument:
+
+```
+<identifier>,<source>,<source-id>
+
+IGLS.L,IS,251804
+IE00B0M63516,IS,251853
+```
+
+| Field | Meaning |
+|-------|---------|
+| `identifier` | An identifier from `funds.txt` (lookup id or alias). An FT-priced fund may be named: `IE00B0M63516` is an iShares ETF with no Yahoo route, and takes its whole dividend history from here |
+| `source` | `IS`: iShares UK (`www.ishares.com/uk`) |
+| `source-id` | For `IS`, the product id in the fund page's URL, `.../individual/en/products/<id>/...`. One id per share class: take the distributing class that matches the instrument. `https://www.ishares.com/uk/product-sitemap.xml` lists every id |
+
+The daily run fetches each configured page once (one second apart; the pages are
+1.5 to 3 MB) and merges it, keyed on `(Fund, ExDate)`:
+
+- a row gains its `PayDate` and its `Source` becomes `IS`; a distribution Yahoo lacks is
+  inserted
+- the amount stays **Yahoo's when the two agree** (within the issuer's rounding: it shows
+  four decimals of pounds, so a pence amount loses digits) and is **the issuer's when they
+  differ**; the issuer states pounds, a `GBp` row takes them times 100
+- a Yahoo row a day away from the issuer's date with the same amount is the same dividend:
+  the issuer's date wins
+- a distribution with an ex-date still to come is the instrument's `declared` upcoming row
+  with the issuer's pay date and stated amount, replacing the estimate and any date Yahoo
+  gave; it is listed in the summary's Dividends section once
+- an `IS` row is never replaced by Yahoo's or by `distributions.txt`, so a day the issuer
+  does not answer takes nothing away; a page that fails (network, status, or a page that
+  has changed) is reported with the other failures, never stops the run, and the
+  instrument keeps its rows
+
+`--backfill-dividends` also rebuilds the `IS` rows from the source. The file is validated
+with `funds.txt` before any network call and a bad line fails with its line number.
+**Only the iShares funds are here**: QQQ, GLTL.L, KNSL and 0639.HK have no source that
+is both reachable and allowed; the research is in
+[docs/research/dividend_pay_date_sources.md](docs/research/dividend_pay_date_sources.md).
+An `estimated` row projects its pay date from the last real lag, so it carries one now
+that the history does; the issuer's declared row replaces it when announced.
+
 #### `distributions.txt`: instruments no source covers
 
-The FT-sourced OEIC share classes have no dividend source, but their ex-dividend (XD)
+Instruments with no source at all have no dividend feed, but their ex-dividend (XD)
 and payment dates are fixed by the fund and printed on its factsheet. List them in
 `distributions.txt`, one line each:
 
@@ -316,6 +365,7 @@ prices are stored as quoted and are never converted.
 ```csv
 Fund,ExDate,PayDate,Amount,Currency,Source
 FLOS.L,2026-05-21,,9.91,GBp,YA
+IGLS.L,2026-07-16,2026-07-29,2.4146,GBP,IS
 GB00B1FXTF86,2026-09-01,2026-10-01,0.0794,GBP,config
 
 Fund,ExDate,PayDate,Amount,Currency,Status,AsOf
@@ -324,7 +374,8 @@ ABCD,2026-11-19,2026-12-10,0.91,USD,declared,2026-10-26
 ```
 
 `Amount` is the gross amount per share in `Currency`, as the source quotes it and
-never converted. `Source` is `YA` (Yahoo) or `config` (`distributions.txt`). `AsOf` is
+never converted. `Source` is `YA` (Yahoo), `IS` (the issuer, `dividend_sources.txt`) or
+`config` (`distributions.txt`); `IS` beats `YA` beats `config`. `AsOf` is
 the run that produced or last confirmed the row.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
@@ -384,6 +435,7 @@ The project includes automated execution via GitHub Actions:
 **Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
 **New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
+- ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011)
 - ✅ **Dividend Calendar**: past and upcoming dividends per instrument, declared or projected, with a hand-kept schedule for instruments no source covers (SPEC-010)
 - ✅ **Core Functionality**: Multi-source dated price collection (Yahoo Finance API, FT and investing.com over HTTP; scraping fallback), FX rates, daily summary, history rebuild, closed-holding imports
 - ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges

@@ -16,10 +16,10 @@ One entry point, five modes, selected by command-line flags:
 
 | Mode | Flag | Reads | Writes |
 |------|------|-------|--------|
-| Daily run | *(none)* | `funds.txt`, `fx_pairs.txt`, `distributions.txt` | every output file |
+| Daily run | *(none)* | `funds.txt`, `fx_pairs.txt`, `distributions.txt`, `dividend_sources.txt` | every output file |
 | Rebuild | `--backfill --from DATE` | `funds.txt`, `fx_pairs.txt` | price and FX files (no summary) |
 | Closed-holding import | `--import-closed` | `closed_holdings.txt` | `prices_history.csv` only |
-| Dividend rebuild | `--backfill-dividends [--from DATE]` | `funds.txt`, `distributions.txt` | the dividend files only |
+| Dividend rebuild | `--backfill-dividends [--from DATE]` | `funds.txt`, `distributions.txt`, `dividend_sources.txt` | the dividend files only |
 | Ad-hoc export | `--history SYMBOL --start DATE` | nothing | `history_<SYMBOL>_<START>_<END>.csv` |
 
 ## Components
@@ -75,6 +75,13 @@ the line.
   Hand-kept dividend schedules for instruments no source covers, chiefly the FT-sourced
   OEICs, whose ex-dates and pay dates the fund fixes. The identifier must be published by
   `funds.txt` or `closed_holdings.txt`. A missing file means no entries.
+- **`dividend_sources.txt`** —
+  `<identifier>,<source>,<source-id>` (SPEC-011). The issuer's own distribution table for
+  one instrument: source `IS` is the iShares UK product page, the id its product id.
+  Separate from `funds.txt` because that file's source names where a *price* comes from
+  and an instrument has exactly one; a dividend source is a second fact (an FT-priced fund
+  can take its dividends from iShares). The identifier must be published by `funds.txt`,
+  two lines may not name one instrument, and a missing file means no entries.
 
 ### 3. Storage
 
@@ -105,7 +112,10 @@ them.)
   the "current" files, so none of the three can undo another's work.
 - **The dividend files follow the same rules.** The history is a keyed upsert on
   `(Fund, ExDate)`, the daily run only ever adds or corrects, and a rebuild replaces only
-  the Yahoo rows (`Source` `YA`), never the `config` rows from `distributions.txt`. The
+  the Yahoo rows (`Source` `YA`) and, where the issuer's page was read, the issuer's
+  (`IS`), never the `config` rows from `distributions.txt`. Which source may replace
+  which is a ranking: `IS` beats `YA` beats `config`, so Yahoo's daily upsert cannot blank
+  a pay date the issuer supplied. The
   upcoming file is a state, not a log: projections are recomputed every run and a
   declared row stays until Yahoo names another date or the dividend is a week past and in
   the history. `Amount` is stored in the instrument's price currency and never converted,
@@ -140,8 +150,11 @@ funds.txt ──> read_fund_specs ──> scrape_funds ──> write_results
                                      │  on failure: carry the last known row forward
 fx_pairs.txt ─> read_fx_pairs ──> snap_fx_rates ──> write_fx_results
                                                         │
-funds.txt + distributions.txt ──> update_dividends ──> dividends_history.csv
+funds.txt + distributions.txt ──┐
+dividend_sources.txt ───────────┴─> update_dividends ──> dividends_history.csv
                                      │  per YA fund: fetch_with_retries(events, declared)
+                                     │  per source line: fetch_with_retries(issuer page),
+                                     │    apply_issuer_table: pay dates, amounts, declared
                                      └─> build_dividend_upcoming ──> dividends_upcoming.csv
                                                         │
 history + fx ──> build_price_summary / build_fx_summary ──> write_summary

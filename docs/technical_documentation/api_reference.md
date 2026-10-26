@@ -389,10 +389,12 @@ or (when `known_identifiers` is given) an identifier in neither `funds.txt` nor
 Every identifier `distributions.txt` may name: the identifiers `funds.txt` publishes under
 and those of `closed_holdings.txt`.
 
-### `DividendEvent(ex_date, amount, currency)` and `DeclaredDividend(ex_date, pay_date)`
+### `DividendEvent(ex_date, amount, currency)` and `DeclaredDividend(ex_date, pay_date, amount="", currency="")`
 
-What Yahoo reports: a past dividend, and the next announced ex-date with its pay date
-(`""` when absent or not after the ex-date).
+A past dividend as Yahoo reports it, and the next announced one: its ex-date, its pay date
+(`""` when absent or not after the ex-date) and, when the source states it (only an
+issuer does, SPEC-011), the amount in the price currency. A declared row carries the
+amount when set and the last paid otherwise.
 
 ### `fetch_yahoo_dividends(symbol, start, end=None)`
 
@@ -425,8 +427,9 @@ sorts by ex-date then fund, with LF endings.
 
 ### `merge_dividend_rows(stored, incoming)`
 
-Upserts into a history dict. An incoming row replaces the stored one, except that a
-`config` row never replaces a row a source supplied.
+Upserts into a history dict. An incoming row replaces the stored one, except that a row
+from a source that knows less never replaces one from a source that knows more
+(`SOURCE_AUTHORITY`: `IS` 2, `YA` 1, `config` 0; `source_authority(row)`).
 
 ### `estimate_next_dividend(rows, today)`
 
@@ -462,19 +465,84 @@ The whole upcoming file for the instruments in `funds.txt`: the pattern estimate
 `currencies`, identifier to the currency of its newest stored price). Closed holdings and
 removed funds get no rows. Returns rows sorted by ex-date then fund.
 
-### `update_dividends(specs, distributions, data_dir=None, today=None)`
+### `update_dividends(specs, distributions, data_dir=None, today=None, sources=())`
 
 The daily run: fetch (the whole history when `dividends_history.csv` does not exist,
-otherwise the last `DIVIDEND_WINDOW_DAYS`), upsert, add the `config` rows, write the
-history, rebuild and write the upcoming file. Never deletes. Returns `DividendResults`;
-`.summary` holds the `DividendSummaryRow` entries that are news today.
+otherwise the last `DIVIDEND_WINDOW_DAYS`), upsert, add the `config` rows, apply the
+issuers' tables, write the history, rebuild and write the upcoming file. Never deletes.
+Returns `DividendResults`; `.summary` holds the `DividendSummaryRow` entries that are news
+today, `.failures` also the `"<id>: pay dates: <error>"` lines of issuer pages.
 
-### `backfill_dividends(specs, distributions, start=None, data_dir=None, today=None)`
+### `backfill_dividends(specs, distributions, start=None, data_dir=None, today=None, sources=())`
 
-The rebuild: for every `YA` instrument that fetches, its source rows from `start`
-(everything when `None`) are replaced by what Yahoo reports; `config` rows stay; an
-instrument that fails keeps what it had. Rebuilds the upcoming file without a calendar
-lookup. Returns a `BackfillReport`.
+The rebuild: for every `YA` instrument that fetches, its `YA` rows from `start`
+(everything when `None`) are replaced by what Yahoo reports, and its `IS` rows too where
+the issuer's page fetched (the issuer's table is applied last); an instrument with no
+Yahoo route has its `IS` rows rebuilt alone and its own line in the report; `config` rows
+stay; an instrument that fails keeps what it had. Rebuilds the upcoming file without a
+calendar lookup, taking the issuers' declared rows. Returns a `BackfillReport`.
+
+## Issuer Dividend Dates
+
+SPEC-011. `dividend_sources.txt` names, per instrument, an issuer page that lists every
+distribution with its ex-date, record date, pay date and amount.
+
+### `DividendSource(identifier, source, source_id)`, `read_dividend_sources(filename=None, specs=None)`
+
+One line of `dividend_sources.txt` (`<identifier>,<source>,<source-id>`), read from
+`DIVIDEND_SOURCES_FILE` by default. A missing file has no entries. `source` is one of
+`DIVIDEND_SOURCE_CODES` (`IS`), uppercased; `source_id` is 1 to 9 digits. With `specs`
+the identifier must be one `funds.txt` publishes and two lines may not name one instrument.
+Raises `ValueError` naming the line, before any network call.
+
+### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows)`
+
+One distribution as the issuer states it (ISO dates, `""` for a missing record or pay date
+or a pay date before the ex-date; `amount` is decimal text in the share class's currency in
+major units) and a share class's rows, oldest first, with the class currency (`""` when the
+page does not say).
+
+### `parse_ishares_distributions(text, product_id)`
+
+Reads the `performance.distributions.table` container a product page embeds
+(entity-escaped, four parallel lists `exDate`, `recordDate`, `payableDate`,
+`totalDistribution`) and the class currency from the share-class selector. `ValueError`
+when there is no table (an accumulating class, or a changed page) or it is ragged or holds
+a bad date or amount.
+
+### `fetch_ishares_distributions(product_id)` and `fetch_issuer_table(source)`
+
+One GET of `https://www.ishares.com/uk/individual/en/products/<id>` (30 s timeout,
+`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` dispatches on the source code.
+Errors propagate so `fetch_with_retries()` can retry them.
+
+### `collect_issuer_tables(sources, specs)`
+
+Fetches each configured page once, retried, `ISSUER_PAUSE_SECONDS` apart. Returns
+`IssuerResults`: `.tables` (lookup id to `IssuerTable`), `.requested` (every configured
+lookup id) and `.failures` (`"<identifier>: pay dates: <error>"`).
+
+### `issuer_amount(text, class_currency, target_currency)` and `amounts_agree(stored_text, amount)`
+
+The issuer's amount in the stored row's currency as an `IssuerAmount(text, currency,
+tolerance)`: equal currencies unchanged, `GBP` into `GBp` times 100, a page that names no
+currency taken in the row's, zero or incomparable currencies `None`. The tolerance is half
+a unit of the issuer's last decimal place; `amounts_agree` is true within it.
+
+### `apply_issuer_table(history, identifier, table, price_currency, today, start=None)`
+
+Merges the table's distributions dated today or earlier (and on or after `start`) into one
+identifier's history rows: pay date added, `Source` `IS`, a missing distribution inserted,
+Yahoo's amount kept when it agrees and the issuer's when it differs, and a `YA` twin
+within `ISSUER_TWIN_DAYS` with the same amount removed. Returns the number of rows added,
+changed or removed.
+
+### `issuer_declared(table, price_currency, today)` and `merge_issuer_tables(history, specs, tables, currencies, today, start=None)`
+
+`issuer_declared` returns the earliest distribution with an ex-date after `today` as a
+`DeclaredDividend` (amount in the price currency, empty if not statable), or `None`.
+`merge_issuer_tables` applies each fetched table under every alias of its instrument and
+returns lookup id to `DeclaredDividend`.
 
 ### `validate_dividend_backfill_args(args)`
 
@@ -583,7 +651,7 @@ past the dispatch points.
 
 Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
 `--backfill-dividends`, `--history`, otherwise the daily run. The daily run validates
-`distributions.txt` with `funds.txt` before any network call, then writes prices, then FX,
+`distributions.txt` and `dividend_sources.txt` with `funds.txt` before any network call, then writes prices, then FX,
 then the dividend files, then the summary, each independently (a crash in the dividend
 update is reported as a failure and costs the summary nothing), and exits non-zero only
 after everything obtainable has been written. The rebuilds and the import exit non-zero
@@ -700,6 +768,9 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `CLOSED_HOLDINGS_FILE`: One-off import configuration ("closed_holdings.txt")
 - `FX_PAIRS_FILE`: FX pair configuration ("fx_pairs.txt")
 - `DISTRIBUTIONS_FILE`: Distribution schedules for instruments no source covers ("distributions.txt")
+- `DIVIDEND_SOURCES_FILE`: Issuer sources of dividend dates ("dividend_sources.txt")
+- `ISSUER_PAUSE_SECONDS`: Pause between two issuer pages (1)
+- `ISSUER_TWIN_DAYS`: Days within which a Yahoo row with the same amount is the issuer's dividend (3)
 
 ### Behaviour Settings
 - `MAX_PRICE_ATTEMPTS`: Fetch attempts before falling back to the last known price (3)

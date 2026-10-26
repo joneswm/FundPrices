@@ -1,7 +1,7 @@
 # Technical Plan: Dividend Pay Dates from the Issuer
 
 **Spec**: SPEC-011
-**Status**: 🚧 In progress, on branch `pay-dates`
+**Status**: ✅ Built, on branch `pay-dates` (not yet merged)
 **Created**: 2026-10-26
 
 ---
