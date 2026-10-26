@@ -1,6 +1,6 @@
 # SPEC-010: The Dividend Calendar
 
-**Status**: 🔄 In progress
+**Status**: ✅ Built, on branch `dividends-calendar` (not yet merged to `main`)
 **Created**: 2026-10-26
 **Type**: Feature
 **Tracking**: [#85](https://github.com/joneswm/FundPrices/issues/85)
@@ -97,13 +97,16 @@ with a commented header and no entries.
   dividend events and upserts them into `dividends_history.csv`, keyed on `(Fund,
   ExDate)`. A changed amount replaces the row. Rows are published under every alias
 - **FR3**: Amounts and currencies are as Yahoo reports them in the instrument's price
-  currency (the currency logic is the prices'), with no conversion and no float noise
+  currency (the currency logic is the prices'), with no conversion. Yahoo serves
+  float32 values as float64 (FLOS.L's 12.35p as 12.349999), so an amount is rounded to
+  the seven significant digits a float32 holds and written as plain decimal text
 - **FR4**: Fetches are retried by `fetch_with_retries()`. One failing instrument never
   stops the others or the rest of the run; the run still exits non-zero once everything
   has been written. A failed instrument keeps every row it had
-- **FR5**: The first time an instrument has no stored dividends its whole Yahoo history
-  is fetched; afterwards the daily run reads a window of `DIVIDEND_WINDOW_DAYS` (400)
-  days
+- **FR5**: When `dividends_history.csv` does not exist the whole Yahoo history is
+  fetched; afterwards the daily run reads a window of `DIVIDEND_WINDOW_DAYS` (400) days.
+  An instrument added to `funds.txt` later is brought up to date with
+  `--backfill-dividends`
 - **FR6**: `--backfill-dividends [--from DATE]` rebuilds the `YA` rows of every `YA`
   instrument from the source, from `DATE` or from the beginning. Rows the source no
   longer reports are removed; `config` rows are kept. A failing instrument keeps what
@@ -150,6 +153,22 @@ with a commented header and no entries.
 - **NFR4**: Coverage of the new code is 100%; the project gates (90% overall, 95% on
   `scrape_fund_price.py`) hold
 
+## Validation Performed
+
+One real run of the daily update against a scratch copy of `data/` (nothing committed),
+for IGLS.L, QQQ, FLOS.L, `0P00000YAN` (alias `JFM0003373`) and an invented schedule for
+`GB00B1FXTF86`, and a probe of the calendar for stocks:
+
+- **IGLS.L** (GBP, semi-annual) back to 2013-06-26; **QQQ** (USD, quarterly) back to
+  2023-03-20 with the 2023-12-27 special in the history; **FLOS.L** (`GBp`, semi-annual):
+  amounts in pence, as its prices are. **0P00000YAN** (a fund NAV) and the accumulating
+  SWDA.L, EQGB.L and EWQX.L report no dividends and get no row
+- FLOS.L showed the float32 noise (12.349999), which FR3 now removes
+- `Ticker.calendar` returns `Dividend Date` and `Ex-Dividend Date` as dates for stocks
+  (MSFT 2026-11-19 paid 2026-12-10, KO, JNJ) and is empty or 404 for the LSE ETFs, where
+  `Ticker.info` has no future date either: the ETFs are all `estimated`
+- The first run wrote 137 history lines for four instruments
+
 ## Out of Scope
 
 - A yield-based estimate: that is a planning assumption, not a fact
@@ -170,6 +189,9 @@ with a commented header and no entries.
 | A line in `distributions.txt` beats the pattern | The owner's statement of a fund's fixed dates is better evidence than a projection, and the file exists for instruments the pattern cannot see |
 | `as-of` gates config history | Without it the file would turn the old amount into a "paid" row for every later occurrence |
 | `YA` beats `config` for the same ex-date | The source is authoritative once it knows |
+| The whole history is read once, then a 400-day window | Reading everything every day costs a full price history per instrument for nothing; the first run (no file) and `--backfill-dividends` are the whole-history reads |
+| Dividend amounts are rounded to seven significant digits | Yahoo's float32 noise (12.349999) is not a published figure; `format_yahoo_price`'s float32 round trip cannot remove it because 12.349999 is itself a valid float32 |
 | Daily run is upsert-only, rebuild replaces | Same ownership rule as the prices (spec 006): a daily run cannot delete |
 | AsOf is the run that confirmed a row | A row carried over because a lookup failed keeps its older date, so staleness stays visible |
+| A crash in the dividend update is a reported failure, not a crash | Prices, FX and dividends are independent files; the price summary must still be written |
 | Summary section is Markdown only | `daily_summary.csv` has one row per instrument and a fixed header that consumers read |

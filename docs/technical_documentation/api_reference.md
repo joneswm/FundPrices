@@ -355,6 +355,137 @@ the wrong listing. Sources are asked one day past `end`, because Yahoo treats
 the end date as exclusive while FT and investing.com treat it as inclusive; the
 window filter clips the extra day.
 
+## Dividends
+
+The dividend calendar (SPEC-010): `data/dividends_history.csv`
+(`Fund,ExDate,PayDate,Amount,Currency,Source`) and `data/dividends_upcoming.csv`
+(`Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`), written by the daily run and
+rebuilt with `--backfill-dividends`. Rows are published under every alias of an
+instrument. Rows are plain lists; the file headers are `DIVIDEND_HISTORY_HEADER` and
+`DIVIDEND_UPCOMING_HEADER`.
+
+### `Distribution(identifier, frequency, xd_dates, pay_offset_days, amounts, as_of)`
+
+One line of `distributions.txt`. `xd_dates` is a tuple of `(month, day)` in calendar
+order and `amounts` a tuple of amount strings in the same order (`""` when unknown);
+`as_of` is `""` when the line gives none.
+
+### `read_distributions(filename=None, known_identifiers=None)`
+
+Reads `distributions.txt` (default `DISTRIBUTIONS_FILE`); a missing file has no entries.
+
+**Line grammar:**
+`<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`, where
+`frequency` is `monthly`, `quarterly`, `semiannual` or `annual`, `xd-dates` are
+`;`-separated `MM-DD` (12, 4, 2 or 1 of them), `last-amounts` are `;`-separated positive
+decimals, one per ex-date, and `as-of` is `YYYY-MM-DD`. See `specs/010-dividends/spec.md`.
+
+**Raises** `ValueError` naming the line for any malformed field, a repeated identifier,
+or (when `known_identifiers` is given) an identifier in neither `funds.txt` nor
+`closed_holdings.txt`.
+
+### `configured_identifiers(specs, closed_file=None)`
+
+Every identifier `distributions.txt` may name: the identifiers `funds.txt` publishes under
+and those of `closed_holdings.txt`.
+
+### `DividendEvent(ex_date, amount, currency)` and `DeclaredDividend(ex_date, pay_date)`
+
+What Yahoo reports: a past dividend, and the next announced ex-date with its pay date
+(`""` when absent or not after the ex-date).
+
+### `fetch_yahoo_dividends(symbol, start, end=None)`
+
+Yahoo's dividend events from `Ticker.history(..., actions=True)`, the `Dividends` column of
+the ex-date bars, unadjusted. `start=None` reads everything (`period="max"`). The amount
+is the gross per-share amount in the instrument's price currency (`GBp` stays `GBp`),
+rounded to the seven digits a float32 holds (Yahoo serves FLOS.L's 12.35p as 12.349999)
+and written as plain decimal text. Returns `list[DividendEvent]`, oldest first. Transport
+errors propagate so `fetch_with_retries()` can retry them.
+
+### `fetch_yahoo_declared(symbol, today=None)`
+
+The next announced dividend, or `None`. Reads `Ticker.calendar` and falls back to
+`Ticker.info` (`exDividendDate`, `dividendDate`) when the calendar has no ex-date from
+`today` on. Neither carries the declared amount. A failing calendar is not an error; a
+failing `info` propagates.
+
+### `collect_dividends(specs, today, start=None)`
+
+For each `YA` instrument, one retried fetch of the events (published under every alias,
+`Source` `YA`, `PayDate` empty, events after `today` ignored) and one of the declared
+dividend. Returns `DividendResults`, a list of history rows with `.failures`
+(`"<id>: dividends: <error>"`), `.declared` (lookup id to `DeclaredDividend`), `.fetched`
+and `.summary`. A failed declared lookup prints a warning and is not a failure.
+
+### `read_dividend_history(data_dir)` and `write_dividend_history(rows, data_dir)`
+
+`read` returns rows keyed `(Fund, ExDate)` (rows without either are skipped); `write`
+sorts by ex-date then fund, with LF endings.
+
+### `merge_dividend_rows(stored, incoming)`
+
+Upserts into a history dict. An incoming row replaces the stored one, except that a
+`config` row never replaces a row a source supplied.
+
+### `estimate_next_dividend(rows, today)`
+
+Projects one instrument's next dividend from its history rows: the period is the median
+gap between the ex-dates in the twelve months to the last one (up to 45 days monthly,
+135 quarterly, 270 semi-annual, else annual; one date reads as annual); the next ex-date
+is the last plus the period, moved on by whole periods until it is today or later; the
+amount and currency are the last paid; a pay date is projected when the last row has one.
+Returns `EstimatedDividend(ex_date, pay_date, amount, currency)`, or `None` with nothing
+to project from or when the last ex-date is older than the period plus 45 days (the
+instrument has stopped). Helpers: `detect_period_months()`, `add_months()`,
+`next_period_start()`.
+
+### `distribution_estimate(dist, currency, today)` and `distribution_history_rows(dist, currency, today)`
+
+From a `Distribution`: the next occurrence of one of its ex-dates on or after `today`
+(29 February is the 28th in a common year), paid `pay_offset_days` later, for that
+slot's amount; and the `config` history rows a line asserts, which exist only when it has
+amounts and an `as-of` date (the latest occurrence on or before `as-of` and `today`).
+
+### `upcoming_rows_for(identifier, stored, history_dates, last_paid, declared, estimate, today)`
+
+One instrument's upcoming rows. A stored estimate with an ex-date still to come is
+recomputed; a stored declaration is kept until Yahoo names another; a declared ex-date not
+yet in the history replaces the estimate for that period; a row leaves 7 days after its
+ex-date once it is in the history, and after 30 days regardless. `AsOf` is `today` for
+rows produced or confirmed this run.
+
+### `build_dividend_upcoming(specs, distributions, history, stored, declared, today, currencies)`
+
+The whole upcoming file for the instruments in `funds.txt`: the pattern estimate, or the
+`distributions.txt` estimate for an instrument that has a line (currency from
+`currencies`, identifier to the currency of its newest stored price). Closed holdings and
+removed funds get no rows. Returns rows sorted by ex-date then fund.
+
+### `update_dividends(specs, distributions, data_dir=None, today=None)`
+
+The daily run: fetch (the whole history when `dividends_history.csv` does not exist,
+otherwise the last `DIVIDEND_WINDOW_DAYS`), upsert, add the `config` rows, write the
+history, rebuild and write the upcoming file. Never deletes. Returns `DividendResults`;
+`.summary` holds the `DividendSummaryRow` entries that are news today.
+
+### `backfill_dividends(specs, distributions, start=None, data_dir=None, today=None)`
+
+The rebuild: for every `YA` instrument that fetches, its source rows from `start`
+(everything when `None`) are replaced by what Yahoo reports; `config` rows stay; an
+instrument that fails keeps what it had. Rebuilds the upcoming file without a calendar
+lookup. Returns a `BackfillReport`.
+
+### `validate_dividend_backfill_args(args)`
+
+An error message for `--backfill-dividends` combined with another mode or given a bad
+`--from`, else `None`. `--from` is optional.
+
+### `build_dividend_summary(previous, upcoming, specs)`, `DividendSummaryRow`
+
+The upcoming rows that are new or whose pay date or status changed since the previous
+file, once per instrument under its lookup identifier, in `funds.txt` order.
+
 ## History Rebuild
 
 `--backfill --from YYYY-MM-DD` replaces stored history with what the sources report.
@@ -451,9 +582,12 @@ past the dispatch points.
 ### `main()`
 
 Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
-`--history`, otherwise the daily run. The daily run writes prices, then FX, then the
-summary, each independently, and exits non-zero only after everything obtainable has
-been written. The rebuild and the import exit non-zero when their report has failures.
+`--backfill-dividends`, `--history`, otherwise the daily run. The daily run validates
+`distributions.txt` with `funds.txt` before any network call, then writes prices, then FX,
+then the dividend files, then the summary, each independently (a crash in the dividend
+update is reported as a failure and costs the summary nothing), and exits non-zero only
+after everything obtainable has been written. The rebuilds and the import exit non-zero
+when their report has failures.
 
 ## Daily Summary
 
@@ -482,15 +616,16 @@ division error. `format_decimal()` renders without exponent notation.
 
 The same, for currency pairs, with values at 6 decimal places.
 
-### `render_summary_markdown(price_rows, fx_rows, run_date)`
+### `render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None)`
 
-Renders prices, FX, an Attention section and the biggest movers. Pure: no clock, no
-network.
+Renders prices, FX, a Dividends section when `dividend_rows` is given (`None` text when
+it is empty), an Attention section and the biggest movers. Pure: no clock, no network.
 
-### `write_summary(price_rows, fx_rows, run_date, data_dir=None)`
+### `write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=None)`
 
 Writes `data/daily_summary.csv` and `data/daily_summary.md`, and appends the Markdown to
-`$GITHUB_STEP_SUMMARY` when set.
+`$GITHUB_STEP_SUMMARY` when set. The CSV has one row per instrument and does not carry
+the dividends.
 
 **Arithmetic note**: deltas use `decimal.Decimal`, so `7.15 - 7.09` is `0.06` rather
 than the binary float `0.0600000000000005`. A previous price of zero yields an empty
@@ -564,6 +699,7 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 
 - `CLOSED_HOLDINGS_FILE`: One-off import configuration ("closed_holdings.txt")
 - `FX_PAIRS_FILE`: FX pair configuration ("fx_pairs.txt")
+- `DISTRIBUTIONS_FILE`: Distribution schedules for instruments no source covers ("distributions.txt")
 
 ### Behaviour Settings
 - `MAX_PRICE_ATTEMPTS`: Fetch attempts before falling back to the last known price (3)
@@ -574,6 +710,15 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning (50)
 - `FT_BACKFILL_PAUSE_SECONDS`: Pause between FT requests during a rebuild (1)
 - `FX_RATE_DECIMALS`: Decimal places stored for FX rates (6)
+- `DIVIDEND_WINDOW_DAYS`: Days of Yahoo dividend events each daily run re-reads once a
+  history exists (400)
+- `ESTIMATE_WINDOW_DAYS`, `ESTIMATE_STOP_MARGIN_DAYS`, `FREQUENCY_BANDS`: the twelve-month
+  window, the 45-day margin after which a silent payer has stopped, and the median-gap
+  bands that name the frequency (365, 45, 45/135/270 days)
+- `UPCOMING_GRACE_DAYS`, `UPCOMING_MAX_AGE_DAYS`: how long an upcoming row outlives its
+  ex-date once it is in the history, and at most (7, 30)
+- `DISTRIBUTION_FREQUENCIES`: payments a year for each frequency `distributions.txt`
+  accepts
 - `SOURCE_ALIASES`: Deprecated source codes and their replacements (`{"GF": "YA"}`)
 - `LINE_ENDING`: Line ending for every written file (LF)
 
@@ -585,6 +730,8 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 ### File Headers
 - `HISTORY_HEADER`: `Fund,Date,Price,Currency`
 - `FX_HEADER`: `Pair,Date,Rate`
+- `DIVIDEND_HISTORY_HEADER`: `Fund,ExDate,PayDate,Amount,Currency,Source`
+- `DIVIDEND_UPCOMING_HEADER`: `Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`
 - `SUMMARY_HEADER`: columns of `daily_summary.csv`
 
 ## Error Handling

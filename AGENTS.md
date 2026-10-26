@@ -30,6 +30,16 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   workflow. Shares a concurrency group with the daily scrape so the two cannot push
   at the same time.
 
+### Dividends
+- The daily run also writes `data/dividends_history.csv` and `data/dividends_upcoming.csv`
+  (SPEC-010): Yahoo's dividend events for the `YA` instruments, the next declared ex-date,
+  and a projection from the last twelve months when none is declared
+- `python scrape_fund_price.py --backfill-dividends [--from DATE]` - rebuild the Yahoo rows
+  of the dividend history from the source. Manual only
+- `distributions.txt` holds the hand-kept schedules for instruments no source covers (the
+  FT-sourced OEICs): `<identifier>,<frequency>,<xd-dates>,<pay-offset-days>[,<last-amounts>[,<as-of>]]`,
+  validated before any network call
+
 ### Importing Closed Holdings
 - `python scrape_fund_price.py --import-closed` - one-off import of the windows in
   `closed_holdings.txt`. Writes `prices_history.csv` and nothing else. Run locally and
@@ -40,7 +50,8 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 - Results are saved to `data/latest_prices.csv`, `data/prices_history.csv` and
   `data/prices_history_90_days.csv` (rolling 90-calendar-day window, currently priced
   funds only), plus one `data/latest_<identifier>.price` file per fund, the FX files
-  `data/fx_history.csv` and `data/latest_fx.csv`, and `data/daily_summary.{csv,md}`
+  `data/fx_history.csv` and `data/latest_fx.csv`, and `data/daily_summary.{csv,md}`, and the dividend files
+  `data/dividends_history.csv` and `data/dividends_upcoming.csv`
 
 ### Code Quality
 - `./format_code.sh` - Format code with Black and isort
@@ -61,6 +72,7 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 - `funds.txt` - Instruments priced by the daily run
 - `fx_pairs.txt` - FX pairs snapped by the daily run
 - `closed_holdings.txt` - Instruments imported once and never fetched again
+- `distributions.txt` - Hand-kept distribution schedules for instruments no source covers
 - `requirements.txt` - Python dependencies
 
 ### Key Directories
