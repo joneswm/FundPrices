@@ -5,7 +5,7 @@
 | Name | Ccy | Price date | New | Old | Delta | % Delta |
 |---|---|---|---|---|---|---|
 | IE0008368742 | USD | 2026-10-23 | 179.48 | 176.04 | 3.44 | +1.95 |
-| IE00B0M63516 | USD | 2026-10-26 | 26.80 | 33.42 | -6.62 | -19.81 |
+| IE00B0M63516 | USD | 2026-10-26 | 27.27 | 33.42 | -6.15 | -18.40 |
 | GB00B1FXTF86 | GBP | 2026-10-23 | 6.76 | 6.87 | -0.11 | -1.60 |
 | LU0196696453 | USD | 2026-10-23 | 23.62 | 23.54 | 0.08 | +0.34 |
 | MU0129U00005 | USD | 2026-10-23 | 296.08 | 299.34 | -3.26 | -1.09 |
@@ -48,21 +48,7 @@
 
 ## Dividends
 
-| Name | Ex-date | Pay date | Amount | Ccy | Status |
-|---|---|---|---|---|---|
-| DPYG.L | 2026-11-20 | - | 0.0444 | GBP | estimated |
-| IDTG.L | 2026-12-18 | - | 0.0673 | GBP | estimated |
-| QQQ | 2026-12-21 | - | 0.751 | USD | estimated |
-| KNSL | 2026-11-28 | - | 0.25 | USD | estimated |
-| IWDG.L | 2027-01-15 | - | 2.99 | GBp | estimated |
-| GHYS.L | 2027-01-15 | - | 1.3102 | GBP | estimated |
-| IUAG.L | 2026-11-21 | - | 1.8199 | USD | estimated |
-| FLOS.L | 2026-11-21 | - | 9.91 | GBp | estimated |
-| 0639.HK | 2027-03-18 | - | 0.1 | HKD | estimated |
-| INXG.L | 2026-11-21 | - | 0.3994 | GBP | estimated |
-| IGLS.L | 2027-01-16 | - | 2.4146 | GBP | estimated |
-| AGBP.L | 2027-01-16 | - | 0.0754 | GBP | estimated |
-| GLTL.L | 2027-02-03 | - | 0.8811 | GBP | estimated |
+None
 
 ## Attention
 
@@ -70,7 +56,7 @@ None
 
 ## Biggest movers
 
-- **IE00B0M63516**: -19.81%
+- **IE00B0M63516**: -18.40%
 - **KNSL**: -6.69%
 - **GRAB**: -2.11%
 - **QNTG.L**: -2.03%
