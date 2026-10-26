@@ -3164,6 +3164,48 @@ def backfill_dividends(specs, distributions, start=None, data_dir=None, today=No
     return report
 
 
+def configured_identifiers(specs, closed_file=None):
+    """Return every identifier a distributions.txt line may name.
+
+    The identifiers funds.txt publishes under (lookup ids and aliases) and the
+    identifiers of closed_holdings.txt, which may have past dividends of their
+    own. A missing closed-holdings file adds nothing.
+    """
+    if closed_file is None:
+        closed_file = CLOSED_HOLDINGS_FILE
+
+    identifiers = {
+        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
+    }
+    if os.path.isfile(closed_file):
+        identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
+    return identifiers
+
+
+def validate_dividend_backfill_args(args):
+    """Return an error message for an invalid dividend rebuild, else None."""
+    if not getattr(args, "backfill_dividends", False):
+        return None
+
+    if args.backfill or args.history or args.import_closed:
+        return (
+            "--backfill-dividends cannot be combined with --backfill, "
+            "--history or --import-closed"
+        )
+
+    if args.start:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.start):
+            return "Invalid --from date format. Use YYYY-MM-DD"
+        try:
+            start = datetime.date.fromisoformat(args.start)
+        except ValueError:
+            return "Invalid --from date format. Use YYYY-MM-DD"
+        if start > datetime.date.today():
+            return "--from date is in the future"
+
+    return None
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
@@ -3179,7 +3221,9 @@ def parse_arguments(args=None):
         "  Normal mode: python scrape_fund_price.py\n"
         "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
         "  Backfill:   python scrape_fund_price.py --backfill --from 2021-12-01\n"
-        "  Closed:     python scrape_fund_price.py --import-closed",
+        "  Closed:     python scrape_fund_price.py --import-closed\n"
+        "  Dividends:  python scrape_fund_price.py --backfill-dividends\n"
+        "              (optionally --from 2021-12-01)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -3209,6 +3253,11 @@ def parse_arguments(args=None):
         "--import-closed",
         action="store_true",
         help="Import one-off history for the instruments in closed_holdings.txt",
+    )
+    parser.add_argument(
+        "--backfill-dividends",
+        action="store_true",
+        help="Rebuild the Yahoo rows of the dividend history (--from is optional)",
     )
     parser.add_argument(
         "--from",
@@ -3310,6 +3359,30 @@ def main():
             raise SystemExit(1)
         return
 
+    if args.backfill_dividends:
+        error = validate_dividend_backfill_args(args)
+        if error:
+            print(f"Error: {error}")
+            raise SystemExit(2)
+
+        specs = read_fund_specs(FUNDS_FILE)
+        distributions = read_distributions(
+            DISTRIBUTIONS_FILE, configured_identifiers(specs)
+        )
+        report = backfill_dividends(specs, distributions, args.start)
+        summary = report.to_markdown()
+        print(summary)
+
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+            with open(step_summary, "a", encoding="utf-8") as f:
+                f.write(f"## Dividend rebuild from {args.start or 'the start'}\n\n")
+                f.write(f"{summary}\n")
+
+        if report.failures:
+            raise SystemExit(1)
+        return
+
     # Check if historical data mode
     if args.history:
         if not args.start:
@@ -3327,6 +3400,10 @@ def main():
         failures = []
 
         funds = read_fund_specs(FUNDS_FILE)
+        # Validated with funds.txt, before any network call.
+        distributions = read_distributions(
+            DISTRIBUTIONS_FILE, configured_identifiers(funds)
+        )
         results = scrape_funds(funds)
         write_results(results)
         failures.extend(getattr(results, "failures", []))
@@ -3341,6 +3418,14 @@ def main():
             fx_failures = list(fx_results.failures)
             failures.extend(fx_failures)
 
+        # Dividends are fetched and written independently too: a crash here
+        # must not cost the day's price summary.
+        try:
+            dividends = update_dividends(funds, distributions)
+        except Exception as error:
+            dividends = DividendResults(failures=[f"dividends: {error}"])
+        failures.extend(dividends.failures)
+
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.
         run_date = datetime.date.today().isoformat()
@@ -3354,7 +3439,9 @@ def main():
             fx_failures,
             run_date,
         )
-        write_summary(price_summary, fx_summary, run_date)
+        write_summary(
+            price_summary, fx_summary, run_date, dividend_rows=dividends.summary
+        )
 
         if failures:
             for failure in failures:

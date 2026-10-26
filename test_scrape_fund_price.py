@@ -6333,7 +6333,8 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 
     def _run(self, update=None):
         """Run main() with prices faked, keeping the mocks that matter."""
-        update = update or scrape_fund_price.DividendResults()
+        if update is None:
+            update = scrape_fund_price.DividendResults()
         outcome = (
             {"side_effect": update}
             if isinstance(update, Exception)
