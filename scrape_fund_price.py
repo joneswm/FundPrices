@@ -556,11 +556,7 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
     # adjusted values would not match prices snapped at the time.
     history = ticker.history(start=start, end=end, auto_adjust=False)
 
-    currency = ""
-    try:
-        currency = ticker.fast_info["currency"] or ""
-    except Exception:
-        currency = ""
+    currency = ticker_currency(ticker)
 
     bars = list(history["Close"].items()) if len(history) else []
     volumes = history["Volume"].tolist() if "Volume" in history else [None] * len(bars)
