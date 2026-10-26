@@ -65,9 +65,7 @@ _REAL_DATA_DIR = scrape_fund_price.DATA_DIR
 _SUITE_DATA_DIR = None
 # The same for the issuer list (SPEC-011): no test reads the shipped
 # dividend_sources.txt by accident, so a main() test never fetches a page.
-_REAL_DIVIDEND_SOURCES_FILE = getattr(
-    scrape_fund_price, "DIVIDEND_SOURCES_FILE", "dividend_sources.txt"
-)
+_REAL_DIVIDEND_SOURCES_FILE = scrape_fund_price.DIVIDEND_SOURCES_FILE
 
 
 def setUpModule():

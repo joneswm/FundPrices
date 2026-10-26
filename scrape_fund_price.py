@@ -2625,6 +2625,113 @@ def collect_dividends(specs, today, start=None):
     return results
 
 
+DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
+# Source codes a dividend_sources.txt line may name (SPEC-011).
+DIVIDEND_SOURCE_CODES = ("IS",)
+
+
+class DividendSource(NamedTuple):
+    """One instrument's issuer source for dividend dates (SPEC-011).
+
+    `source_id` is the issuer's own id for the share class: for IS (iShares
+    UK), the product id in the fund page's URL.
+    """
+
+    identifier: str
+    source: str
+    source_id: str
+
+
+def dividend_source_error(number, message):
+    """Build the ValueError for a bad dividend_sources.txt line."""
+    return ValueError(f"dividend sources file line {number}: {message}")
+
+
+def read_dividend_sources(filename=None, specs=None):
+    """Read the issuer sources of dividend dates.
+
+    Each line is `<identifier>,<source>,<source-id>` with `#` comments and
+    blank lines ignored; see specs/011-pay-dates/spec.md. A missing file means
+    no entries, so the file is optional like distributions.txt.
+
+    Args:
+        filename: Path to read (default: DIVIDEND_SOURCES_FILE)
+        specs: The funds.txt instruments; a line may name any identifier they
+            publish, and two lines may not name one instrument. None skips
+            those checks
+
+    Raises:
+        ValueError: naming the offending line, before any network call.
+    """
+    if filename is None:
+        filename = DIVIDEND_SOURCES_FILE
+
+    if not os.path.isfile(filename):
+        return []
+
+    instrument_of = None
+    if specs is not None:
+        instrument_of = {
+            identifier: as_fund_spec(entry).lookup_id
+            for entry in specs
+            for identifier in as_fund_spec(entry).publish_ids
+        }
+
+    sources = []
+    seen = {}
+    instruments = {}
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) != 3 or not fields[0]:
+                raise dividend_source_error(
+                    number,
+                    f"expected '<identifier>,<source>,<source-id>', got {line!r}",
+                )
+
+            identifier, source, source_id = fields[0], fields[1].upper(), fields[2]
+            if source not in DIVIDEND_SOURCE_CODES:
+                raise dividend_source_error(
+                    number,
+                    f"source {fields[1]!r} is not one of "
+                    f"{', '.join(DIVIDEND_SOURCE_CODES)}",
+                )
+            if not re.match(r"^[1-9][0-9]{0,8}$", source_id):
+                raise dividend_source_error(
+                    number,
+                    f"source id {source_id!r} must be the product id from the "
+                    f"fund's URL (1 to 9 digits)",
+                )
+            if instrument_of is not None and identifier not in instrument_of:
+                raise dividend_source_error(
+                    number, f"identifier {identifier!r} is not published by funds.txt"
+                )
+            if identifier in seen:
+                raise dividend_source_error(
+                    number,
+                    f"identifier {identifier!r} already used on line "
+                    f"{seen[identifier]}",
+                )
+            seen[identifier] = number
+            if instrument_of is not None:
+                instrument = instrument_of[identifier]
+                if instrument in instruments:
+                    raise dividend_source_error(
+                        number,
+                        f"{identifier!r} is the same instrument as line "
+                        f"{instruments[instrument]}",
+                    )
+                instruments[instrument] = number
+
+            sources.append(DividendSource(identifier, source, source_id))
+
+    return sources
+
+
 # The frequency and the next dividend are read from the twelve months of
 # ex-dates up to the last one (SPEC-010).
 ESTIMATE_WINDOW_DAYS = 365
