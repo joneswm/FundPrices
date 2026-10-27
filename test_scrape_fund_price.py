@@ -8729,5 +8729,408 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         self.assertEqual(history[("QQQ", "2026-09-21")][2], "2026-10-08")
 
 
+# ---------------------------------------------------------------------------
+# SPEC-013: UK CPI (ONS series D7BT) published monthly as uk_cpi.csv, one
+# canned response recorded once from the live endpoint (#91).
+# ---------------------------------------------------------------------------
+
+
+def ons_payload(months, cdid="D7BT"):
+    """Build an ONS time-series response from (year, month name, value) rows."""
+    return json.dumps(
+        {
+            "description": {"cdid": cdid, "title": "CPI INDEX 00: ALL ITEMS 2015=100"},
+            "months": [
+                {
+                    "date": f"{year} {name[:3].upper()}",
+                    "value": value,
+                    "year": year,
+                    "month": name,
+                }
+                for year, name, value in months
+            ],
+        }
+    )
+
+
+def ons_months(first_year=2015, last_year=2024):
+    """A full run of monthly rows from January of one year to December of another."""
+    names = [datetime.date(2000, number, 1).strftime("%B") for number in range(1, 13)]
+    return [
+        (str(year), name, f"{100 + (year - 2015) * 2 + number / 10:.1f}")
+        for year in range(first_year, last_year + 1)
+        for number, name in enumerate(names, start=1)
+    ]
+
+
+class TestOnsCpiParsing(unittest.TestCase):
+    """Test reading the ONS D7BT response (SPEC-013, #91)."""
+
+    def test_the_recorded_response_gives_the_published_months(self):
+        """Test the live fixture: 2015-01 on, the index as the ONS words it."""
+        index = scrape_fund_price.parse_ons_cpi(fixture_text("ons_d7bt_cpi.json"))
+        months = list(index)
+        self.assertEqual(months[0], "2015-01")
+        self.assertEqual(months[-1], "2026-09")
+        self.assertEqual(len(months), 11 * 12 + 9)
+        self.assertEqual(months, sorted(months))
+        self.assertEqual(index["2015-01"], "99.3")
+        self.assertEqual(index["2015-02"], "99.5")
+        self.assertEqual(index["2026-09"], "144.1")
+
+    def test_months_before_2015_are_not_published(self):
+        """Test the fixture holds 2014 and the parser drops it."""
+        text = fixture_text("ons_d7bt_cpi.json")
+        self.assertIn('"2014 DEC"', text)
+        self.assertNotIn("2014-12", scrape_fund_price.parse_ons_cpi(text))
+
+    def test_the_index_is_kept_exactly_as_published(self):
+        """Test no float round trip: '100' stays '100', '99.30' stays '99.30'."""
+        months = ons_months(2015, 2015)
+        months[0] = ("2015", "January", "100")
+        months[1] = ("2015", "February", "99.30")
+        index = scrape_fund_price.parse_ons_cpi(ons_payload(months))
+        self.assertEqual(index["2015-01"], "100")
+        self.assertEqual(index["2015-02"], "99.30")
+
+    def test_a_month_without_a_value_is_not_yet_published(self):
+        """Test the ONS lists a month with an empty value before it is out."""
+        months = ons_months(2015, 2015) + [("2016", "January", "")]
+        index = scrape_fund_price.parse_ons_cpi(ons_payload(months))
+        self.assertNotIn("2016-01", index)
+        self.assertEqual(len(index), 12)
+
+    def test_another_series_is_refused(self):
+        """Test a response for a different series id is a changed response."""
+        with self.assertRaisesRegex(ValueError, "D7BT"):
+            scrape_fund_price.parse_ons_cpi(
+                ons_payload(ons_months(2015, 2015), cdid="CHZQ")
+            )
+
+    def test_a_response_that_is_not_json_is_refused(self):
+        """Test the ONS's HTML error page is a bad response."""
+        with self.assertRaises(ValueError):
+            scrape_fund_price.parse_ons_cpi("<html>Page not found</html>")
+
+    def test_a_response_without_months_is_refused(self):
+        """Test a changed shape is refused, not read as no months."""
+        for text in ('{"description": {"cdid": "D7BT"}}', "[]", '{"months": []}'):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    scrape_fund_price.parse_ons_cpi(text)
+
+    def test_a_series_that_no_longer_reaches_back_to_2015_is_refused(self):
+        """Test a truncated series cannot replace the published file."""
+        with self.assertRaisesRegex(ValueError, "2015-01"):
+            scrape_fund_price.parse_ons_cpi(ons_payload(ons_months(2016, 2024)))
+
+    def test_a_gap_in_the_series_is_refused(self):
+        """Test a missing month inside the range is a bad response."""
+        months = [row for row in ons_months(2015, 2020) if row[:2] != ("2017", "May")]
+        with self.assertRaisesRegex(ValueError, "2017-05"):
+            scrape_fund_price.parse_ons_cpi(ons_payload(months))
+
+    def test_a_value_that_is_not_a_number_is_refused(self):
+        """Test a non-numeric or non-positive index is a bad response."""
+        for value in ("n/a", "-1", "0", "1e3", "99,3"):
+            with self.subTest(value=value):
+                months = ons_months(2015, 2015)
+                months[3] = ("2015", "April", value)
+                with self.assertRaisesRegex(ValueError, "2015-04"):
+                    scrape_fund_price.parse_ons_cpi(ons_payload(months))
+
+    def test_a_month_listed_twice_is_refused(self):
+        """Test a duplicated month is ambiguous, so it is a bad response."""
+        months = ons_months(2015, 2015) + [("2015", "March", "101.0")]
+        with self.assertRaisesRegex(ValueError, "2015-03"):
+            scrape_fund_price.parse_ons_cpi(ons_payload(months))
+
+    def test_an_unknown_month_name_is_refused(self):
+        """Test a label the parser does not know is a changed response."""
+        months = ons_months(2015, 2015)
+        months[0] = ("2015", "Smarch", "99.3")
+        with self.assertRaises(ValueError):
+            scrape_fund_price.parse_ons_cpi(ons_payload(months))
+
+
+class TestOnsCpiFetch(unittest.TestCase):
+    """Test the one request per run (SPEC-013, #91)."""
+
+    def test_one_get_of_the_time_series(self):
+        """Test the url, the browser User-Agent, the timeout and the status check."""
+        response = MagicMock(text=fixture_text("ons_d7bt_cpi.json"))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            index = scrape_fund_price.fetch_uk_cpi()
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://www.ons.gov.uk/economy/inflationandpriceindices/"
+            "timeseries/d7bt/mm23/data",
+        )
+        self.assertTrue(
+            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(index["2026-09"], "144.1")
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_uk_cpi()
+
+
+class TestUkCpiUpdate(unittest.TestCase):
+    """Test the daily update of uk_cpi.csv (SPEC-013, #91)."""
+
+    TODAY = date(2026, 10, 27)
+    HEADER = "Month,Index,Series,AsOf\n"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.test_dir, "uk_cpi.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _run(self, fetch):
+        with patch.object(scrape_fund_price, "fetch_uk_cpi", fetch):
+            return REAL_UPDATE_UK_CPI(self.test_dir, self.TODAY)
+
+    def _read(self):
+        with open(self.path, newline="") as file:
+            return file.read()
+
+    def test_the_first_run_writes_the_whole_series(self):
+        """Test header, a row per month sorted, series id and the run date."""
+        index = {"2015-02": "99.5", "2015-01": "99.3"}
+        results = self._run(lambda: index)
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read(),
+            self.HEADER
+            + "2015-01,99.3,D7BT,2026-10-27\n"
+            + "2015-02,99.5,D7BT,2026-10-27\n",
+        )
+
+    def test_the_file_has_lf_endings(self):
+        """Test no CRLF, on any platform."""
+        self._run(lambda: {"2015-01": "99.3"})
+        with open(self.path, "rb") as file:
+            self.assertNotIn(b"\r", file.read())
+
+    def test_the_real_response_gives_a_file_from_2015_01(self):
+        """Test the recorded response end to end."""
+        text = fixture_text("ons_d7bt_cpi.json")
+        self._run(lambda: scrape_fund_price.parse_ons_cpi(text))
+        lines = self._read().splitlines()
+        self.assertEqual(lines[0], "Month,Index,Series,AsOf")
+        self.assertEqual(lines[1], "2015-01,99.3,D7BT,2026-10-27")
+        self.assertEqual(lines[-1], "2026-09,144.1,D7BT,2026-10-27")
+        self.assertEqual(len(lines), 1 + 11 * 12 + 9)
+
+    def test_a_revised_month_replaces_the_published_one(self):
+        """Test the ONS's number wins and every row says when it was read."""
+        with open(self.path, "w", newline="") as file:
+            file.write(
+                self.HEADER
+                + "2015-01,99.3,D7BT,2026-09-01\n"
+                + "2015-02,99.5,D7BT,2026-09-01\n"
+            )
+        self._run(lambda: {"2015-01": "99.3", "2015-02": "99.6", "2015-03": "99.7"})
+        self.assertEqual(
+            self._read(),
+            self.HEADER
+            + "2015-01,99.3,D7BT,2026-10-27\n"
+            + "2015-02,99.6,D7BT,2026-10-27\n"
+            + "2015-03,99.7,D7BT,2026-10-27\n",
+        )
+
+    def test_a_published_month_the_response_lacks_is_kept(self):
+        """Test the file never loses a month the ONS once published."""
+        with open(self.path, "w", newline="") as file:
+            file.write(self.HEADER + "2014-12,99.0,D7BT,2026-09-01\n")
+        self._run(lambda: {"2015-01": "99.3"})
+        self.assertIn("2014-12,99.0,D7BT,2026-09-01\n", self._read())
+        self.assertIn("2015-01,99.3,D7BT,2026-10-27\n", self._read())
+
+    def test_a_failed_fetch_keeps_the_last_published_file(self):
+        """Test the file is byte-identical and the failure is listed."""
+        stored = self.HEADER + "2015-01,99.3,D7BT,2026-09-01\n"
+        with open(self.path, "w", newline="") as file:
+            file.write(stored)
+
+        def refuse():
+            raise ValueError("ONS D7BT: months missing")
+
+        results = self._run(refuse)
+        self.assertEqual(self._read(), stored)
+        self.assertEqual(len(results.failures), 1)
+        self.assertTrue(results.failures[0].startswith("uk_cpi: "))
+        self.assertIn("months missing", results.failures[0])
+
+    def test_a_failure_with_no_file_writes_none(self):
+        """Test no empty or error file is created."""
+
+        def refuse():
+            raise ConnectionError("down")
+
+        results = self._run(refuse)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(len(results.failures), 1)
+
+    def test_a_transient_failure_is_retried(self):
+        """Test the shared retry applies, as for every other source."""
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise ConnectionError("blip")
+            return {"2015-01": "99.3"}
+
+        results = self._run(flaky)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(results.failures, [])
+        self.assertIn("2015-01,99.3", self._read())
+
+    def test_the_data_directory_is_created(self):
+        """Test a missing data/ is made, as for the other files."""
+        nested = os.path.join(self.test_dir, "nested")
+        with patch.object(scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "1"}):
+            REAL_UPDATE_UK_CPI(nested, self.TODAY)
+        self.assertTrue(os.path.isfile(os.path.join(nested, "uk_cpi.csv")))
+
+    def test_the_defaults_are_the_data_directory_and_today(self):
+        """Test the arguments are optional."""
+        with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
+            with patch.object(
+                scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "99.3"}
+            ):
+                REAL_UPDATE_UK_CPI()
+        self.assertIn(date.today().isoformat(), self._read())
+
+
+class TestUkCpiInMain(unittest.TestCase):
+    """Test the daily run publishes the index beside the prices (#91)."""
+
+    def _main(self, outcome):
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start=None,
+                        end=None,
+                        backfill=False,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "QQQ")],
+                )
+            )
+            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
+            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
+            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
+            self.write = enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
+            self.summary = enter(patch("scrape_fund_price.write_summary"))
+            enter(
+                patch(
+                    "scrape_fund_price.update_dividends",
+                    return_value=scrape_fund_price.DividendResults(),
+                )
+            )
+            enter(patch("builtins.print"))
+            self.update = enter(patch("scrape_fund_price.update_uk_cpi", **outcome))
+            main()
+
+    def test_the_daily_run_updates_the_index_once(self):
+        """Test update_uk_cpi runs in the normal mode."""
+        self._main({"return_value": scrape_fund_price.UkCpiResults()})
+        self.update.assert_called_once_with()
+
+    def test_a_failure_is_in_the_runs_failure_list_after_everything_is_written(self):
+        """Test the run exits non-zero, with prices and summary already written."""
+        results = scrape_fund_price.UkCpiResults(failures=["uk_cpi: down"])
+        with self.assertRaises(SystemExit):
+            self._main({"return_value": results})
+        self.write.assert_called_once()
+        self.summary.assert_called_once()
+
+    def test_a_crash_in_the_update_does_not_cost_the_summary(self):
+        """Test an unexpected exception is a failure, as for the dividends."""
+        with self.assertRaises(SystemExit):
+            self._main({"side_effect": RuntimeError("boom")})
+        self.summary.assert_called_once()
+
+    def test_the_other_modes_do_not_fetch_it(self):
+        """Test --backfill and the rest never touch the ONS."""
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start="2024-01-01",
+                        end=None,
+                        backfill=True,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
+            enter(
+                patch(
+                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
+                )
+            )
+            enter(patch("builtins.print"))
+            update = enter(patch("scrape_fund_price.update_uk_cpi"))
+            main()
+        update.assert_not_called()
+
+
+REAL_UPDATE_UK_CPI = None
+_UK_CPI_PATCH = None
+
+
+def setUpModule():
+    """Keep every other main() test off the network (#91).
+
+    The daily run now ends by updating uk_cpi.csv; those tests exercise other
+    behaviour, so the update is stubbed for them and the real function is kept
+    for the tests above.
+    """
+    global REAL_UPDATE_UK_CPI, _UK_CPI_PATCH
+    REAL_UPDATE_UK_CPI = getattr(scrape_fund_price, "update_uk_cpi", None)
+    _UK_CPI_PATCH = patch(
+        "scrape_fund_price.update_uk_cpi",
+        return_value=MagicMock(failures=[]),
+        create=True,
+    )
+    _UK_CPI_PATCH.start()
+
+
+def tearDownModule():
+    _UK_CPI_PATCH.stop()
+
+
 if __name__ == "__main__":
     unittest.main()
