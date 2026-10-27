@@ -1,5 +1,7 @@
-playwright>=1.63.0
+playwright>=1.64.0
 coverage>=7.16.2
 yfinance>=1.7.0
 requests>=2.34.2
-numpy>=1.26.0
+numpy>=2.5.4; python_version >= "3.11"
+# numpy 2.3+ needs Python 3.11; keep the 3.10 CI floor (constitution) installable
+numpy>=1.26.0; python_version < "3.11"
