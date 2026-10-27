@@ -11,6 +11,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **History rebuild**: stored history can be rebuilt from the sources back to any date
 - **Closed holdings**: one-off imports for instruments no longer held, kept out of the daily run
 - **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does, and `dividend_sources.txt` adds the issuer's real pay dates and declared amounts (SPEC-011, SPEC-012)
+- **UK CPI**: the ONS consumer price index (series D7BT), monthly from 2015, published as `uk_cpi.csv` for real returns (SPEC-013)
 - **Identifier aliases**: one fetch published under several identifiers
 - **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
@@ -218,6 +219,24 @@ Closed holdings may be listed for their past dividends; they never get an upcomi
 The file is validated before any network call, like `funds.txt`, and a malformed line
 fails with its line number. It ships with a commented header and no entries.
 
+### UK CPI
+
+The daily run also publishes the UK consumer price index, `data/uk_cpi.csv`, so a consumer
+can deflate returns into today's pounds. It is the ONS series **D7BT** (CPI INDEX 00: ALL
+ITEMS, 2015 = 100), monthly from January 2015, read from the ONS time-series endpoint
+(`https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7bt/mm23/data`) with
+one request per run. There is nothing to configure.
+
+- A month the ONS has revised replaces the stored one; every row carries the run date as
+  `AsOf`, the day the value was read. A stored month the response lacks is kept
+- `Index` is the ONS's own text (`144.1`), never reformatted
+- A failed request, or a response that has changed (another series, no months, a missing
+  month, a bad number), leaves the last published file as it was and is listed with the run's
+  other failures as `uk_cpi: <error>`; the ONS answers once a month, so the file is rarely
+  anything but the same data re-read
+
+The design is [specs/013-uk-cpi](specs/013-uk-cpi/spec.md).
+
 ### Usage
 
 #### Rebuild History (Backfill)
@@ -345,6 +364,7 @@ The application creates the following files in the `data/` directory:
 - `latest_fx.csv`: Most recent rate per currency pair
 - `dividends_history.csv`: Every past ex-date, one row per instrument and ex-date
 - `dividends_upcoming.csv`: The next dividend per instrument, declared or estimated
+- `uk_cpi.csv`: The UK consumer price index (ONS D7BT), one row per month from 2015-01
 - `latest_<identifier>.price`: Individual price files for each fund
 
 ### Historical Data Mode
@@ -383,6 +403,16 @@ ABCD,2026-11-19,2026-12-10,0.91,USD,declared,2026-10-26
 never converted. `Source` is `YA` (Yahoo), `IS`, `IV`, `SS`, `Q4` or `ET` (the issuer, `dividend_sources.txt`) or
 `config` (`distributions.txt`); an issuer beats `YA` beats `config`. `AsOf` is
 the run that produced or last confirmed the row.
+
+**UK CPI (uk_cpi.csv)**:
+```csv
+Month,Index,Series,AsOf
+2015-01,99.3,D7BT,2026-10-27
+2026-09,144.1,D7BT,2026-10-27
+```
+
+`Month` is `YYYY-MM`. `Index` is the published CPI index with 2015 = 100, as the ONS gives it.
+`AsOf` is the run that read it.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
 ```csv
@@ -441,6 +471,7 @@ The project includes automated execution via GitHub Actions:
 **Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
 **New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
+- ✅ **UK CPI**: the ONS consumer price index (D7BT) published monthly as `uk_cpi.csv`, from 2015, for real returns (SPEC-013)
 - ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011), and for QQQ, GLTL.L, KNSL and 0639.HK from Invesco, SSGA, Q4 Inc and etnet (SPEC-012)
 - ✅ **Dividend Calendar**: past and upcoming dividends per instrument, declared or projected, with a hand-kept schedule for instruments no source covers (SPEC-010)
 - ✅ **Core Functionality**: Multi-source dated price collection (Yahoo Finance API, FT and investing.com over HTTP; scraping fallback), FX rates, daily summary, history rebuild, closed-holding imports

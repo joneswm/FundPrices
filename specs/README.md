@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-013: UK CPI Published Monthly
+**Status**: ✅ Built (branch `uk-cpi`, not yet merged)
+**Location**: [013-uk-cpi/](013-uk-cpi/)
+**Description**: Publish the ONS series D7BT (CPI index, 2015=100) monthly as `data/uk_cpi.csv` (`Month,Index,Series,AsOf`), read once a run, so Portfolio Tracker can show real returns (#91).
+
 ### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
 **Status**: ✅ Built (branch `pay-date-sources`, not yet merged)
 **Location**: [012-pay-date-sources/](012-pay-date-sources/)
