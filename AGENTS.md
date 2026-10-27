@@ -251,8 +251,8 @@ rate rather than its close.
   price traded on the bar's date and the regular session is over; any doubt drops the bar
 - It also holds back a priced newest bar while that day's regular session is still open
   (#84), so a run during market hours stores no intraday price. FT's dated endpoint has
-  no such check yet: a run during the day can store a provisional FT row, which the next
-  run replaces
+  no session times, so `fetch_ft_quotes` stores a row only once 16:00 New York (the US
+  close) on its date has passed; the undated scraping fallback is not covered
 - Scheduled runs start hours after the cron time, so a run at 00:40 UTC is normal
 
 ### Error Handling

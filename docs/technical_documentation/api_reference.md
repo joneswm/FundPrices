@@ -123,7 +123,7 @@ than a dividend-adjusted series. Does **not** use the summary endpoint (`.info`)
 carries no date and was observed returning a stale price for mutual funds. Exceptions
 propagate so `fetch_with_retries()` can retry them.
 
-### `fetch_ft_quotes(isin, start, end=None)`
+### `fetch_ft_quotes(isin, start, end=None, now=None)`
 
 Fetches dated daily quotes from Financial Times.
 
@@ -131,14 +131,23 @@ Fetches dated daily quotes from Financial Times.
 - `isin` (str): Fund ISIN as used in `funds.txt`
 - `start` (str): Inclusive ISO start date
 - `end` (str, optional): Inclusive ISO end date; `None` for today
+- `now` (datetime, optional): Aware time used to judge whether a row's day is over;
+  `None` for the current time
 
-**Returns:** `list[Quote]`, oldest first
+**Returns:** `list[Quote]`, oldest first. Empty when every row was held back as
+provisional; that is not an error, because the scraping fallback would store the same
+provisional price.
 
 **Raises:** `ValueError` when FT's internal id cannot be resolved or no rows are
 returned, so the caller can fall back to scraping.
 
 Two plain HTTP requests, no browser. Prices are kept as text so published digits are
 preserved exactly.
+
+A row is stored only once 16:00 New York (the US close) on its own date has passed
+(#84). FT serves a provisional row for the current day that moves until the evening and
+carries no session times to judge it by; the 21:05 UTC run is after the cut all year
+round.
 
 ### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None)`
 
