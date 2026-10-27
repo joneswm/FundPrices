@@ -48,12 +48,7 @@
 
 ## Dividends
 
-| Name | Ex-date | Pay date | Amount | Ccy | Status |
-|---|---|---|---|---|---|
-| QQQ | 2026-12-21 | 2027-01-07 | 0.75143 | USD | estimated |
-| KNSL | 2026-11-28 | 2026-12-15 | 0.25 | USD | estimated |
-| 0639.HK | 2027-03-18 | 2027-05-05 | 0.1 | HKD | estimated |
-| GLTL.L | 2027-02-03 | 2027-02-17 | 0.8811 | GBP | estimated |
+None
 
 ## Attention
 
