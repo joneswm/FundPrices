@@ -26,6 +26,23 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-013: UK CPI Published Monthly as uk_cpi.csv
+**Status**: ✅ **COMPLETED** (on branch `uk-cpi`, not yet merged)  
+**Created**: 2026-10-27  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/013-uk-cpi/`  
+**Tracking**: [#91](https://github.com/joneswm/FundPrices/issues/91)
+
+**Implementation Details**:
+- ✅ `data/uk_cpi.csv` (`Month,Index,Series,AsOf`): the ONS series D7BT, monthly from 2015-01, the index as the ONS words it, `AsOf` the run that read it
+- ✅ One GET of the ONS time-series JSON per run, retried like every other source; a revised month replaces the stored one
+- ✅ A response that has changed (another series, no months, a gap, a bad index) keeps the last published file and is listed in the run's failures as `uk_cpi: <error>`
+- ✅ Written in the normal mode only, after the dividends and independently of them
+
+**Evidence**: `parse_ons_cpi()`, `fetch_uk_cpi()` and `update_uk_cpi()` in `scrape_fund_price.py`; the classes `TestOnsCpiParsing` to `TestUkCpiInMain` in `test_scrape_fund_price.py`, against one response recorded in `fixtures/ons_d7bt_cpi.json`. Run `make test-coverage` for the figures.
+
+---
+
 ### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
 **Status**: ✅ **COMPLETED** (on branch `pay-date-sources`, not yet merged)  
 **Created**: 2026-10-27  

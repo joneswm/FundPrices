@@ -58,7 +58,7 @@ The application will create a `data/` directory for storing results:
 - `latest_prices.csv`: Most recent prices
 - `prices_history.csv`: Historical data
 - `prices_history_90_days.csv`, `latest_<identifier>.price`, `fx_history.csv`,
-  `latest_fx.csv`, `dividends_history.csv`, `dividends_upcoming.csv`,
+  `latest_fx.csv`, `dividends_history.csv`, `dividends_upcoming.csv`, `uk_cpi.csv`,
   `daily_summary.csv` and `daily_summary.md`
 
 ### 3. File Locations

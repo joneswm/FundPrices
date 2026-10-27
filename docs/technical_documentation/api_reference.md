@@ -659,6 +659,40 @@ Accepts a `FundSpec` or a plain `(source, identifier)` pair and returns a `FundS
 with a canonical source, so a spec built in code cannot carry a deprecated spelling
 past the dispatch points.
 
+## UK CPI
+
+The UK consumer price index (SPEC-013): `data/uk_cpi.csv` (`Month,Index,Series,AsOf`), written by
+the daily run. The header is `UK_CPI_HEADER`; the series id `UK_CPI_SERIES` (`D7BT`), the first
+month `UK_CPI_START` (`2015-01`) and the endpoint `UK_CPI_URL`.
+
+### `parse_ons_cpi(text)`
+
+Read the ONS time-series JSON into `{"YYYY-MM": index text}`, oldest first, from `2015-01`. The
+index is the ONS's own text. A month listed with an empty value is absent.
+
+**Raises**: `ValueError` for a response that is not JSON, is not series D7BT, has no months, does
+not reach `2015-01`, skips or repeats a month, names an unknown month, or holds an index that is
+not a positive plain decimal.
+
+### `fetch_uk_cpi()`
+
+One GET of `UK_CPI_URL` (30 s timeout, browser `User-Agent`), parsed by `parse_ons_cpi()`. Errors
+propagate so `fetch_with_retries()` can retry them.
+
+### `read_uk_cpi(data_dir)` and `write_uk_cpi(rows, data_dir)`
+
+Read `uk_cpi.csv` keyed on `Month` (a missing file is `{}`); write it sorted by month with LF
+endings. Rows are `[Month, Index, Series, AsOf]`.
+
+### `update_uk_cpi(data_dir=None, today=None)`
+
+Fetch with retries; every month in the response replaces the stored row and takes the run date as
+`AsOf`; stored months the response lacks are kept. On a failed or refused response the file is not
+touched and the result's `failures` holds `"uk_cpi: <error>"`.
+
+**Returns**: `UkCpiResults` (`failures`). `main()` calls it after the dividends, in the normal mode
+only, and adds its failures to the run's.
+
 ## Entry Point
 
 ### `main()`
@@ -666,7 +700,7 @@ past the dispatch points.
 Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
 `--backfill-dividends`, `--history`, otherwise the daily run. The daily run validates
 `distributions.txt` and `dividend_sources.txt` with `funds.txt` before any network call, then writes prices, then FX,
-then the dividend files, then the summary, each independently (a crash in the dividend
+then the dividend files, then `uk_cpi.csv`, then the summary, each independently (a crash in the dividend
 update is reported as a failure and costs the summary nothing), and exits non-zero only
 after everything obtainable has been written. The rebuilds and the import exit non-zero
 when their report has failures.

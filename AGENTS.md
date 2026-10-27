@@ -47,6 +47,12 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   instrument that pays has a source; how they were found is
   `docs/research/dividend_pay_date_sources.md`
 
+### UK CPI
+- The daily run also writes `data/uk_cpi.csv` (SPEC-013): the ONS series D7BT, monthly from
+  2015-01, `Month,Index,Series,AsOf`, one GET of the ONS time-series JSON per run. A revised month
+  replaces the stored one; a failed or changed response keeps the last file and is listed in the
+  failures as `uk_cpi: <error>`. No configuration file
+
 ### Importing Closed Holdings
 - `python scrape_fund_price.py --import-closed` - one-off import of the windows in
   `closed_holdings.txt`. Writes `prices_history.csv` and nothing else. Run locally and
@@ -58,7 +64,7 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   `data/prices_history_90_days.csv` (rolling 90-calendar-day window, currently priced
   funds only), plus one `data/latest_<identifier>.price` file per fund, the FX files
   `data/fx_history.csv` and `data/latest_fx.csv`, and `data/daily_summary.{csv,md}`, and the dividend files
-  `data/dividends_history.csv` and `data/dividends_upcoming.csv`
+  `data/dividends_history.csv` and `data/dividends_upcoming.csv`, and `data/uk_cpi.csv`
 
 ### Code Quality
 - `./format_code.sh` - Format code with Black and isort

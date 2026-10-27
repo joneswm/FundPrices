@@ -98,6 +98,7 @@ them.)
 | `fx_history.csv`, `latest_fx.csv` | `Pair,Date,Rate` at 6 dp | daily, rebuild |
 | `dividends_history.csv` | `Fund,ExDate,PayDate,Amount,Currency,Source`: every past ex-date | daily, dividend rebuild |
 | `dividends_upcoming.csv` | `Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`: the next dividend, `declared` or `estimated` | daily, dividend rebuild |
+| `uk_cpi.csv` | `Month,Index,Series,AsOf`: the ONS CPI index D7BT (2015=100), monthly from 2015-01 | daily |
 | `daily_summary.csv`, `daily_summary.md` | new, old, delta and percent delta; the Markdown also lists the dividends that are new today | daily |
 
 **Design decisions**
@@ -156,6 +157,9 @@ dividend_sources.txt ───────────┴─> update_dividends �
                                      │  per source line: fetch_with_retries(issuer page),
                                      │    apply_issuer_table: pay dates, amounts, declared
                                      └─> build_dividend_upcoming ──> dividends_upcoming.csv
+                                                        │
+(ONS D7BT) ──> update_uk_cpi ──> uk_cpi.csv
+                                     │  one fetch_with_retries(fetch_uk_cpi); a bad response keeps the file
                                                         │
 history + fx ──> build_price_summary / build_fx_summary ──> write_summary
                                                         │
