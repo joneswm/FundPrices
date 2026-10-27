@@ -1,4 +1,4 @@
-# Daily Price Summary - 2026-10-26
+# Daily Price Summary - 2026-10-27
 
 ## Prices
 
@@ -48,18 +48,7 @@
 
 ## Dividends
 
-| Name | Ex-date | Pay date | Amount | Ccy | Status |
-|---|---|---|---|---|---|
-| IE00B0M63516 | 2026-12-17 | 2026-12-30 | 0.2948 | USD | estimated |
-| DPYG.L | 2026-11-20 | 2026-12-01 | 0.0444 | GBP | estimated |
-| IDTG.L | 2026-12-18 | 2026-12-30 | 0.0673 | GBP | estimated |
-| IWDG.L | 2027-01-15 | 2027-01-28 | 2.99 | GBp | estimated |
-| GHYS.L | 2027-01-15 | 2027-01-28 | 1.3102 | GBP | estimated |
-| IUAG.L | 2026-11-21 | 2026-11-29 | 1.8199 | USD | estimated |
-| FLOS.L | 2026-11-21 | 2026-11-29 | 9.91 | GBp | estimated |
-| INXG.L | 2026-11-21 | 2026-11-29 | 0.3994 | GBP | estimated |
-| IGLS.L | 2027-01-16 | 2027-01-29 | 2.4146 | GBP | estimated |
-| AGBP.L | 2027-01-16 | 2027-01-29 | 0.0754 | GBP | estimated |
+None
 
 ## Attention
 
