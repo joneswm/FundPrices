@@ -69,18 +69,29 @@ _SUITE_DATA_DIR = None
 # The same for the issuer list (SPEC-011): no test reads the shipped
 # dividend_sources.txt by accident, so a main() test never fetches a page.
 _REAL_DIVIDEND_SOURCES_FILE = scrape_fund_price.DIVIDEND_SOURCES_FILE
+# And the CPI update (SPEC-013): the daily run ends by fetching the ONS, so every
+# other main() test gets a stub and the UK CPI tests keep the real function.
+REAL_UPDATE_UK_CPI = getattr(scrape_fund_price, "update_uk_cpi", None)
+_UK_CPI_PATCH = None
 
 
 def setUpModule():
-    global _SUITE_DATA_DIR
+    global _SUITE_DATA_DIR, _UK_CPI_PATCH
     _SUITE_DATA_DIR = tempfile.mkdtemp(prefix="fundprices-tests-")
     scrape_fund_price.DATA_DIR = _SUITE_DATA_DIR
     scrape_fund_price.DIVIDEND_SOURCES_FILE = os.path.join(
         _SUITE_DATA_DIR, "no-dividend-sources.txt"
     )
+    _UK_CPI_PATCH = patch(
+        "scrape_fund_price.update_uk_cpi",
+        return_value=MagicMock(failures=[]),
+        create=True,
+    )
+    _UK_CPI_PATCH.start()
 
 
 def tearDownModule():
+    _UK_CPI_PATCH.stop()
     scrape_fund_price.DATA_DIR = _REAL_DATA_DIR
     scrape_fund_price.DIVIDEND_SOURCES_FILE = _REAL_DIVIDEND_SOURCES_FILE
     if _SUITE_DATA_DIR:
@@ -9105,31 +9116,6 @@ class TestUkCpiInMain(unittest.TestCase):
             update = enter(patch("scrape_fund_price.update_uk_cpi"))
             main()
         update.assert_not_called()
-
-
-REAL_UPDATE_UK_CPI = None
-_UK_CPI_PATCH = None
-
-
-def setUpModule():
-    """Keep every other main() test off the network (#91).
-
-    The daily run now ends by updating uk_cpi.csv; those tests exercise other
-    behaviour, so the update is stubbed for them and the real function is kept
-    for the tests above.
-    """
-    global REAL_UPDATE_UK_CPI, _UK_CPI_PATCH
-    REAL_UPDATE_UK_CPI = getattr(scrape_fund_price, "update_uk_cpi", None)
-    _UK_CPI_PATCH = patch(
-        "scrape_fund_price.update_uk_cpi",
-        return_value=MagicMock(failures=[]),
-        create=True,
-    )
-    _UK_CPI_PATCH.start()
-
-
-def tearDownModule():
-    _UK_CPI_PATCH.stop()
 
 
 if __name__ == "__main__":
