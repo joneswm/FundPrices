@@ -4218,6 +4218,188 @@ def backfill_dividends(
     return report
 
 
+# SPEC-013 (#91): the UK consumer price index, published beside the prices so
+# Portfolio Tracker can show real returns. One ONS series, one request a run.
+UK_CPI_FILE = "uk_cpi.csv"
+UK_CPI_HEADER = ["Month", "Index", "Series", "AsOf"]
+UK_CPI_SERIES = "D7BT"  # CPI INDEX 00: ALL ITEMS 2015=100
+UK_CPI_START = "2015-01"
+UK_CPI_URL = (
+    "https://www.ons.gov.uk/economy/inflationandpriceindices/"
+    "timeseries/d7bt/mm23/data"
+)
+UK_CPI_HEADERS = {
+    "User-Agent": INVESTING_HEADERS["User-Agent"],
+    "Accept": "application/json",
+}
+UK_CPI_REQUEST_TIMEOUT = 30
+UK_CPI_INDEX_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+MONTH_NUMBERS = {
+    name: number
+    for number, name in enumerate(
+        (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ),
+        start=1,
+    )
+}
+
+
+class UkCpiResults:
+    """The day's CPI update: `failures` holds the "uk_cpi: <error>" lines."""
+
+    def __init__(self, failures=None):
+        self.failures = failures or []
+
+
+def next_month(month):
+    """Return the 'YYYY-MM' after a 'YYYY-MM'."""
+    year, number = int(month[:4]), int(month[5:])
+    year, number = (year + 1, 1) if number == 12 else (year, number + 1)
+    return f"{year:04d}-{number:02d}"
+
+
+def parse_ons_cpi(text):
+    """Read the ONS D7BT time-series JSON into {'YYYY-MM': index text}.
+
+    The index is kept as the ONS words it (no float round trip). Months before
+    UK_CPI_START are dropped, and a month listed with no value, which the ONS
+    does before it publishes it, is absent. The response is refused, so the
+    last published file stays, when it is not the D7BT series, has no months,
+    no longer reaches back to UK_CPI_START, skips or repeats a month, or holds
+    an index that is not a positive plain decimal.
+
+    Returns:
+        dict, oldest month first
+
+    Raises:
+        ValueError: the response is not what the endpoint has always given
+    """
+    data = json.loads(text)
+    description = data.get("description") if isinstance(data, dict) else None
+    series = description.get("cdid") if isinstance(description, dict) else None
+    if series != UK_CPI_SERIES:
+        raise ValueError(f"ONS response is not series {UK_CPI_SERIES}: {series!r}")
+    entries = data.get("months")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"ONS response for {UK_CPI_SERIES} has no months")
+
+    index = {}
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"ONS month entry is not an object: {entry!r}")
+        number = MONTH_NUMBERS.get(entry.get("month"))
+        year = str(entry.get("year", ""))
+        if number is None or not re.fullmatch(r"\d{4}", year):
+            raise ValueError(f"ONS month not recognised: {entry.get('date')!r}")
+        month = f"{year}-{number:02d}"
+        if month in seen:
+            raise ValueError(f"ONS lists {month} twice")
+        seen.add(month)
+        if month < UK_CPI_START:
+            continue
+        value = str(entry.get("value", "")).strip()
+        if not value:
+            continue
+        if not UK_CPI_INDEX_PATTERN.fullmatch(value) or decimal.Decimal(value) <= 0:
+            raise ValueError(f"ONS index for {month} is not a number: {value!r}")
+        index[month] = value
+
+    if UK_CPI_START not in index:
+        raise ValueError(f"ONS series does not reach back to {UK_CPI_START}")
+    month, last = UK_CPI_START, max(index)
+    while month < last:
+        month = next_month(month)
+        if month not in index:
+            raise ValueError(f"ONS series has no value for {month}")
+    return dict(sorted(index.items()))
+
+
+def fetch_uk_cpi():
+    """Fetch the D7BT time series: one plain GET, once a run.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    response = requests.get(
+        UK_CPI_URL, headers=UK_CPI_HEADERS, timeout=UK_CPI_REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    return parse_ons_cpi(response.text)
+
+
+def read_uk_cpi(data_dir):
+    """Read uk_cpi.csv keyed on Month; a missing file is an empty series."""
+    path = os.path.join(data_dir, UK_CPI_FILE)
+    if not os.path.isfile(path):
+        return {}
+
+    width = len(UK_CPI_HEADER)
+    rows = {}
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            if row[0]:
+                rows[row[0]] = row
+    return rows
+
+
+def write_uk_cpi(rows, data_dir):
+    """Write uk_cpi.csv sorted by month."""
+    os.makedirs(data_dir, exist_ok=True)
+    path = os.path.join(data_dir, UK_CPI_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(UK_CPI_HEADER)
+        writer.writerows(sorted(rows, key=lambda row: row[0]))
+
+
+def update_uk_cpi(data_dir=None, today=None):
+    """Publish the UK CPI index as uk_cpi.csv (Month,Index,Series,AsOf).
+
+    Every month the ONS gives replaces the stored one, which is how a revision
+    lands, and carries the run date as AsOf: the day it was read. A stored
+    month the response lacks is kept. A fetch that fails, or a response that
+    has changed, leaves the last published file untouched and is listed in
+    `failures`.
+
+    Args:
+        data_dir: Directory for the output file (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        UkCpiResults
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    index, error = fetch_with_retries(fetch_uk_cpi)
+    if error:
+        return UkCpiResults(failures=[f"uk_cpi: {error}"])
+
+    rows = read_uk_cpi(data_dir)
+    for month, value in index.items():
+        rows[month] = [month, value, UK_CPI_SERIES, today.isoformat()]
+    write_uk_cpi(list(rows.values()), data_dir)
+    return UkCpiResults()
+
+
 def configured_identifiers(specs, closed_file=None):
     """Return every identifier a distributions.txt line may name.
 
@@ -4471,6 +4653,13 @@ def main():
         except Exception as error:
             dividends = DividendResults(failures=[f"dividends: {error}"])
         failures.extend(dividends.failures)
+
+        # The CPI index is its own file from its own source, so it is fetched
+        # and written independently as well.
+        try:
+            failures.extend(update_uk_cpi().failures)
+        except Exception as error:
+            failures.append(f"uk_cpi: {error}")
 
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.
