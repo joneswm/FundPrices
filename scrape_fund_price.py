@@ -841,9 +841,24 @@ FT_HISTORICAL_AJAX = (
     "?startDate={start}&endDate={end}&symbol={xid}"
 )
 FT_REQUEST_TIMEOUT = 30
+# FT's dated endpoint returns a provisional row for the current day that moves
+# until the evening (#84), and carries no session times to judge it by. A row
+# is stored only once the US close on its own date has passed, which the
+# 21:05 UTC run is after all year round.
+FT_SETTLED_ZONE = ZoneInfo("America/New_York")
+FT_SETTLED_HOUR = 16
 
 
-def fetch_ft_quotes(isin, start, end=None):
+def ft_row_settled(price_date, now=None):
+    """Return True once 16:00 New York on `price_date` has passed (#84)."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cut = datetime.datetime.combine(
+        price_date, datetime.time(FT_SETTLED_HOUR), tzinfo=FT_SETTLED_ZONE
+    )
+    return now >= cut
+
+
+def fetch_ft_quotes(isin, start, end=None, now=None):
     """Fetch dated daily quotes for a fund from Financial Times.
 
     Uses the historical-prices endpoint rather than scraping the summary
@@ -858,9 +873,13 @@ def fetch_ft_quotes(isin, start, end=None):
             LSE USD holding to its German EUR line.
         start: Inclusive ISO start date
         end: Inclusive ISO end date, or None for today
+        now: Aware datetime to judge whether a row's day is over (default:
+            the current time)
 
     Returns:
-        list[Quote], oldest first
+        list[Quote], oldest first. Empty when every row is still
+        provisional, which is not an error: the scraping fallback would
+        store the same provisional price.
 
     Raises:
         ValueError: the internal id could not be found, or no rows were
@@ -889,6 +908,7 @@ def fetch_ft_quotes(isin, start, end=None):
     response.raise_for_status()
 
     quotes = []
+    held_back = False
     for row in re.findall(r"<tr>(.*?)</tr>", response.json().get("html", ""), re.S):
         date_match = re.search(
             r"<span[^>]*>([A-Za-z]+, [A-Za-z]+ \d{1,2}, \d{4})</span>", row
@@ -902,11 +922,17 @@ def fetch_ft_quotes(isin, start, end=None):
             date_match.group(1), "%A, %B %d, %Y"
         ).date()
         # FT prices are text; keep the digits exactly as published.
-        quotes.append(
-            Quote(price_date.isoformat(), normalize_price(cells[3].strip()), currency)
-        )
+        price = normalize_price(cells[3].strip())
+        if not ft_row_settled(price_date, now):
+            print(
+                f"Warning: {isin} {price_date}: day not over in New York, "
+                f"provisional price {price} not stored"
+            )
+            held_back = True
+            continue
+        quotes.append(Quote(price_date.isoformat(), price, currency))
 
-    if not quotes:
+    if not quotes and not held_back:
         raise ValueError(f"FT returned no historical rows for {isin}")
 
     quotes.sort(key=lambda quote: quote.date)
