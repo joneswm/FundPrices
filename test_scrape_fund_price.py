@@ -4368,6 +4368,74 @@ class TestYahooUnfinishedSession(unittest.TestCase):
             self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
 
 
+class TestFTUnfinishedDay(unittest.TestCase):
+    """Regression: FT rows dated today are stored before the day is over (#84).
+
+    The 09:17 UTC run on 2026-10-16, which committed at 13:57 UTC, stored
+    IE00B0M63516 at 33.45 for 2026-10-16; the evening run corrected it to
+    33.34. FT carries no session metadata, so a row is held back until the
+    US close (16:00 New York) on its own date has passed.
+    """
+
+    @staticmethod
+    def _row(day, close):
+        label = day.strftime("%A, %B %d, %Y").replace(" 0", " ")
+        return (
+            f'<tr><td><span class="mod-ui-hide-small-below">{label}</span></td>'
+            f"<td>{close}</td><td>{close}</td><td>{close}</td><td>{close}</td>"
+            "<td><span>0</span></td></tr>"
+        )
+
+    def _fetch(self, mock_get, days, now):
+        rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
+        mock_get.side_effect = TestFTQuoteFetching._responses(None, rows=rows)
+        now = datetime.datetime.fromisoformat(now)
+        return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_drops_a_row_dated_today_before_the_us_close(self, mock_get):
+        """Test a daytime run does not store today's provisional price."""
+        quotes = self._fetch(
+            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T13:57:00+00:00"
+        )
+        self.assertEqual([q.date for q in quotes], ["2026-10-15"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_keeps_a_row_dated_today_after_the_us_close(self, mock_get):
+        """Test the evening run stores the day's final price."""
+        quotes = self._fetch(
+            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T21:05:00+00:00"
+        )
+        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_the_cut_follows_new_york_daylight_saving(self, mock_get):
+        """Test the cut is 21:00 UTC in winter, not 20:00 UTC all year."""
+        days = ["2026-11-02", "2026-11-03"]
+        early = self._fetch(mock_get, days, "2026-11-03T20:30:00+00:00")
+        self.assertEqual([q.date for q in early], ["2026-11-02"])
+        late = self._fetch(mock_get, days, "2026-11-03T21:00:00+00:00")
+        self.assertEqual([q.date for q in late], days)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_only_held_back_rows_is_not_an_error(self, mock_get):
+        """Test a window holding only today's row returns nothing, not a failure.
+
+        Raising would send the fund to the undated scraping fallback, which
+        would store the same provisional price under today's date.
+        """
+        quotes = self._fetch(mock_get, ["2026-10-16"], "2026-10-16T13:57:00+00:00")
+        self.assertEqual(quotes, [])
+
+    @patch("scrape_fund_price.fetch_ft_quotes", return_value=[])
+    def test_held_back_rows_do_not_fall_back_to_scraping(self, mock_fetch):
+        """Test an empty dated result is returned rather than scraped."""
+        browser = MagicMock()
+        quotes = scrape_fund_quotes("FT", "IE00B0M63516", "2026-10-16", browser=browser)
+        self.assertEqual(quotes, [])
+        browser.page.assert_not_called()
+
+
 class TestDistributionConfiguration(unittest.TestCase):
     """Test distributions.txt parsing and validation (SPEC-010, #85)."""
 
