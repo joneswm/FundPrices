@@ -4399,7 +4399,9 @@ def update_uk_cpi(data_dir=None, today=None):
     """Publish the UK CPI index as uk_cpi.csv (Month,Index,Series,AsOf).
 
     Every month the ONS gives replaces the stored one, which is how a revision
-    lands, and carries the run date as AsOf: the day it was read. A stored
+    lands. AsOf is the date the row was last published or revised: a new or
+    changed month takes the run date, an unchanged one keeps its date, so a
+    run that reads the same numbers leaves the file byte-identical. A stored
     month the response lacks is kept. A fetch that fails, or a response that
     has changed, leaves the last published file untouched and is listed in
     `failures`.
@@ -4421,7 +4423,9 @@ def update_uk_cpi(data_dir=None, today=None):
 
     rows = read_uk_cpi(data_dir)
     for month, value in index.items():
-        rows[month] = [month, value, UK_CPI_SERIES, today.isoformat()]
+        stored = rows.get(month)
+        if stored is None or stored[1:3] != [value, UK_CPI_SERIES]:
+            rows[month] = [month, value, UK_CPI_SERIES, today.isoformat()]
     write_uk_cpi(list(rows.values()), data_dir)
     return UkCpiResults()
 
