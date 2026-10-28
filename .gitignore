@@ -76,3 +76,4 @@ Thumbs.db
 # Ignore data directory (CSV files will be force-added by GitHub Actions)
 data/
 *.price 
+.aider*
