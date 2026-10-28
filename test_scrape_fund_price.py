@@ -9016,7 +9016,11 @@ class TestUkCpiUpdate(unittest.TestCase):
         self.assertEqual(len(lines), 1 + 11 * 12 + 9)
 
     def test_a_revised_month_replaces_the_published_one(self):
-        """Test the ONS's number wins and every row says when it was read."""
+        """Test the ONS's number wins, and only changed rows take the run date.
+
+        AsOf is when the row's value was last published or revised, so an
+        unchanged month keeps its date and the file does not churn daily.
+        """
         with open(self.path, "w", newline="") as file:
             file.write(
                 self.HEADER
@@ -9027,10 +9031,29 @@ class TestUkCpiUpdate(unittest.TestCase):
         self.assertEqual(
             self._read(),
             self.HEADER
-            + "2015-01,99.3,D7BT,2026-10-27\n"
+            + "2015-01,99.3,D7BT,2026-09-01\n"
             + "2015-02,99.6,D7BT,2026-10-27\n"
             + "2015-03,99.7,D7BT,2026-10-27\n",
         )
+
+    def test_an_unchanged_series_leaves_the_file_byte_identical(self):
+        """Test a run that reads the same numbers writes the same file."""
+        stored = (
+            self.HEADER
+            + "2015-01,99.3,D7BT,2026-09-01\n"
+            + "2015-02,99.5,D7BT,2026-09-15\n"
+        )
+        with open(self.path, "w", newline="") as file:
+            file.write(stored)
+        self._run(lambda: {"2015-01": "99.3", "2015-02": "99.5"})
+        self.assertEqual(self._read(), stored)
+
+    def test_a_stored_row_from_another_series_is_replaced(self):
+        """Test a matching index under a different series id is not kept."""
+        with open(self.path, "w", newline="") as file:
+            file.write(self.HEADER + "2015-01,99.3,OTHER,2026-09-01\n")
+        self._run(lambda: {"2015-01": "99.3"})
+        self.assertEqual(self._read(), self.HEADER + "2015-01,99.3,D7BT,2026-10-27\n")
 
     def test_a_published_month_the_response_lacks_is_kept(self):
         """Test the file never loses a month the ONS once published."""
