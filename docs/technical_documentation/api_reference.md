@@ -695,8 +695,9 @@ endings. Rows are `[Month, Index, Series, AsOf]`.
 
 ### `update_uk_cpi(data_dir=None, today=None)`
 
-Fetch with retries; every month in the response replaces the stored row and takes the run date as
-`AsOf`; stored months the response lacks are kept. On a failed or refused response the file is not
+Fetch with retries; every month in the response replaces the stored row. A new or changed month
+takes the run date as `AsOf`, an unchanged one keeps its `AsOf`, so a run that reads the same
+numbers leaves the file byte-identical; stored months the response lacks are kept. On a failed or refused response the file is not
 touched and the result's `failures` holds `"uk_cpi: <error>"`.
 
 **Returns**: `UkCpiResults` (`failures`). `main()` calls it after the dividends, in the normal mode

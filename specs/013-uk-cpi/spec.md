@@ -35,7 +35,7 @@ Month,Index,Series,AsOf
 | `Month` | `YYYY-MM` |
 | `Index` | The published index, 2015 = 100, as the ONS words it (a decimal string; never reformatted) |
 | `Series` | `D7BT` |
-| `AsOf` | The date of the run that read the value |
+| `AsOf` | The date the row was first published or last revised |
 
 ## Success Criteria
 
@@ -52,7 +52,9 @@ Month,Index,Series,AsOf
   `User-Agent` as the investing.com source), retried by `fetch_with_retries()` like every other
   source. No other request is made
 - **FR4**: Every month in the response replaces the stored row for that month, so a revision
-  lands, and carries the run date as `AsOf`. A stored month the response lacks is kept
+  lands. A new or changed month carries the run date as `AsOf`; an unchanged one keeps its
+  `AsOf`, so a run that reads the same numbers leaves the file byte-identical. A stored month the
+  response lacks is kept
 - **FR5**: A fetch that fails after its retries, or a response refused under FR2, leaves
   `uk_cpi.csv` untouched (byte-identical; none is created on a first failed run) and is listed in
   the run's failures as `uk_cpi: <error>`. The run writes everything else, then exits non-zero,
@@ -83,7 +85,7 @@ Month,Index,Series,AsOf
 
 | Decision | Reason |
 |----------|--------|
-| `AsOf` is the run date on every row, not only on changed ones | The issue defines it as when the value was read; it is what `dividends_upcoming.csv` already does. The cost is one changed column a day in git |
+| `AsOf` changes only when a row's value does (owner, 2026-10-28) | Stamping the run date on every row rewrote all 141 rows in git each day with the same numbers. The header keeps the name `AsOf` because Portfolio Tracker's parser requires it |
 | A stored month the response lacks is kept | The ONS has never dropped a month; if it did, losing published history silently would be worse than keeping it |
 | A gap inside the series refuses the whole response | A deflator with a hole in it gives wrong real returns without any sign of it |
 | The index is kept as text | The ONS gives one decimal; converting through a float could only add noise |

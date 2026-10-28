@@ -34,7 +34,7 @@ This document tracks the implementation status of all features for the Fund Pric
 **Tracking**: [#91](https://github.com/joneswm/FundPrices/issues/91)
 
 **Implementation Details**:
-- ✅ `data/uk_cpi.csv` (`Month,Index,Series,AsOf`): the ONS series D7BT, monthly from 2015-01, the index as the ONS words it, `AsOf` the run that read it
+- ✅ `data/uk_cpi.csv` (`Month,Index,Series,AsOf`): the ONS series D7BT, monthly from 2015-01, the index as the ONS words it, `AsOf` the date the row was last published or revised
 - ✅ One GET of the ONS time-series JSON per run, retried like every other source; a revised month replaces the stored one
 - ✅ A response that has changed (another series, no months, a gap, a bad index) keeps the last published file and is listed in the run's failures as `uk_cpi: <error>`
 - ✅ Written in the normal mode only, after the dividends and independently of them

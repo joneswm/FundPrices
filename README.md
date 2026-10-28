@@ -227,8 +227,9 @@ ITEMS, 2015 = 100), monthly from January 2015, read from the ONS time-series end
 (`https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7bt/mm23/data`) with
 one request per run. There is nothing to configure.
 
-- A month the ONS has revised replaces the stored one; every row carries the run date as
-  `AsOf`, the day the value was read. A stored month the response lacks is kept
+- A month the ONS has revised replaces the stored one. `AsOf` is the date the row was last
+  published or revised, so an unchanged month keeps its date and a run that reads the same
+  numbers leaves the file unchanged. A stored month the response lacks is kept
 - `Index` is the ONS's own text (`144.1`), never reformatted
 - A failed request, or a response that has changed (another series, no months, a missing
   month, a bad number), leaves the last published file as it was and is listed with the run's
@@ -412,7 +413,8 @@ Month,Index,Series,AsOf
 ```
 
 `Month` is `YYYY-MM`. `Index` is the published CPI index with 2015 = 100, as the ONS gives it.
-`AsOf` is the run that read it.
+`AsOf` is the date the row was first published or last revised; it does not change while the
+value stays the same.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
 ```csv

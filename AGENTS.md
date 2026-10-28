@@ -50,7 +50,8 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
 ### UK CPI
 - The daily run also writes `data/uk_cpi.csv` (SPEC-013): the ONS series D7BT, monthly from
   2015-01, `Month,Index,Series,AsOf`, one GET of the ONS time-series JSON per run. A revised month
-  replaces the stored one; a failed or changed response keeps the last file and is listed in the
+  replaces the stored one; `AsOf` changes only when a row's value does, so the file is not
+  rewritten daily (Portfolio Tracker's parser requires the `AsOf` header name); a failed or changed response keeps the last file and is listed in the
   failures as `uk_cpi: <error>`. No configuration file
 
 ### Importing Closed Holdings
