@@ -703,6 +703,49 @@ touched and the result's `failures` holds `"uk_cpi: <error>"`.
 **Returns**: `UkCpiResults` (`failures`). `main()` calls it after the dividends, in the normal mode
 only, and adds its failures to the run's.
 
+## UK Bank Rate
+
+The Bank of England Bank Rate (SPEC-014): `data/uk_bank_rate.csv` (`Month,Rate,Series,AsOf`),
+written by the daily run. The header is `UK_BANK_RATE_HEADER`; the series id `UK_BANK_RATE_SERIES`
+(`UK_BANK_RATE`), the first month `UK_BANK_RATE_START` (`2015-01`) and the page `UK_BANK_RATE_URL`
+(the Bank Rate history page; the database CSV routes are disallowed by the Bank's robots.txt).
+
+### `parse_boe_bank_rate(text, today=None)`
+
+Read the history page's table into `[(datetime.date, rate text)]`, oldest first, the **whole**
+table (back to 1975) because the rate in force at 2014-12-31 is an old change. Two-digit years are
+20yy unless that is after `today`, then 19yy. The rate is the Bank's own text.
+
+**Raises**: `ValueError` for a page with no `stats-table`, no rows, a row that is not a date and a
+rate, a date or rate that does not parse, a date listed twice, or a history that does not reach
+2014-12-31.
+
+### `uk_bank_rate_by_month(changes, today)`
+
+`{"YYYY-MM": rate text}` from `2015-01` to the month of `today`: the rate of the newest change on or
+before the month's last day (for the current month, on or before `today`). Repeats the rate for a
+month with no change, so there is no gap. Raises `ValueError` if no change is in force for a month.
+
+### `fetch_uk_bank_rate()`
+
+One GET of `UK_BANK_RATE_URL` (30 s timeout, browser `User-Agent`), parsed by
+`parse_boe_bank_rate()`. Errors propagate so `fetch_with_retries()` can retry them.
+
+### `read_uk_bank_rate(data_dir)` and `write_uk_bank_rate(rows, data_dir)`
+
+Read `uk_bank_rate.csv` keyed on `Month` (a missing file is `{}`); write it sorted by month with LF
+endings. Rows are `[Month, Rate, Series, AsOf]`.
+
+### `update_uk_bank_rate(data_dir=None, today=None)`
+
+Fetch and derive with retries; every derived month replaces the stored row. A new or changed month
+takes the run date as `AsOf`, an unchanged one keeps its `AsOf`, so a run that reads the same page
+leaves the file byte-identical; stored months the derivation lacks are kept. On a failed or refused
+page the file is not touched and the result's `failures` holds `"uk_bank_rate: <error>"`.
+
+**Returns**: `UkBankRateResults` (`failures`). `main()` calls it after the UK CPI, in the normal
+mode only, and adds its failures to the run's.
+
 ## Entry Point
 
 ### `main()`
@@ -710,7 +753,7 @@ only, and adds its failures to the run's.
 Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
 `--backfill-dividends`, `--history`, otherwise the daily run. The daily run validates
 `distributions.txt` and `dividend_sources.txt` with `funds.txt` before any network call, then writes prices, then FX,
-then the dividend files, then `uk_cpi.csv`, then the summary, each independently (a crash in the dividend
+then the dividend files, then `uk_cpi.csv`, then `uk_bank_rate.csv`, then the summary, each independently (a crash in the dividend
 update is reported as a failure and costs the summary nothing), and exits non-zero only
 after everything obtainable has been written. The rebuilds and the import exit non-zero
 when their report has failures.

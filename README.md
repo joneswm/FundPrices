@@ -12,6 +12,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **Closed holdings**: one-off imports for instruments no longer held, kept out of the daily run
 - **Dividend calendar**: every past ex-date Yahoo knows, the next declared one, and a projection from the pattern when none is declared; a hand-kept `distributions.txt` covers the instruments no source does, and `dividend_sources.txt` adds the issuer's real pay dates and declared amounts (SPEC-011, SPEC-012)
 - **UK CPI**: the ONS consumer price index (series D7BT), monthly from 2015, published as `uk_cpi.csv` for real returns (SPEC-013)
+- **UK Bank Rate**: the Bank of England Bank Rate in force at each month end, monthly from 2015, published as `uk_bank_rate.csv` for the Sharpe ratio (SPEC-014)
 - **Identifier aliases**: one fetch published under several identifiers
 - **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
@@ -238,6 +239,28 @@ one request per run. There is nothing to configure.
 
 The design is [specs/013-uk-cpi](specs/013-uk-cpi/spec.md).
 
+### UK Bank Rate
+
+The daily run also publishes the Bank of England's Bank Rate, `data/uk_bank_rate.csv`, the
+risk-free rate a consumer needs for a Sharpe ratio. It is read from the Bank's Bank Rate history
+page (`https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp`, a table of the date and
+rate of every change) with one request per run. There is nothing to configure.
+
+- One row per month from January 2015 to the current month, no gaps: `Rate` is the rate in force
+  at the end of the month (the newest change dated on or before its last day), so a month with no
+  change repeats the rate. The current month carries the rate in force on the run date
+- `AsOf` is the date the row was first published or last changed, so an unchanged month keeps its
+  date and a run that reads the same page leaves the file unchanged. A changed rate for a past
+  month replaces its row
+- `Rate` is the Bank's own text (`4.00`, `5.25`), never reformatted
+- This is not the database series IUMABEDR: the Bank's `robots.txt` disallows its database CSV
+  routes, and robots is honoured. The history page lists the same official rate
+- A failed request, or a page that has changed (no table, a bad date or rate, a duplicate date,
+  history that does not reach back to 2014-12-31), leaves the last published file as it was and is
+  listed with the run's other failures as `uk_bank_rate: <error>`
+
+The design is [specs/014-uk-bank-rate](specs/014-uk-bank-rate/spec.md).
+
 ### Usage
 
 #### Rebuild History (Backfill)
@@ -366,6 +389,7 @@ The application creates the following files in the `data/` directory:
 - `dividends_history.csv`: Every past ex-date, one row per instrument and ex-date
 - `dividends_upcoming.csv`: The next dividend per instrument, declared or estimated
 - `uk_cpi.csv`: The UK consumer price index (ONS D7BT), one row per month from 2015-01
+- `uk_bank_rate.csv`: The Bank of England Bank Rate at each month end, one row per month from 2015-01
 - `latest_<identifier>.price`: Individual price files for each fund
 
 ### Historical Data Mode
@@ -415,6 +439,16 @@ Month,Index,Series,AsOf
 `Month` is `YYYY-MM`. `Index` is the published CPI index with 2015 = 100, as the ONS gives it.
 `AsOf` is the date the row was first published or last revised; it does not change while the
 value stays the same.
+
+**UK Bank Rate (uk_bank_rate.csv)**:
+```csv
+Month,Rate,Series,AsOf
+2015-01,0.50,UK_BANK_RATE,2026-11-01
+2023-08,5.25,UK_BANK_RATE,2026-11-01
+```
+
+`Month` is `YYYY-MM`. `Rate` is the official Bank Rate in percent a year in force at the end of
+the month, as the Bank words it. `AsOf` is the date the row was first published or last changed.
 
 **Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
 ```csv
@@ -473,6 +507,7 @@ The project includes automated execution via GitHub Actions:
 **Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
 **New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
 
+- ✅ **UK Bank Rate**: the Bank of England Bank Rate at each month end, from 2015, published as `uk_bank_rate.csv` for the Sharpe ratio (SPEC-014)
 - ✅ **UK CPI**: the ONS consumer price index (D7BT) published monthly as `uk_cpi.csv`, from 2015, for real returns (SPEC-013)
 - ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011), and for QQQ, GLTL.L, KNSL and 0639.HK from Invesco, SSGA, Q4 Inc and etnet (SPEC-012)
 - ✅ **Dividend Calendar**: past and upcoming dividends per instrument, declared or projected, with a hand-kept schedule for instruments no source covers (SPEC-010)

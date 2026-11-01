@@ -99,6 +99,7 @@ them.)
 | `dividends_history.csv` | `Fund,ExDate,PayDate,Amount,Currency,Source`: every past ex-date | daily, dividend rebuild |
 | `dividends_upcoming.csv` | `Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`: the next dividend, `declared` or `estimated` | daily, dividend rebuild |
 | `uk_cpi.csv` | `Month,Index,Series,AsOf`: the ONS CPI index D7BT (2015=100), monthly from 2015-01 | daily |
+| `uk_bank_rate.csv` | `Month,Rate,Series,AsOf`: the Bank Rate in force at each month end (percent a year), monthly from 2015-01 | daily |
 | `daily_summary.csv`, `daily_summary.md` | new, old, delta and percent delta; the Markdown also lists the dividends that are new today | daily |
 
 **Design decisions**
@@ -160,6 +161,9 @@ dividend_sources.txt ───────────┴─> update_dividends �
                                                         │
 (ONS D7BT) ──> update_uk_cpi ──> uk_cpi.csv
                                      │  one fetch_with_retries(fetch_uk_cpi); a bad response keeps the file
+                                                        │
+(BoE Bank-Rate.asp) ──> update_uk_bank_rate ──> uk_bank_rate.csv
+                                     │  one fetch_with_retries(fetch + month ends); a bad page keeps the file
                                                         │
 history + fx ──> build_price_summary / build_fx_summary ──> write_summary
                                                         │

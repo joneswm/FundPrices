@@ -26,6 +26,23 @@ This document tracks the implementation status of all features for the Fund Pric
 
 ## Active Specifications (Spec Kit)
 
+### SPEC-014: Bank Rate Published Monthly as uk_bank_rate.csv
+**Status**: ✅ **COMPLETED** (on branch `uk-bank-rate`, not yet merged)  
+**Created**: 2026-11-01  
+**Format**: Spec Kit (spec-first)  
+**Location**: `specs/014-uk-bank-rate/`  
+**Tracking**: [#93](https://github.com/joneswm/FundPrices/issues/93)
+
+**Implementation Details**:
+- ✅ `data/uk_bank_rate.csv` (`Month,Rate,Series,AsOf`): the Bank Rate in force at each month end, monthly from 2015-01 to the current month with no gaps, the rate as the Bank words it, `AsOf` the date the row was first published or last changed
+- ✅ One GET of the Bank's Bank Rate history page per run (the database CSV for IUMABEDR is disallowed by the Bank's robots.txt), retried like every other source; a changed rate for a past month replaces its row
+- ✅ A page that has changed (no table, a bad row, a duplicate date, history that stops after 2014) keeps the last published file and is listed in the run's failures as `uk_bank_rate: <error>`
+- ✅ Written in the normal mode only, after the UK CPI and independently of it
+
+**Evidence**: `parse_boe_bank_rate()`, `uk_bank_rate_by_month()`, `fetch_uk_bank_rate()` and `update_uk_bank_rate()` in `scrape_fund_price.py`; the classes `TestBankRateParsing` to `TestUkBankRateInMain` in `test_scrape_fund_price.py`, against one page recorded in `fixtures/boe_bank_rate.html`. Run `make test-coverage` for the figures.
+
+---
+
 ### SPEC-013: UK CPI Published Monthly as uk_cpi.csv
 **Status**: ✅ **COMPLETED** (on branch `uk-cpi`, not yet merged)  
 **Created**: 2026-10-27  
