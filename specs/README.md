@@ -8,6 +8,11 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 
 ## Active Specifications
 
+### SPEC-014: Bank Rate Published Monthly
+**Status**: ✅ Built (branch `uk-bank-rate`, not yet merged)
+**Location**: [014-uk-bank-rate/](014-uk-bank-rate/)
+**Description**: Publish the Bank of England Bank Rate in force at each month end as `data/uk_bank_rate.csv` (`Month,Rate,Series,AsOf`), derived from the Bank's Bank Rate history page once a run, so Portfolio Tracker can show a Sharpe ratio (#93).
+
 ### SPEC-013: UK CPI Published Monthly
 **Status**: ✅ Built (branch `uk-cpi`, not yet merged)
 **Location**: [013-uk-cpi/](013-uk-cpi/)

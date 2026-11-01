@@ -54,6 +54,15 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   rewritten daily (Portfolio Tracker's parser requires the `AsOf` header name); a failed or changed response keeps the last file and is listed in the
   failures as `uk_cpi: <error>`. No configuration file
 
+### UK Bank Rate
+- The daily run also writes `data/uk_bank_rate.csv` (SPEC-014): the Bank of England Bank Rate in
+  force at each month end, percent a year, monthly from 2015-01 to the current month,
+  `Month,Rate,Series,AsOf` with `Series` `UK_BANK_RATE`. Derived from the Bank's Bank Rate history
+  page (`Bank-Rate.asp`, change dates and rates, one GET per run), **not** the IUMABEDR database
+  CSV, which the Bank's robots.txt disallows. `AsOf` changes only when a row's value does (the
+  header name is required by Portfolio Tracker's parser); a failed or changed page keeps the last
+  file and is listed in the failures as `uk_bank_rate: <error>`. No configuration file
+
 ### Importing Closed Holdings
 - `python scrape_fund_price.py --import-closed` - one-off import of the windows in
   `closed_holdings.txt`. Writes `prices_history.csv` and nothing else. Run locally and
@@ -65,7 +74,7 @@ Python application that collects dated fund, ETF and stock prices and end-of-day
   `data/prices_history_90_days.csv` (rolling 90-calendar-day window, currently priced
   funds only), plus one `data/latest_<identifier>.price` file per fund, the FX files
   `data/fx_history.csv` and `data/latest_fx.csv`, and `data/daily_summary.{csv,md}`, and the dividend files
-  `data/dividends_history.csv` and `data/dividends_upcoming.csv`, and `data/uk_cpi.csv`
+  `data/dividends_history.csv` and `data/dividends_upcoming.csv`, `data/uk_cpi.csv` and `data/uk_bank_rate.csv`
 
 ### Code Quality
 - `./format_code.sh` - Format code with Black and isort

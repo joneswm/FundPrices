@@ -8,6 +8,7 @@ import csv
 import decimal
 import html
 import json
+import urllib.parse
 import datetime
 from datetime import date, timedelta
 
@@ -73,10 +74,13 @@ _REAL_DIVIDEND_SOURCES_FILE = scrape_fund_price.DIVIDEND_SOURCES_FILE
 # other main() test gets a stub and the UK CPI tests keep the real function.
 REAL_UPDATE_UK_CPI = getattr(scrape_fund_price, "update_uk_cpi", None)
 _UK_CPI_PATCH = None
+# And the Bank Rate update (SPEC-014), stubbed the same way.
+REAL_UPDATE_UK_BANK_RATE = getattr(scrape_fund_price, "update_uk_bank_rate", None)
+_UK_BANK_RATE_PATCH = None
 
 
 def setUpModule():
-    global _SUITE_DATA_DIR, _UK_CPI_PATCH
+    global _SUITE_DATA_DIR, _UK_CPI_PATCH, _UK_BANK_RATE_PATCH
     _SUITE_DATA_DIR = tempfile.mkdtemp(prefix="fundprices-tests-")
     scrape_fund_price.DATA_DIR = _SUITE_DATA_DIR
     scrape_fund_price.DIVIDEND_SOURCES_FILE = os.path.join(
@@ -88,9 +92,16 @@ def setUpModule():
         create=True,
     )
     _UK_CPI_PATCH.start()
+    _UK_BANK_RATE_PATCH = patch(
+        "scrape_fund_price.update_uk_bank_rate",
+        return_value=MagicMock(failures=[]),
+        create=True,
+    )
+    _UK_BANK_RATE_PATCH.start()
 
 
 def tearDownModule():
+    _UK_BANK_RATE_PATCH.stop()
     _UK_CPI_PATCH.stop()
     scrape_fund_price.DATA_DIR = _REAL_DATA_DIR
     scrape_fund_price.DIVIDEND_SOURCES_FILE = _REAL_DIVIDEND_SOURCES_FILE
@@ -9205,6 +9216,479 @@ class TestUkCpiInMain(unittest.TestCase):
             )
             enter(patch("builtins.print"))
             update = enter(patch("scrape_fund_price.update_uk_cpi"))
+            main()
+        update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-014: the Bank of England Bank Rate published monthly as
+# uk_bank_rate.csv, one canned page recorded once from the live site (#93).
+# ---------------------------------------------------------------------------
+
+
+def boe_page(rows, table_id="stats-table"):
+    """Build a Bank Rate history page from (date text, rate text) rows."""
+    body = "".join(
+        f'<tr><td align="left">{when}</td><td align="right"> {rate}</td></tr>'
+        for when, rate in rows
+    )
+    return (
+        '<html><body><table class="cookie-notice__table"><tr><td>x</td></tr>'
+        f'</table><table class="display" id="{table_id}"><thead><tr>'
+        "<th>Date Changed</th><th>Rate</th></tr></thead>"
+        f"<tbody>{body}</tbody></table></body></html>"
+    )
+
+
+# Newest first, as the page lists them.
+BOE_ROWS = [
+    ("18 Dec 25", "3.75"),
+    ("07 Aug 25", "4.00"),
+    ("03 Aug 23", "5.25"),
+    ("04 Aug 16", "0.25"),
+    ("05 Mar 09", "0.50"),
+    ("05 Feb 09", "1.00"),
+]
+
+
+class TestBankRateParsing(unittest.TestCase):
+    """Test reading the Bank Rate history page (SPEC-014, #93)."""
+
+    TODAY = date(2026, 11, 1)
+
+    def parse(self, text):
+        return scrape_fund_price.parse_boe_bank_rate(text, self.TODAY)
+
+    def test_the_recorded_page_gives_the_whole_history_oldest_first(self):
+        """Test the live fixture: every change back to 1975, the rate as worded."""
+        changes = self.parse(fixture_text("boe_bank_rate.html"))
+        self.assertEqual(len(changes), 258)
+        self.assertEqual(changes[0], (date(1975, 1, 20), "11.25"))
+        self.assertEqual(changes[-1], (date(2025, 12, 18), "3.75"))
+        self.assertEqual(changes, sorted(changes))
+
+    def test_two_digit_years_are_read_as_20yy_unless_in_the_future(self):
+        """Test 25 is 2025 and 75 is 1975."""
+        changes = self.parse(boe_page([("18 Dec 25", "3.75"), ("20 Jan 75", "11.25")]))
+        self.assertEqual(changes[0][0], date(1975, 1, 20))
+        self.assertEqual(changes[1][0], date(2025, 12, 18))
+
+    def test_the_rate_is_kept_exactly_as_published(self):
+        """Test no float round trip: '4.00' stays '4.00'."""
+        changes = self.parse(boe_page(BOE_ROWS))
+        self.assertIn((date(2025, 8, 7), "4.00"), changes)
+
+    def test_a_page_without_the_table_is_refused(self):
+        """Test an error page or a changed layout is a bad response."""
+        for text in (
+            "<html>Page not found</html>",
+            boe_page(BOE_ROWS, table_id="other"),
+            boe_page([]),
+        ):
+            with self.subTest(text=text[:40]):
+                with self.assertRaises(ValueError):
+                    self.parse(text)
+
+    def test_a_row_that_does_not_parse_is_refused(self):
+        """Test a bad rate or date is a changed page."""
+        for when, rate in (
+            ("18 Dec 25", "n/a"),
+            ("18 Dec 25", "-1"),
+            ("18 Dec 25", "1e3"),
+            ("18 Dec 25", "4,25"),
+            ("18 Smarch 25", "3.75"),
+            ("31 Feb 25", "3.75"),
+            ("Dec 2025", "3.75"),
+        ):
+            with self.subTest(when=when, rate=rate):
+                with self.assertRaises(ValueError):
+                    self.parse(boe_page([(when, rate)] + BOE_ROWS))
+
+    def test_a_date_listed_twice_is_refused(self):
+        """Test a duplicated date is ambiguous, so it is a bad response."""
+        with self.assertRaisesRegex(ValueError, "2025-12-18"):
+            self.parse(boe_page([("18 Dec 25", "3.50")] + BOE_ROWS))
+
+    def test_a_row_with_the_wrong_number_of_cells_is_refused(self):
+        """Test a changed layout is a bad response, not a skipped row."""
+        text = boe_page(BOE_ROWS).replace(
+            "</tbody>", "<tr><td>18 Dec 25</td><td>3.75</td><td>x</td></tr></tbody>"
+        )
+        with self.assertRaisesRegex(ValueError, "not a date and a rate"):
+            self.parse(text)
+
+    def test_a_table_nested_in_the_page_table_is_not_read_as_rows(self):
+        """Test only the history table's own rows count."""
+        nested = "<tr><td><table><tr><td>x</td></tr></table></td><td>x</td></tr>"
+        text = boe_page(BOE_ROWS).replace("</tbody>", nested + "</tbody>")
+        with self.assertRaises(ValueError):
+            self.parse(text)
+        text = boe_page(BOE_ROWS).replace(
+            "</thead>", "</thead><caption><table><tr><td>x</td></tr></table></caption>"
+        )
+        self.assertEqual(len(self.parse(text)), len(BOE_ROWS))
+
+    def test_a_history_that_stops_after_2014_is_refused(self):
+        """Test a truncated table cannot replace the published file."""
+        with self.assertRaisesRegex(ValueError, "2014-12-31"):
+            self.parse(boe_page(BOE_ROWS[:3]))
+
+
+class TestBankRateByMonth(unittest.TestCase):
+    """Test deriving the month-end rate from the change dates (SPEC-014, #93)."""
+
+    TODAY = date(2026, 11, 1)
+
+    def months(self, changes=None, today=None):
+        if changes is None:
+            changes = scrape_fund_price.parse_boe_bank_rate(
+                fixture_text("boe_bank_rate.html"), self.TODAY
+            )
+        return scrape_fund_price.uk_bank_rate_by_month(changes, today or self.TODAY)
+
+    def test_known_month_ends_from_the_recorded_page(self):
+        """Test the rate in force at the end of the month, change dates included."""
+        rates = self.months()
+        self.assertEqual(rates["2015-01"], "0.50")
+        self.assertEqual(rates["2016-07"], "0.50")  # cut on 4 Aug 2016
+        self.assertEqual(rates["2016-08"], "0.25")
+        self.assertEqual(rates["2020-03"], "0.10")  # cut on 19 Mar 2020
+        self.assertEqual(rates["2023-08"], "5.25")
+        self.assertEqual(rates["2024-08"], "5.00")
+        self.assertEqual(rates["2026-10"], "3.75")
+
+    def test_every_month_from_2015_01_to_the_current_month_has_a_row(self):
+        """Test the series has no gap and starts at UK_BANK_RATE_START."""
+        months = list(self.months())
+        self.assertEqual(months[0], "2015-01")
+        self.assertEqual(months[-1], "2026-11")
+        self.assertEqual(len(months), 11 * 12 + 11)
+        self.assertEqual(months, sorted(months))
+        month = months[0]
+        for expected in months[1:]:
+            month = scrape_fund_price.next_month(month)
+            self.assertEqual(month, expected)
+
+    def test_a_change_on_the_last_day_counts_and_one_after_does_not(self):
+        """Test the cut is the month's last day, inclusive."""
+        changes = [
+            (date(2009, 3, 5), "0.50"),
+            (date(2015, 2, 28), "0.75"),
+            (date(2015, 4, 1), "1.00"),
+        ]
+        rates = self.months(changes, date(2015, 4, 20))
+        self.assertEqual(rates["2015-01"], "0.50")
+        self.assertEqual(rates["2015-02"], "0.75")
+        self.assertEqual(rates["2015-03"], "0.75")  # repeated, no change
+        self.assertEqual(rates["2015-04"], "1.00")
+
+    def test_the_current_month_is_the_rate_in_force_on_the_run_date(self):
+        """Test a change later in the month is not yet in force."""
+        changes = [(date(2009, 3, 5), "0.50"), (date(2015, 2, 20), "0.75")]
+        self.assertEqual(self.months(changes, date(2015, 2, 10))["2015-02"], "0.50")
+        self.assertEqual(self.months(changes, date(2015, 2, 20))["2015-02"], "0.75")
+
+    def test_a_year_boundary_is_crossed(self):
+        """Test December rolls to January."""
+        changes = [(date(2009, 3, 5), "0.50")]
+        rates = self.months(changes, date(2016, 2, 3))
+        self.assertEqual(rates["2015-12"], "0.50")
+        self.assertEqual(rates["2016-01"], "0.50")
+
+
+class TestBankRateFetch(unittest.TestCase):
+    """Test the one request per run (SPEC-014, #93)."""
+
+    def test_one_get_of_the_history_page(self):
+        """Test the url, the browser User-Agent, the timeout and the status check."""
+        response = MagicMock(text=fixture_text("boe_bank_rate.html"))
+        with patch.object(
+            scrape_fund_price.requests, "get", return_value=response
+        ) as get:
+            changes = scrape_fund_price.fetch_uk_bank_rate()
+        get.assert_called_once()
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp",
+        )
+        self.assertTrue(
+            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+        )
+        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        response.raise_for_status.assert_called_once()
+        self.assertEqual(changes[-1], (date(2025, 12, 18), "3.75"))
+
+    def test_the_source_is_not_a_robots_disallowed_route(self):
+        """Test the url is on none of the paths robots.txt disallows."""
+        path = urllib.parse.urlparse(scrape_fund_price.UK_BANK_RATE_URL).path.lower()
+        for disallowed in (
+            "/boeapps/database/showchart.asp",
+            "/boeapps/database/_iadb-fromshowcolumns.asp",
+            "/boeapps/iadb",
+            "/boeapps/titan",
+        ):
+            self.assertFalse(path.startswith(disallowed), disallowed)
+
+    def test_an_http_error_propagates_for_the_retry(self):
+        """Test a status error is raised, not swallowed."""
+        response = MagicMock()
+        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
+            "503"
+        )
+        with patch.object(scrape_fund_price.requests, "get", return_value=response):
+            with self.assertRaises(scrape_fund_price.requests.HTTPError):
+                scrape_fund_price.fetch_uk_bank_rate()
+
+
+class TestUkBankRateUpdate(unittest.TestCase):
+    """Test the daily update of uk_bank_rate.csv (SPEC-014, #93)."""
+
+    TODAY = date(2015, 3, 10)
+    HEADER = "Month,Rate,Series,AsOf\n"
+    CHANGES = [(date(2009, 3, 5), "0.50")]
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.test_dir, "uk_bank_rate.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _run(self, fetch):
+        with patch.object(scrape_fund_price, "fetch_uk_bank_rate", fetch):
+            return REAL_UPDATE_UK_BANK_RATE(self.test_dir, self.TODAY)
+
+    def _read(self):
+        with open(self.path, newline="") as file:
+            return file.read()
+
+    def test_the_first_run_writes_every_month(self):
+        """Test header, a row per month sorted, series id and the run date."""
+        results = self._run(lambda: self.CHANGES)
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read(),
+            self.HEADER
+            + "2015-01,0.50,UK_BANK_RATE,2015-03-10\n"
+            + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
+            + "2015-03,0.50,UK_BANK_RATE,2015-03-10\n",
+        )
+
+    def test_the_file_has_lf_endings(self):
+        """Test no CRLF, on any platform."""
+        self._run(lambda: self.CHANGES)
+        with open(self.path, "rb") as file:
+            self.assertNotIn(b"\r", file.read())
+
+    def test_the_real_page_gives_a_file_from_2015_01(self):
+        """Test the recorded page end to end."""
+        changes = scrape_fund_price.parse_boe_bank_rate(
+            fixture_text("boe_bank_rate.html"), date(2026, 11, 1)
+        )
+        with patch.object(scrape_fund_price, "fetch_uk_bank_rate", lambda: changes):
+            REAL_UPDATE_UK_BANK_RATE(self.test_dir, date(2026, 11, 1))
+        lines = self._read().splitlines()
+        self.assertEqual(lines[0], "Month,Rate,Series,AsOf")
+        self.assertEqual(lines[1], "2015-01,0.50,UK_BANK_RATE,2026-11-01")
+        self.assertEqual(lines[-1], "2026-11,3.75,UK_BANK_RATE,2026-11-01")
+        self.assertEqual(len(lines), 1 + 11 * 12 + 11)
+
+    def test_a_changed_month_replaces_the_published_one(self):
+        """Test the page's rate wins, and only changed rows take the run date."""
+        with open(self.path, "w", newline="") as file:
+            file.write(
+                self.HEADER
+                + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+                + "2015-02,0.75,UK_BANK_RATE,2015-02-01\n"
+            )
+        self._run(lambda: self.CHANGES)
+        self.assertEqual(
+            self._read(),
+            self.HEADER
+            + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+            + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
+            + "2015-03,0.50,UK_BANK_RATE,2015-03-10\n",
+        )
+
+    def test_an_unchanged_series_leaves_the_file_byte_identical(self):
+        """Test a run that reads the same numbers writes the same file."""
+        stored = (
+            self.HEADER
+            + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+            + "2015-02,0.50,UK_BANK_RATE,2015-02-15\n"
+            + "2015-03,0.50,UK_BANK_RATE,2015-03-02\n"
+        )
+        with open(self.path, "w", newline="") as file:
+            file.write(stored)
+        self._run(lambda: self.CHANGES)
+        self.assertEqual(self._read(), stored)
+
+    def test_a_stored_row_from_another_series_is_replaced(self):
+        """Test a matching rate under a different series id is not kept."""
+        with open(self.path, "w", newline="") as file:
+            file.write(self.HEADER + "2015-01,0.50,OTHER,2015-02-01\n")
+        self._run(lambda: self.CHANGES)
+        self.assertIn("2015-01,0.50,UK_BANK_RATE,2015-03-10\n", self._read())
+
+    def test_a_published_month_the_page_lacks_is_kept(self):
+        """Test the file never loses a month it once published."""
+        with open(self.path, "w", newline="") as file:
+            file.write(self.HEADER + "2014-12,0.50,UK_BANK_RATE,2015-01-02\n")
+        self._run(lambda: self.CHANGES)
+        self.assertIn("2014-12,0.50,UK_BANK_RATE,2015-01-02\n", self._read())
+
+    def test_a_failed_fetch_keeps_the_last_published_file(self):
+        """Test the file is byte-identical and the failure is listed."""
+        stored = self.HEADER + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+        with open(self.path, "w", newline="") as file:
+            file.write(stored)
+
+        def refuse():
+            raise ValueError("Bank Rate table missing")
+
+        results = self._run(refuse)
+        self.assertEqual(self._read(), stored)
+        self.assertEqual(len(results.failures), 1)
+        self.assertTrue(results.failures[0].startswith("uk_bank_rate: "))
+        self.assertIn("table missing", results.failures[0])
+
+    def test_a_failure_with_no_file_writes_none(self):
+        """Test no empty or error file is created."""
+
+        def refuse():
+            raise ConnectionError("down")
+
+        results = self._run(refuse)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(len(results.failures), 1)
+
+    def test_a_transient_failure_is_retried(self):
+        """Test the shared retry applies, as for every other source."""
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise ConnectionError("blip")
+            return self.CHANGES
+
+        results = self._run(flaky)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(results.failures, [])
+        self.assertIn("2015-01,0.50", self._read())
+
+    def test_a_page_that_starts_after_2014_gives_a_failure_not_a_file(self):
+        """Test a history with no rate in force at 2014-12-31 is refused."""
+        results = self._run(lambda: [(date(2015, 2, 5), "0.75")])
+        self.assertEqual(len(results.failures), 1)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_the_data_directory_is_created(self):
+        """Test a missing data/ is made, as for the other files."""
+        nested = os.path.join(self.test_dir, "nested")
+        with patch.object(
+            scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
+        ):
+            REAL_UPDATE_UK_BANK_RATE(nested, self.TODAY)
+        self.assertTrue(os.path.isfile(os.path.join(nested, "uk_bank_rate.csv")))
+
+    def test_the_defaults_are_the_data_directory_and_today(self):
+        """Test the arguments are optional."""
+        with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
+            with patch.object(
+                scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
+            ):
+                REAL_UPDATE_UK_BANK_RATE()
+        self.assertIn(date.today().isoformat(), self._read())
+
+
+class TestUkBankRateInMain(unittest.TestCase):
+    """Test the daily run publishes the rate beside the prices (#93)."""
+
+    def _main(self, outcome):
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start=None,
+                        end=None,
+                        backfill=False,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "QQQ")],
+                )
+            )
+            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
+            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
+            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
+            self.write = enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
+            self.summary = enter(patch("scrape_fund_price.write_summary"))
+            enter(
+                patch(
+                    "scrape_fund_price.update_dividends",
+                    return_value=scrape_fund_price.DividendResults(),
+                )
+            )
+            enter(patch("builtins.print"))
+            self.update = enter(
+                patch("scrape_fund_price.update_uk_bank_rate", **outcome)
+            )
+            main()
+
+    def test_the_daily_run_updates_the_rate_once(self):
+        """Test update_uk_bank_rate runs in the normal mode."""
+        self._main({"return_value": scrape_fund_price.UkBankRateResults()})
+        self.update.assert_called_once_with()
+
+    def test_a_failure_is_in_the_runs_failure_list_after_everything_is_written(self):
+        """Test the run exits non-zero, with prices and summary already written."""
+        results = scrape_fund_price.UkBankRateResults(failures=["uk_bank_rate: down"])
+        with self.assertRaises(SystemExit):
+            self._main({"return_value": results})
+        self.write.assert_called_once()
+        self.summary.assert_called_once()
+
+    def test_a_crash_in_the_update_does_not_cost_the_summary(self):
+        """Test an unexpected exception is a failure, as for the dividends."""
+        with self.assertRaises(SystemExit):
+            self._main({"side_effect": RuntimeError("boom")})
+        self.summary.assert_called_once()
+
+    def test_the_other_modes_do_not_fetch_it(self):
+        """Test --backfill and the rest never touch the Bank's page."""
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start="2024-01-01",
+                        end=None,
+                        backfill=True,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
+            enter(
+                patch(
+                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
+                )
+            )
+            enter(patch("builtins.print"))
+            update = enter(patch("scrape_fund_price.update_uk_bank_rate"))
             main()
         update.assert_not_called()
 
