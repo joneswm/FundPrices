@@ -17,6 +17,7 @@ import argparse
 import re
 import statistics
 from contextlib import nullcontext
+from html.parser import HTMLParser
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -4430,6 +4431,236 @@ def update_uk_cpi(data_dir=None, today=None):
     return UkCpiResults()
 
 
+# SPEC-014 (#93): the Bank of England Bank Rate, published beside the UK CPI as
+# the risk-free rate for Portfolio Tracker's Sharpe ratio. The Bank's database
+# CSV routes are disallowed by its robots.txt, so the rate history page is read
+# instead: one request a run.
+UK_BANK_RATE_FILE = "uk_bank_rate.csv"
+UK_BANK_RATE_HEADER = ["Month", "Rate", "Series", "AsOf"]
+UK_BANK_RATE_SERIES = "UK_BANK_RATE"
+UK_BANK_RATE_START = "2015-01"
+UK_BANK_RATE_URL = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
+UK_BANK_RATE_HEADERS = {
+    "User-Agent": INVESTING_HEADERS["User-Agent"],
+    "Accept": "text/html",
+}
+UK_BANK_RATE_REQUEST_TIMEOUT = 30
+UK_BANK_RATE_TABLE_ID = "stats-table"
+UK_BANK_RATE_DATE_PATTERN = re.compile(r"(\d{2}) ([A-Z][a-z]{2}) (\d{2})")
+UK_BANK_RATE_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+MONTH_ABBREVIATIONS = {name[:3]: number for name, number in MONTH_NUMBERS.items()}
+
+
+class UkBankRateResults:
+    """The day's Bank Rate update: `failures` holds the "uk_bank_rate: <error>" lines."""
+
+    def __init__(self, failures=None):
+        self.failures = failures or []
+
+
+class BankRateTable(HTMLParser):
+    """Collect the rows of the Bank Rate history table as lists of cell text."""
+
+    def __init__(self, table_id):
+        super().__init__()
+        self.table_id = table_id
+        self.found = False
+        self.rows = []
+        self._depth = 0
+        self._cell = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            if self._depth:
+                self._depth += 1
+            elif dict(attrs).get("id") == self.table_id:
+                self.found = True
+                self._depth = 1
+        elif self._depth == 1 and tag == "tr":
+            self.rows.append([])
+        elif self._depth == 1 and tag in ("td", "th") and self.rows:
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        if tag == "table" and self._depth:
+            self._depth -= 1
+        elif self._depth == 1 and tag in ("td", "th") and self._cell is not None:
+            self.rows[-1].append("".join(self._cell).strip())
+            self._cell = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def parse_boe_bank_rate(text, today=None):
+    """Read the Bank Rate history page into [(date, rate text)], oldest first.
+
+    The page lists every change of the Bank Rate, newest first, back to 1975,
+    with two-digit years: a year is 20yy unless that date is after `today`,
+    then 19yy. The rate is kept as the Bank words it (no float round trip).
+    The whole table is returned because the rate in force at the start of
+    UK_BANK_RATE_START is a change from years earlier. The page is refused, so
+    the last published file stays, when it has no table or no rows, holds a
+    date or rate that does not parse, lists a date twice, or does not reach
+    back to a change in force on the day before UK_BANK_RATE_START.
+
+    Returns:
+        list of (datetime.date, str), oldest first
+
+    Raises:
+        ValueError: the page is not what the site has always served
+    """
+    today = today or datetime.date.today()
+    table = BankRateTable(UK_BANK_RATE_TABLE_ID)
+    table.feed(text)
+    if not table.found:
+        raise ValueError(f"Bank Rate page has no table {UK_BANK_RATE_TABLE_ID!r}")
+
+    changes = {}
+    for row in table.rows:
+        if row == ["Date Changed", "Rate"]:
+            continue
+        if len(row) != 2:
+            raise ValueError(f"Bank Rate row is not a date and a rate: {row!r}")
+        match = UK_BANK_RATE_DATE_PATTERN.fullmatch(row[0])
+        if match is None or match.group(2) not in MONTH_ABBREVIATIONS:
+            raise ValueError(f"Bank Rate date not recognised: {row[0]!r}")
+        day, month, year = (
+            int(match.group(1)),
+            MONTH_ABBREVIATIONS[match.group(2)],
+            2000 + int(match.group(3)),
+        )
+        try:
+            when = datetime.date(year, month, day)
+            if when > today:
+                when = datetime.date(year - 100, month, day)
+        except ValueError:
+            raise ValueError(f"Bank Rate date not recognised: {row[0]!r}") from None
+        if not UK_BANK_RATE_PATTERN.fullmatch(row[1]):
+            raise ValueError(f"Bank Rate for {when} is not a number: {row[1]!r}")
+        if when in changes:
+            raise ValueError(f"Bank Rate lists {when} twice")
+        changes[when] = row[1]
+
+    if not changes:
+        raise ValueError("Bank Rate page has no changes")
+    before = datetime.date.fromisoformat(
+        f"{UK_BANK_RATE_START}-01"
+    ) - datetime.timedelta(days=1)
+    if min(changes) > before:
+        raise ValueError(f"Bank Rate history does not reach back to {before}")
+    return sorted(changes.items())
+
+
+def uk_bank_rate_by_month(changes, today):
+    """Return {'YYYY-MM': rate text}, the Bank Rate in force at each month end.
+
+    Every month from UK_BANK_RATE_START to the month of `today` has a row: the
+    rate of the newest change dated on or before the month's last day (for the
+    current month, on or before `today`, since the month has not ended). A
+    month with no change repeats the rate in force, so the series has no gap.
+    `changes` must reach back to a change in force before the first month.
+    """
+    rates = {}
+    month = UK_BANK_RATE_START
+    last = today.strftime("%Y-%m")
+    while month <= last:
+        following = next_month(month)
+        month_end = datetime.date.fromisoformat(f"{following}-01") - datetime.timedelta(
+            days=1
+        )
+        cut = min(month_end, today)
+        in_force = [rate for when, rate in changes if when <= cut]
+        if not in_force:
+            raise ValueError(f"Bank Rate history has no rate in force for {month}")
+        rates[month] = in_force[-1]
+        month = following
+    return rates
+
+
+def fetch_uk_bank_rate():
+    """Fetch the Bank Rate history page: one plain GET, once a run.
+
+    Raises:
+        Exception: transport, status and format errors propagate so
+            fetch_with_retries can retry them
+    """
+    response = requests.get(
+        UK_BANK_RATE_URL,
+        headers=UK_BANK_RATE_HEADERS,
+        timeout=UK_BANK_RATE_REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_boe_bank_rate(response.text)
+
+
+def read_uk_bank_rate(data_dir):
+    """Read uk_bank_rate.csv keyed on Month; a missing file is an empty series."""
+    path = os.path.join(data_dir, UK_BANK_RATE_FILE)
+    if not os.path.isfile(path):
+        return {}
+
+    width = len(UK_BANK_RATE_HEADER)
+    rows = {}
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            if row[0]:
+                rows[row[0]] = row
+    return rows
+
+
+def write_uk_bank_rate(rows, data_dir):
+    """Write uk_bank_rate.csv sorted by month."""
+    os.makedirs(data_dir, exist_ok=True)
+    path = os.path.join(data_dir, UK_BANK_RATE_FILE)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(UK_BANK_RATE_HEADER)
+        writer.writerows(sorted(rows, key=lambda row: row[0]))
+
+
+def update_uk_bank_rate(data_dir=None, today=None):
+    """Publish the Bank Rate as uk_bank_rate.csv (Month,Rate,Series,AsOf).
+
+    Every month derived from the Bank's page replaces the stored one, which is
+    how a changed rate lands. AsOf is the date the row was first published or
+    last changed: a new or changed month takes the run date, an unchanged one
+    keeps its date, so a run that reads the same numbers leaves the file
+    byte-identical. A stored month the derivation lacks is kept. A fetch that
+    fails, or a page that has changed, leaves the last published file
+    untouched and is listed in `failures`.
+
+    Args:
+        data_dir: Directory for the output file (default: DATA_DIR)
+        today: The run date (default: today)
+
+    Returns:
+        UkBankRateResults
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    today = today or datetime.date.today()
+
+    def fetch_months():
+        return uk_bank_rate_by_month(fetch_uk_bank_rate(), today)
+
+    rates, error = fetch_with_retries(fetch_months)
+    if error:
+        return UkBankRateResults(failures=[f"uk_bank_rate: {error}"])
+
+    rows = read_uk_bank_rate(data_dir)
+    for month, value in rates.items():
+        stored = rows.get(month)
+        if stored is None or stored[1:3] != [value, UK_BANK_RATE_SERIES]:
+            rows[month] = [month, value, UK_BANK_RATE_SERIES, today.isoformat()]
+    write_uk_bank_rate(list(rows.values()), data_dir)
+    return UkBankRateResults()
+
+
 def configured_identifiers(specs, closed_file=None):
     """Return every identifier a distributions.txt line may name.
 
@@ -4690,6 +4921,13 @@ def main():
             failures.extend(update_uk_cpi().failures)
         except Exception as error:
             failures.append(f"uk_cpi: {error}")
+
+        # The Bank Rate is another file from another source, fetched and
+        # written independently of the CPI.
+        try:
+            failures.extend(update_uk_bank_rate().failures)
+        except Exception as error:
+            failures.append(f"uk_bank_rate: {error}")
 
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.

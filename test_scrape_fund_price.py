@@ -8,6 +8,7 @@ import csv
 import decimal
 import html
 import json
+import urllib.parse
 import datetime
 from datetime import date, timedelta
 
@@ -9307,6 +9308,25 @@ class TestBankRateParsing(unittest.TestCase):
         """Test a duplicated date is ambiguous, so it is a bad response."""
         with self.assertRaisesRegex(ValueError, "2025-12-18"):
             self.parse(boe_page([("18 Dec 25", "3.50")] + BOE_ROWS))
+
+    def test_a_row_with_the_wrong_number_of_cells_is_refused(self):
+        """Test a changed layout is a bad response, not a skipped row."""
+        text = boe_page(BOE_ROWS).replace(
+            "</tbody>", "<tr><td>18 Dec 25</td><td>3.75</td><td>x</td></tr></tbody>"
+        )
+        with self.assertRaisesRegex(ValueError, "not a date and a rate"):
+            self.parse(text)
+
+    def test_a_table_nested_in_the_page_table_is_not_read_as_rows(self):
+        """Test only the history table's own rows count."""
+        nested = "<tr><td><table><tr><td>x</td></tr></table></td><td>x</td></tr>"
+        text = boe_page(BOE_ROWS).replace("</tbody>", nested + "</tbody>")
+        with self.assertRaises(ValueError):
+            self.parse(text)
+        text = boe_page(BOE_ROWS).replace(
+            "</thead>", "</thead><caption><table><tr><td>x</td></tr></table></caption>"
+        )
+        self.assertEqual(len(self.parse(text)), len(BOE_ROWS))
 
     def test_a_history_that_stops_after_2014_is_refused(self):
         """Test a truncated table cannot replace the published file."""
