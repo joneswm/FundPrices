@@ -724,6 +724,19 @@ which once made a four-row update show as 3,906 changed lines.
 
 ## Source Code Helpers
 
+### `config_lines(filename, label)`
+
+The line iteration the five configuration readers share. Yields `(number, fields, error)`
+for each entry line of the file: `number` counts every line, so an error names the line
+an editor shows; `fields` are the line's comma-separated fields, stripped, with a trailing
+`#` comment removed (blank and comment-only lines are skipped); `error(message)` returns
+the `ValueError` for that line, prefixed `<label> line <number>:` (`funds file`,
+`closed holdings`, `distributions file`, `fx pairs file`, `dividend sources file`). Each
+reader keeps its own field validation. `first_use(seen, noun, value, number, error)`
+records a value's first line and raises `<noun> <value> already used on line N` for a
+repeat; `configured_source(code, number, error)` is `canonical_source()` plus the
+rejection of a retired code.
+
 ### `canonical_source(code, line_number=None)`
 
 Upper-cases a source code and maps a deprecated one (`GF` → `YA`, via

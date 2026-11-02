@@ -121,6 +121,43 @@ def canonical_source(code, line_number=None):
     return canonical
 
 
+def config_lines(filename, label):
+    """Yield (number, fields, error) for each entry line of a configuration file.
+
+    The five configuration files share one grammar: an entry a line, fields
+    separated by commas and stripped, blank lines and `#` comments (whole-line
+    or trailing) ignored. `number` counts every line of the file, so an error
+    names the line an editor shows; `error(message)` is the ValueError for
+    that line with the file's own prefix, which the readers' tests assert on.
+    Each reader keeps its own field validation.
+    """
+    with open(filename, "r") as f:
+        for number, raw_line in enumerate(f, start=1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            def error(message, number=number):
+                return ValueError(f"{label} line {number}: {message}")
+
+            yield number, [field.strip() for field in line.split(",")], error
+
+
+def first_use(seen, noun, value, number, error):
+    """Record `value` as first used on line `number`, or raise if it repeats."""
+    if value in seen:
+        raise error(f"{noun} {value!r} already used on line {seen[value]}")
+    seen[value] = number
+
+
+def configured_source(code, number, error):
+    """Return the canonical source of a configuration line, rejecting a retired one."""
+    source = canonical_source(code, number)
+    if source in RETIRED_SOURCES:
+        raise error(f"source {code!r} ({RETIRED_SOURCES[source]}) was retired")
+    return source
+
+
 class FundSpec(NamedTuple):
     """One configured instrument.
 
@@ -154,57 +191,34 @@ def read_fund_specs(filename):
     """
     specs = []
     seen = {}
+    for number, fields, error in config_lines(filename, "funds file"):
+        if len(fields) < 2 or not fields[0] or not fields[1]:
+            raise error(
+                "expected '<source>,<identifier>[,<alias>]', got "
+                f"{','.join(fields)!r}"
+            )
 
-    with open(filename, "r") as f:
-        for number, raw_line in enumerate(f, start=1):
-            line = raw_line.split("#", 1)[0].strip()
-            if not line:
-                continue
+        source = configured_source(fields[0], number, error)
+        lookup_id = fields[1]
+        aliases = []
+        if len(fields) > 2 and fields[2]:
+            aliases = [alias.strip() for alias in fields[2].split(";")]
+        elif len(fields) > 2:
+            raise error(
+                "alias field is empty; remove the trailing comma if the fund "
+                "has no alias"
+            )
 
-            fields = [field.strip() for field in line.split(",")]
-            if len(fields) < 2 or not fields[0] or not fields[1]:
-                raise ValueError(
-                    f"funds file line {number}: expected "
-                    f"'<source>,<identifier>[,<alias>]', got {line!r}"
-                )
+        for alias in aliases:
+            if not alias:
+                raise error(f"empty alias in {fields[2]!r}")
+            if alias == lookup_id:
+                raise error(f"alias {alias!r} repeats its own identifier")
 
-            source = canonical_source(fields[0], number)
-            if source in RETIRED_SOURCES:
-                raise ValueError(
-                    f"funds file line {number}: source {fields[0]!r} "
-                    f"({RETIRED_SOURCES[source]}) was retired; use YA or FT"
-                )
-            lookup_id = fields[1]
-            aliases = []
-            if len(fields) > 2 and fields[2]:
-                aliases = [alias.strip() for alias in fields[2].split(";")]
-            elif len(fields) > 2:
-                raise ValueError(
-                    f"funds file line {number}: alias field is empty; "
-                    f"remove the trailing comma if the fund has no alias"
-                )
-
-            for alias in aliases:
-                if not alias:
-                    raise ValueError(
-                        f"funds file line {number}: empty alias in {fields[2]!r}"
-                    )
-                if alias == lookup_id:
-                    raise ValueError(
-                        f"funds file line {number}: alias {alias!r} repeats its "
-                        f"own identifier"
-                    )
-
-            spec = FundSpec(source, lookup_id, tuple(aliases))
-            for identifier in spec.publish_ids:
-                if identifier in seen:
-                    raise ValueError(
-                        f"funds file line {number}: identifier {identifier!r} "
-                        f"already used on line {seen[identifier]}"
-                    )
-                seen[identifier] = number
-
-            specs.append(spec)
+        spec = FundSpec(source, lookup_id, tuple(aliases))
+        for identifier in spec.publish_ids:
+            first_use(seen, "identifier", identifier, number, error)
+        specs.append(spec)
 
     return specs
 
@@ -256,54 +270,29 @@ def read_closed_holdings(filename=None):
 
     holdings = []
     seen = {}
-
-    with open(filename, "r") as f:
-        for number, raw_line in enumerate(f, start=1):
-            line = raw_line.split("#", 1)[0].strip()
-            if not line:
-                continue
-
-            fields = [field.strip() for field in line.split(",")]
-            if len(fields) != 6 or not all(fields):
-                raise ValueError(
-                    f"closed holdings line {number}: expected "
-                    f"'<identifier>,<source>,<lookup_id>,<currency>,"
-                    f"<start>,<end>', got {line!r}"
-                )
-
-            identifier, source, lookup_id, currency, start, end = fields
-            source = canonical_source(source, number)
-            if source in RETIRED_SOURCES:
-                raise ValueError(
-                    f"closed holdings line {number}: source {fields[1]!r} "
-                    f"({RETIRED_SOURCES[source]}) was retired; use YA, FT or IV"
-                )
-
-            for label, value in (("start", start), ("end", end)):
-                try:
-                    datetime.date.fromisoformat(value)
-                except ValueError:
-                    raise ValueError(
-                        f"closed holdings line {number}: {label} date "
-                        f"{value!r} is not a valid YYYY-MM-DD date"
-                    ) from None
-
-            if end < start:
-                raise ValueError(
-                    f"closed holdings line {number}: end {end!r} is before "
-                    f"start {start!r}"
-                )
-
-            if identifier in seen:
-                raise ValueError(
-                    f"closed holdings line {number}: identifier "
-                    f"{identifier!r} already used on line {seen[identifier]}"
-                )
-            seen[identifier] = number
-
-            holdings.append(
-                ClosedHolding(identifier, source, lookup_id, currency, start, end)
+    for number, fields, error in config_lines(filename, "closed holdings"):
+        if len(fields) != 6 or not all(fields):
+            raise error(
+                "expected '<identifier>,<source>,<lookup_id>,<currency>,"
+                f"<start>,<end>', got {','.join(fields)!r}"
             )
+
+        identifier, source, lookup_id, currency, start, end = fields
+        source = configured_source(source, number, error)
+        for label, value in (("start", start), ("end", end)):
+            try:
+                datetime.date.fromisoformat(value)
+            except ValueError:
+                raise error(
+                    f"{label} date {value!r} is not a valid YYYY-MM-DD date"
+                ) from None
+        if end < start:
+            raise error(f"end {end!r} is before start {start!r}")
+
+        first_use(seen, "identifier", identifier, number, error)
+        holdings.append(
+            ClosedHolding(identifier, source, lookup_id, currency, start, end)
+        )
 
     return holdings
 
@@ -347,11 +336,6 @@ def parse_xd_date(text):
     return month, day
 
 
-def distribution_error(number, message):
-    """Build the ValueError for a bad distributions.txt line."""
-    return ValueError(f"distributions file line {number}: {message}")
-
-
 def read_distributions(filename=None, known_identifiers=None):
     """Read hand-kept distribution schedules.
 
@@ -377,121 +361,95 @@ def read_distributions(filename=None, known_identifiers=None):
 
     distributions = []
     seen = {}
-    with open(filename, "r") as f:
-        for number, raw_line in enumerate(f, start=1):
-            line = raw_line.split("#", 1)[0].strip()
-            if not line:
-                continue
-
-            fields = [field.strip() for field in line.split(",")]
-            if len(fields) not in (4, 5, 6) or not fields[0]:
-                raise distribution_error(
-                    number,
-                    "expected '<identifier>,<frequency>,<xd-dates>,"
-                    f"<pay-offset-days>[,<last-amounts>[,<as-of>]]', got {line!r}",
-                )
-
-            identifier, frequency = fields[0], fields[1].lower()
-            if frequency not in DISTRIBUTION_FREQUENCIES:
-                raise distribution_error(
-                    number,
-                    f"frequency {fields[1]!r} is not one of "
-                    f"{', '.join(DISTRIBUTION_FREQUENCIES)}",
-                )
-
-            xd_dates = []
-            for text in fields[2].split(";"):
-                parsed = parse_xd_date(text.strip())
-                if parsed is None:
-                    raise distribution_error(
-                        number, f"ex-date {text.strip()!r} is not a valid MM-DD date"
-                    )
-                if parsed in xd_dates:
-                    raise distribution_error(
-                        number, f"ex-date {text.strip()!r} repeats"
-                    )
-                xd_dates.append(parsed)
-            expected = DISTRIBUTION_FREQUENCIES[frequency]
-            if len(xd_dates) != expected:
-                raise distribution_error(
-                    number,
-                    f"{frequency} needs {expected} ex-date(s) but "
-                    f"{len(xd_dates)} ex-dates were given",
-                )
-
-            offset_text = fields[3]
-            if (
-                not re.match(r"^[0-9]{1,4}$", offset_text)
-                or int(offset_text) > MAX_PAY_OFFSET_DAYS
-            ):
-                raise distribution_error(
-                    number,
-                    f"pay offset {offset_text!r} must be a whole number of days "
-                    f"from 0 to {MAX_PAY_OFFSET_DAYS}",
-                )
-
-            amounts = [""] * len(xd_dates)
-            if len(fields) > 4:
-                if not fields[4]:
-                    raise distribution_error(
-                        number,
-                        "amounts field is empty; remove the trailing comma if "
-                        "no amounts are known",
-                    )
-                texts = [text.strip() for text in fields[4].split(";")]
-                if len(texts) != len(xd_dates):
-                    raise distribution_error(
-                        number,
-                        f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)",
-                    )
-                for text in texts:
-                    if not text:
-                        continue
-                    try:
-                        value = decimal.Decimal(text)
-                    except decimal.InvalidOperation:
-                        value = None
-                    if value is None or not value.is_finite() or value <= 0:
-                        raise distribution_error(
-                            number, f"amount {text!r} is not a positive decimal"
-                        )
-                amounts = texts
-
-            as_of = ""
-            if len(fields) > 5:
-                as_of = fields[5]
-                try:
-                    datetime.date.fromisoformat(as_of)
-                except ValueError:
-                    raise distribution_error(
-                        number, f"as-of date {as_of!r} is not a valid YYYY-MM-DD date"
-                    )
-
-            if known_identifiers is not None and identifier not in known_identifiers:
-                raise distribution_error(
-                    number,
-                    f"identifier {identifier!r} is in neither funds.txt nor "
-                    f"closed_holdings.txt",
-                )
-            if identifier in seen:
-                raise distribution_error(
-                    number,
-                    f"identifier {identifier!r} already used on line "
-                    f"{seen[identifier]}",
-                )
-            seen[identifier] = number
-
-            order = sorted(range(len(xd_dates)), key=lambda i: xd_dates[i])
-            distributions.append(
-                Distribution(
-                    identifier,
-                    frequency,
-                    tuple(xd_dates[i] for i in order),
-                    int(offset_text),
-                    tuple(amounts[i] for i in order),
-                    as_of,
-                )
+    for number, fields, error in config_lines(filename, "distributions file"):
+        if len(fields) not in (4, 5, 6) or not fields[0]:
+            raise error(
+                "expected '<identifier>,<frequency>,<xd-dates>,"
+                "<pay-offset-days>[,<last-amounts>[,<as-of>]]', got "
+                f"{','.join(fields)!r}"
             )
+
+        identifier, frequency = fields[0], fields[1].lower()
+        if frequency not in DISTRIBUTION_FREQUENCIES:
+            raise error(
+                f"frequency {fields[1]!r} is not one of "
+                f"{', '.join(DISTRIBUTION_FREQUENCIES)}"
+            )
+
+        xd_dates = []
+        for text in fields[2].split(";"):
+            parsed = parse_xd_date(text.strip())
+            if parsed is None:
+                raise error(f"ex-date {text.strip()!r} is not a valid MM-DD date")
+            if parsed in xd_dates:
+                raise error(f"ex-date {text.strip()!r} repeats")
+            xd_dates.append(parsed)
+        expected = DISTRIBUTION_FREQUENCIES[frequency]
+        if len(xd_dates) != expected:
+            raise error(
+                f"{frequency} needs {expected} ex-date(s) but "
+                f"{len(xd_dates)} ex-dates were given"
+            )
+
+        offset_text = fields[3]
+        if (
+            not re.match(r"^[0-9]{1,4}$", offset_text)
+            or int(offset_text) > MAX_PAY_OFFSET_DAYS
+        ):
+            raise error(
+                f"pay offset {offset_text!r} must be a whole number of days "
+                f"from 0 to {MAX_PAY_OFFSET_DAYS}"
+            )
+
+        amounts = [""] * len(xd_dates)
+        if len(fields) > 4:
+            if not fields[4]:
+                raise error(
+                    "amounts field is empty; remove the trailing comma if "
+                    "no amounts are known"
+                )
+            texts = [text.strip() for text in fields[4].split(";")]
+            if len(texts) != len(xd_dates):
+                raise error(
+                    f"{len(texts)} amounts given for {len(xd_dates)} ex-date(s)"
+                )
+            for text in texts:
+                if not text:
+                    continue
+                try:
+                    value = decimal.Decimal(text)
+                except decimal.InvalidOperation:
+                    value = None
+                if value is None or not value.is_finite() or value <= 0:
+                    raise error(f"amount {text!r} is not a positive decimal")
+            amounts = texts
+
+        as_of = ""
+        if len(fields) > 5:
+            as_of = fields[5]
+            try:
+                datetime.date.fromisoformat(as_of)
+            except ValueError:
+                raise error(f"as-of date {as_of!r} is not a valid YYYY-MM-DD date")
+
+        if known_identifiers is not None and identifier not in known_identifiers:
+            raise error(
+                f"identifier {identifier!r} is in neither funds.txt nor "
+                f"closed_holdings.txt"
+            )
+        first_use(seen, "identifier", identifier, number, error)
+
+        order = sorted(range(len(xd_dates)), key=lambda i: xd_dates[i])
+        distributions.append(
+            Distribution(
+                identifier,
+                frequency,
+                tuple(xd_dates[i] for i in order),
+                int(offset_text),
+                tuple(amounts[i] for i in order),
+                as_of,
+            )
+        )
 
     return distributions
 
@@ -2004,26 +1962,15 @@ def read_fx_pairs(filename=None):
 
     pairs = []
     seen = {}
-    with open(filename, "r") as f:
-        for number, raw_line in enumerate(f, start=1):
-            line = raw_line.split("#", 1)[0].strip()
-            if not line:
-                continue
-
-            if not re.match(r"^[A-Z]{6}$", line):
-                raise ValueError(
-                    f"fx pairs file line {number}: expected six uppercase letters "
-                    f"such as 'USDGBP' (GBP per 1 USD), got {line!r}"
-                )
-
-            if line in seen:
-                raise ValueError(
-                    f"fx pairs file line {number}: pair {line!r} already used on "
-                    f"line {seen[line]}"
-                )
-
-            seen[line] = number
-            pairs.append(line)
+    for number, fields, error in config_lines(filename, "fx pairs file"):
+        pair = ",".join(fields)
+        if not re.match(r"^[A-Z]{6}$", pair):
+            raise error(
+                "expected six uppercase letters such as 'USDGBP' (GBP per 1 USD), "
+                f"got {pair!r}"
+            )
+        first_use(seen, "pair", pair, number, error)
+        pairs.append(pair)
 
     return pairs
 
@@ -2719,11 +2666,6 @@ class DividendSource(NamedTuple):
     source_id: str
 
 
-def dividend_source_error(number, message):
-    """Build the ValueError for a bad dividend_sources.txt line."""
-    return ValueError(f"dividend sources file line {number}: {message}")
-
-
 def read_dividend_sources(filename=None, specs=None):
     """Read the issuer sources of dividend dates.
 
@@ -2757,53 +2699,35 @@ def read_dividend_sources(filename=None, specs=None):
     sources = []
     seen = {}
     instruments = {}
-    with open(filename, "r") as f:
-        for number, raw_line in enumerate(f, start=1):
-            line = raw_line.split("#", 1)[0].strip()
-            if not line:
-                continue
+    for number, fields, error in config_lines(filename, "dividend sources file"):
+        if len(fields) != 3 or not fields[0]:
+            raise error(
+                "expected '<identifier>,<source>,<source-id>', got "
+                f"{','.join(fields)!r}"
+            )
 
-            fields = [field.strip() for field in line.split(",")]
-            if len(fields) != 3 or not fields[0]:
-                raise dividend_source_error(
-                    number,
-                    f"expected '<identifier>,<source>,<source-id>', got {line!r}",
+        identifier, source, source_id = fields[0], fields[1].upper(), fields[2]
+        if source not in DIVIDEND_SOURCE_CODES:
+            raise error(
+                f"source {fields[1]!r} is not one of "
+                f"{', '.join(DIVIDEND_SOURCE_CODES)}"
+            )
+        pattern, meaning = DIVIDEND_SOURCE_ID_RULES[source]
+        if not re.fullmatch(pattern, source_id):
+            raise error(f"source id {source_id!r} must be {meaning}")
+        if instrument_of is not None and identifier not in instrument_of:
+            raise error(f"identifier {identifier!r} is not published by funds.txt")
+        first_use(seen, "identifier", identifier, number, error)
+        if instrument_of is not None:
+            instrument = instrument_of[identifier]
+            if instrument in instruments:
+                raise error(
+                    f"{identifier!r} is the same instrument as line "
+                    f"{instruments[instrument]}"
                 )
+            instruments[instrument] = number
 
-            identifier, source, source_id = fields[0], fields[1].upper(), fields[2]
-            if source not in DIVIDEND_SOURCE_CODES:
-                raise dividend_source_error(
-                    number,
-                    f"source {fields[1]!r} is not one of "
-                    f"{', '.join(DIVIDEND_SOURCE_CODES)}",
-                )
-            pattern, meaning = DIVIDEND_SOURCE_ID_RULES[source]
-            if not re.fullmatch(pattern, source_id):
-                raise dividend_source_error(
-                    number, f"source id {source_id!r} must be {meaning}"
-                )
-            if instrument_of is not None and identifier not in instrument_of:
-                raise dividend_source_error(
-                    number, f"identifier {identifier!r} is not published by funds.txt"
-                )
-            if identifier in seen:
-                raise dividend_source_error(
-                    number,
-                    f"identifier {identifier!r} already used on line "
-                    f"{seen[identifier]}",
-                )
-            seen[identifier] = number
-            if instrument_of is not None:
-                instrument = instrument_of[identifier]
-                if instrument in instruments:
-                    raise dividend_source_error(
-                        number,
-                        f"{identifier!r} is the same instrument as line "
-                        f"{instruments[instrument]}",
-                    )
-                instruments[instrument] = number
-
-            sources.append(DividendSource(identifier, source, source_id))
+        sources.append(DividendSource(identifier, source, source_id))
 
     return sources
 
