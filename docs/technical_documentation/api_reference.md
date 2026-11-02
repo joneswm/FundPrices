@@ -322,8 +322,11 @@ Parses the command line:
 - `--history SYMBOL` with `--start YYYY-MM-DD` and optional `--end YYYY-MM-DD`
 - `--backfill` with `--from YYYY-MM-DD` (`--from` is an alias of `--start`)
 - `--import-closed`
+- `--backfill-dividends` with an optional `--from YYYY-MM-DD`
 
-With none of these, the daily run executes.
+With none of these, the daily run executes. `args=None` reads `sys.argv`; pass a list
+in tests. Parsing does not reject combinations: `main()` checks a rebuild with
+`validate_backfill_args()` or `validate_dividend_backfill_args()`.
 
 ## Resilience: Retries and Last Known Price
 
@@ -865,10 +868,11 @@ percentage instead of a division error.
 
 ## FX Rates
 
-### `read_fx_pairs(filename=FX_PAIRS_FILE)`
+### `read_fx_pairs(filename=None)`
 
-Reads currency pairs to snap. One six-letter pair per line; blank lines and `#` comments
-ignored. A missing file returns `[]`, so FX is optional.
+Reads currency pairs to snap, from `FX_PAIRS_FILE` when `filename` is `None`. One
+six-letter pair per line; blank lines and `#` comments ignored. A missing file returns
+`[]`, so FX is optional.
 
 **Raises:** `ValueError` naming the line, for a malformed or repeated pair. The slash
 spelling (`GBP/NZD`) is rejected deliberately: by market convention it means the inverse
@@ -878,8 +882,9 @@ of the stored direction, so accepting it would store plausible but wrong values.
 
 Fetches dated rates as **GBP per 1 unit of the base currency**, via Yahoo's direct
 `<PAIR>=X` ticker. A day's rate is its 17:00 New York close, picked from hourly bars
-by `new_york_fx_closes()` (#80). Days older than Yahoo's 730-day hourly history come
-from the daily bars, weekends dropped; that daily Close is the day's opening rate.
+by `new_york_fx_closes()` (#80). Days older than Yahoo's hourly history, which is
+requested back `FX_HOURLY_HISTORY_DAYS` (729) days from `today`, come from the daily
+bars, weekends dropped; that daily Close is the day's opening rate.
 Rates are formatted at a fixed 6 decimal places, unlike prices, which keep the
 source's own precision. `today` and `now` default to the clock and exist for tests.
 
@@ -945,6 +950,14 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning (50)
 - `FT_BACKFILL_PAUSE_SECONDS`: Pause between FT requests during a rebuild (1)
 - `FX_RATE_DECIMALS`: Decimal places stored for FX rates (6)
+- `FX_CLOSE_ZONE`, `FX_CLOSE_HOUR`: The clock a day's FX rate is read at, 17:00 in
+  `America/New_York` (17), #80
+- `FX_HOURLY_HISTORY_DAYS`: How far back Yahoo's hourly bars are requested (729; Yahoo
+  keeps 730 days, and one day's margin keeps a request in range)
+- `UNTRADED_SPIKE_RATIO`: How far a zero-volume bar must sit from both neighbours to be
+  dropped as untraded (1.2), #83
+- `FT_SETTLED_ZONE`, `FT_SETTLED_HOUR`: The clock an FT row is held back until, 16:00 in
+  `America/New_York` (16), #84
 - `DIVIDEND_WINDOW_DAYS`: Days of Yahoo dividend events each daily run re-reads once a
   history exists (400)
 - `ESTIMATE_WINDOW_DAYS`, `ESTIMATE_STOP_MARGIN_DAYS`, `FREQUENCY_BANDS`: the twelve-month
