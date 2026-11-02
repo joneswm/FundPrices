@@ -483,7 +483,9 @@ and `.summary`. A failed declared lookup prints a warning and is not a failure.
 ### `read_dividend_history(data_dir)` and `write_dividend_history(rows, data_dir)`
 
 `read` returns rows keyed `(Fund, ExDate)` (rows without either are skipped); `write`
-sorts by ex-date then fund, with LF endings.
+sorts by ex-date then fund, with LF endings. Both are `read_keyed_csv()` and
+`write_sorted_csv()` wrappers, as are `read_dividend_upcoming()` (which returns the
+rows as a list) and `write_dividend_upcoming()`.
 
 ### `merge_dividend_rows(stored, incoming)`
 
@@ -676,12 +678,14 @@ and the closed-holding import.
 ### `read_history_rows(history_csv)`
 
 Returns stored history as `{(fund, date): [fund, date, price, currency]}`, loading
-legacy three-column rows with an empty currency.
+legacy three-column rows with an empty currency; a row without a price is skipped.
+A `read_keyed_csv()` wrapper.
 
 ### `write_history_csv(rows, data_dir)`
 
 Writes `prices_history.csv` sorted by date then fund and returns the rows as written.
 Used on its own by the closed-holding import, which must not touch any other file.
+A `write_sorted_csv()` wrapper.
 
 ### `write_history_files(rows, data_dir, latest=None)`
 
@@ -721,6 +725,17 @@ Every output file goes through these. They force LF line endings on every platfo
 `csv.writer` defaults to CRLF everywhere and Windows text mode translates LF to CRLF,
 which once made a four-row update show as 3,906 changed lines.
 
+### `read_keyed_csv(path, header, key)` and `write_sorted_csv(path, header, rows, key)`
+
+The one reader and one writer behind every stored CSV (prices, FX, the two dividend
+files, UK CPI and the Bank Rate; #112). `read_keyed_csv()` returns `{key(row): row}`
+in file order: a missing file is `{}`, every row is padded or truncated to the header's
+width so a legacy or damaged row still reads, and a row the key maps to `None` is
+skipped. `write_sorted_csv()` creates the directory, writes the header and the rows
+sorted by `key` through `open_for_write()` and `csv_writer()`, and returns the rows as
+written. Sorting is what makes a repeated run byte-identical. The twelve readers and
+writers named in this document keep their own names and signatures as wrappers.
+
 ## Source Code Helpers
 
 ### `canonical_source(code, line_number=None)`
@@ -757,7 +772,8 @@ propagate so `fetch_with_retries()` can retry them.
 ### `read_uk_cpi(data_dir)` and `write_uk_cpi(rows, data_dir)`
 
 Read `uk_cpi.csv` keyed on `Month` (a missing file is `{}`); write it sorted by month with LF
-endings. Rows are `[Month, Index, Series, AsOf]`.
+endings. Rows are `[Month, Index, Series, AsOf]`. `read_keyed_csv()` and `write_sorted_csv()`
+wrappers.
 
 ### `update_uk_cpi(data_dir=None, today=None)`
 
@@ -800,7 +816,8 @@ One GET of `UK_BANK_RATE_URL` (30 s timeout, browser `User-Agent`), parsed by
 ### `read_uk_bank_rate(data_dir)` and `write_uk_bank_rate(rows, data_dir)`
 
 Read `uk_bank_rate.csv` keyed on `Month` (a missing file is `{}`); write it sorted by month with LF
-endings. Rows are `[Month, Rate, Series, AsOf]`.
+endings. Rows are `[Month, Rate, Series, AsOf]`. `read_keyed_csv()` and `write_sorted_csv()`
+wrappers.
 
 ### `update_uk_bank_rate(data_dir=None, today=None)`
 
@@ -863,7 +880,9 @@ it is empty), an Attention section and the biggest movers. Pure: no clock, no ne
 
 Writes `data/daily_summary.csv` and `data/daily_summary.md`, and appends the Markdown to
 `$GITHUB_STEP_SUMMARY` when set. The CSV has one row per instrument and does not carry
-the dividends.
+the dividends. Each `SummaryRow` is written as the tuple it is, so `SUMMARY_HEADER` is
+the NamedTuple's field order (a test asserts it); only the aliases are rendered, joined
+by `;`.
 
 **Arithmetic note**: deltas use `decimal.Decimal`, so `7.15 - 7.09` is `0.06` rather
 than the binary float `0.0600000000000005`. A previous price of zero yields an empty
@@ -918,11 +937,13 @@ upsert still lets a later run correct the last 10 days if Yahoo revises a bar.
 
 ### `read_fx_rows(fx_csv)`, `write_fx_files(rows, data_dir)` and `format_fx_rate(value)`
 
-`read_fx_rows()` returns stored rates keyed on `(Pair, Date)`. `write_fx_files()` writes
-`fx_history.csv` and `latest_fx.csv` from an authoritative row set **without merging**,
-so a rebuild that removed rows really removes them; `write_fx_results()` does the
-merging for the daily run before calling it. `format_fx_rate()` renders a rate at a
-fixed `FX_RATE_DECIMALS` places, unlike prices, which keep the source's own precision.
+`read_fx_rows()` returns stored rates keyed on `(Pair, Date)`, skipping a row without a
+rate (a `read_keyed_csv()` wrapper). `write_fx_files()` writes `fx_history.csv` and
+`latest_fx.csv` through `write_sorted_csv()` from an authoritative row set **without
+merging**, so a rebuild that removed rows really removes them; `write_fx_results()`
+does the merging for the daily run before calling it. `format_fx_rate()` renders a
+rate at a fixed `FX_RATE_DECIMALS` places, unlike prices, which keep the source's own
+precision.
 
 ### `backfill_fx(pairs, start, data_dir=None, report=None)`
 

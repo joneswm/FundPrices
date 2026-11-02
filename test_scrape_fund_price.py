@@ -2407,6 +2407,47 @@ class TestHistoryUpsert(DataDirCase):
         )
         self.assertEqual(list(read_history_rows(path)), [("AAA", "2026-09-18")])
 
+    def test_read_keyed_csv_pads_truncates_and_skips_what_the_key_rejects(self):
+        """Test the reader every storage file shares (#112).
+
+        A missing file is empty; a short row is padded and a long one cut to
+        the header's width; the key decides what a row is stored under and
+        a row it maps to None is left out, in file order.
+        """
+        header = ["Name", "Date", "Value"]
+        key = lambda row: (row[0], row[1]) if row[0] else None  # noqa: E731
+        self.assertEqual(
+            scrape_fund_price.read_keyed_csv(self.path("none.csv"), header, key), {}
+        )
+        path = self.write_text(
+            "keyed.csv",
+            "Name,Date,Value\nB,2026-01-02,2,extra\n,2026-01-03,3\nA,2026-01-01\n",
+        )
+        self.assertEqual(
+            scrape_fund_price.read_keyed_csv(path, header, key),
+            {
+                ("B", "2026-01-02"): ["B", "2026-01-02", "2"],
+                ("A", "2026-01-01"): ["A", "2026-01-01", ""],
+            },
+        )
+
+    def test_write_sorted_csv_creates_the_directory_and_returns_the_order(self):
+        """Test the writer every storage file shares (#112).
+
+        The directory is created, the header comes first, the rows follow in
+        key order with LF endings, and the rows are returned as written.
+        """
+        path = self.path(os.path.join("new", "sorted.csv"))
+        rows = [["B", "2026-01-02", "2"], ["A", "2026-01-01", "1"]]
+        ordered = scrape_fund_price.write_sorted_csv(
+            path, ["Name", "Date", "Value"], rows, key=lambda row: row[1]
+        )
+        self.assertEqual(ordered, [rows[1], rows[0]])
+        with open(path, "rb") as file:
+            self.assertEqual(
+                file.read(), b"Name,Date,Value\nA,2026-01-01,1\nB,2026-01-02,2\n"
+            )
+
 
 class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
@@ -4369,6 +4410,26 @@ class TestSummaryRendering(DataDirCase):
         with patch.dict(os.environ, env, clear=True):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
         self.assertTrue(os.path.exists(self.path("daily_summary.md")))
+
+    def test_the_csv_header_is_summary_row_in_field_order(self):
+        """Test SUMMARY_HEADER names SummaryRow's fields, in order (#112).
+
+        write_summary writes each SummaryRow as the tuple it is, so the
+        header must follow the NamedTuple's own field order.
+        """
+        self.assertEqual(
+            [
+                "".join(part.title() for part in field.split("_"))
+                for field in scrape_fund_price.SummaryRow._fields
+            ],
+            scrape_fund_price.SUMMARY_HEADER,
+        )
+
+    def test_the_csv_joins_aliases_with_semicolons(self):
+        """Test an instrument's aliases share one cell, not the tuple's repr."""
+        row = self.price_rows[0]._replace(aliases=("A1", "A2"))
+        write_summary([row], [], "2026-09-18", self.test_dir)
+        self.assertEqual(self.read_rows("daily_summary.csv")[0][:2], ["QQQ", "A1;A2"])
 
 
 class TestSummaryRowMarkers(unittest.TestCase):
