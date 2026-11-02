@@ -397,7 +397,9 @@ The dividend calendar (SPEC-010): `data/dividends_history.csv`
 rebuilt with `--backfill-dividends`. Rows are published under every alias of an
 instrument. A history row is a `DividendRow(fund, ex_date, pay_date, amount, currency,
 source)` NamedTuple whose `HEADER` is the file's header (`DIVIDEND_HISTORY_HEADER` is an
-alias of it); upcoming rows are plain lists under `DIVIDEND_UPCOMING_HEADER`.
+alias of it), and an upcoming row an `UpcomingRow(fund, ex_date, pay_date, amount,
+currency, status, as_of)` whose `HEADER` `DIVIDEND_UPCOMING_HEADER` aliases. Both readers
+build them through `read_keyed_csv()`'s row factory and `fund_and_ex_date(row)` keys both.
 
 ### `Distribution(identifier, frequency, xd_dates, pay_offset_days, amounts, as_of)`
 

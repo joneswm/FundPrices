@@ -2277,16 +2277,27 @@ class DividendRow(NamedTuple):
     source: str
 
 
+class UpcomingRow(NamedTuple):
+    """One row of dividends_upcoming.csv: a dividend expected, not yet paid.
+
+    `status` is `declared` (a source announced it) or `estimated` (projected
+    from the history or distributions.txt); `as_of` is the run that last
+    produced or confirmed the row. Fields are the file's text.
+    """
+
+    HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Status", "AsOf"]
+
+    fund: str
+    ex_date: str
+    pay_date: str  # "" when not known
+    amount: str  # "" when not known
+    currency: str
+    status: str
+    as_of: str
+
+
 DIVIDEND_HISTORY_HEADER = DividendRow.HEADER
-DIVIDEND_UPCOMING_HEADER = [
-    "Fund",
-    "ExDate",
-    "PayDate",
-    "Amount",
-    "Currency",
-    "Status",
-    "AsOf",
-]
+DIVIDEND_UPCOMING_HEADER = UpcomingRow.HEADER
 
 
 # The daily run re-reads this many days of Yahoo's dividend events; the whole
@@ -2366,7 +2377,7 @@ def read_dividend_history(data_dir):
 
 def fund_and_ex_date(row):
     """The (Fund, ExDate) key of a dividend row, or None when it has neither."""
-    return (row[0], row[1]) if row[0] and row[1] else None
+    return (row.fund, row.ex_date) if row.fund and row.ex_date else None
 
 
 def write_dividend_history(rows, data_dir):
@@ -2468,26 +2479,27 @@ UPCOMING_MAX_AGE_DAYS = 30
 
 
 def read_dividend_upcoming(data_dir):
-    """Read dividends_upcoming.csv as a list of rows.
+    """Read dividends_upcoming.csv as a list of UpcomingRow.
 
     A missing file has no rows, and a row without a fund or an ex-date is
     skipped rather than stopping the run.
     """
     rows = read_keyed_csv(
         os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
+        UpcomingRow.HEADER,
         fund_and_ex_date,
+        row=UpcomingRow._make,
     )
     return list(rows.values())
 
 
 def write_dividend_upcoming(rows, data_dir):
-    """Write dividends_upcoming.csv sorted by ex-date then fund."""
+    """Write dividends_upcoming.csv (UpcomingRow) sorted by ex-date then fund."""
     write_sorted_csv(
         os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
+        UpcomingRow.HEADER,
         rows,
-        key=lambda row: (row[1], row[0]),
+        key=lambda row: (row.ex_date, row.fund),
     )
 
 
@@ -3482,7 +3494,7 @@ def upcoming_rows_for(
     Args:
         run: The DividendRun; its day is also the rows' AsOf
         identifier: The Fund value of the rows
-        stored: The instrument's rows from the previous run
+        stored: The instrument's UpcomingRows from the previous run
         history_dates: Its ex-dates in dividends_history.csv
         last_paid: (amount, currency) of its latest history row
         declared: Today's DeclaredDividend, or None
@@ -3493,23 +3505,23 @@ def upcoming_rows_for(
 
     for row in stored:
         try:
-            age = (run.today - datetime.date.fromisoformat(row[1])).days
+            age = (run.today - datetime.date.fromisoformat(row.ex_date)).days
         except ValueError:
             continue
         if age <= 0:
-            if row[5] == "estimated" or declared is not None:
+            if row.status == "estimated" or declared is not None:
                 continue
         elif age > UPCOMING_MAX_AGE_DAYS:
             continue
-        elif age > UPCOMING_GRACE_DAYS and row[1] in history_dates:
+        elif age > UPCOMING_GRACE_DAYS and row.ex_date in history_dates:
             continue
-        rows[row[1]] = [identifier] + row[1:7]
+        rows[row.ex_date] = row._replace(fund=identifier)
 
     if declared is not None:
         amount, currency = last_paid
         if declared.amount:
             amount, currency = declared.amount, declared.currency
-        rows[declared.ex_date] = [
+        rows[declared.ex_date] = UpcomingRow(
             identifier,
             declared.ex_date,
             declared.pay_date,
@@ -3517,14 +3529,16 @@ def upcoming_rows_for(
             currency,
             "declared",
             as_of,
-        ]
+        )
 
     pending = any(
-        row[5] == "declared" and row[1] >= as_of and row[1] not in history_dates
+        row.status == "declared"
+        and row.ex_date >= as_of
+        and row.ex_date not in history_dates
         for row in rows.values()
     )
     if estimate is not None and not pending:
-        rows[estimate.ex_date] = [
+        rows[estimate.ex_date] = UpcomingRow(
             identifier,
             estimate.ex_date,
             estimate.pay_date,
@@ -3532,7 +3546,7 @@ def upcoming_rows_for(
             estimate.currency,
             "estimated",
             as_of,
-        ]
+        )
 
     return [rows[ex_date] for ex_date in sorted(rows)]
 
@@ -3571,7 +3585,7 @@ def build_dividend_upcoming(run, distributions, history, stored, declared):
         history_by_fund.setdefault(fund, {})[ex_date] = row
     stored_by_fund = {}
     for row in stored:
-        stored_by_fund.setdefault(row[0], []).append(row)
+        stored_by_fund.setdefault(row.fund, []).append(row)
     schedule_for = {dist.identifier: dist for dist in distributions}
 
     rows = []
@@ -3595,7 +3609,7 @@ def build_dividend_upcoming(run, distributions, history, stored, declared):
 
         instrument_stored = merge_by_ex_date(
             {
-                i: {row[1]: row for row in stored_by_fund.get(i, [])}
+                i: {row.ex_date: row for row in stored_by_fund.get(i, [])}
                 for i in identifiers
             },
             identifiers,
@@ -3611,9 +3625,9 @@ def build_dividend_upcoming(run, distributions, history, stored, declared):
             estimate=estimate,
         )
         for identifier in identifiers:
-            rows.extend([identifier] + row[1:] for row in merged)
+            rows.extend(row._replace(fund=identifier) for row in merged)
 
-    return sorted(rows, key=lambda row: (row[1], row[0]))
+    return sorted(rows, key=lambda row: (row.ex_date, row.fund))
 
 
 def stored_currencies(data_dir):
@@ -4468,27 +4482,27 @@ def build_dividend_summary(previous, upcoming, universe):
     as in the price table.
 
     Args:
-        previous: The previous run's dividends_upcoming.csv rows
+        previous: The previous run's dividends_upcoming.csv rows (UpcomingRow)
         upcoming: Today's rows
         universe: The configured instruments (Universe)
     """
-    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
+    before = {(row.fund, row.ex_date): (row.pay_date, row.status) for row in previous}
     rows = []
     for spec in universe.specs:
-        for row in sorted(upcoming, key=lambda row: row[1]):
-            if row[0] != spec.lookup_id:
+        for row in sorted(upcoming, key=lambda row: row.ex_date):
+            if row.fund != spec.lookup_id:
                 continue
-            if before.get((row[0], row[1])) == (row[2], row[5]):
+            if before.get((row.fund, row.ex_date)) == (row.pay_date, row.status):
                 continue
             rows.append(
                 DividendSummaryRow(
                     spec.lookup_id,
                     tuple(spec.aliases),
-                    row[1],
-                    row[2],
-                    row[3],
-                    row[4],
-                    row[5],
+                    row.ex_date,
+                    row.pay_date,
+                    row.amount,
+                    row.currency,
+                    row.status,
                 )
             )
     return rows
