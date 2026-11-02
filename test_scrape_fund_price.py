@@ -5628,10 +5628,8 @@ class TestDividendUpcomingStorage(DividendRunCase):
         )
 
 
-class TestUpcomingRowsForOneInstrument(unittest.TestCase):
+class TestUpcomingRowsForOneInstrument(DividendRunCase):
     """Test the declared, estimated and carried-over rules (SPEC-010, #85)."""
-
-    TODAY = date(2026, 10, 26)
 
     def _rows(
         self,
@@ -5653,11 +5651,16 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     ESTIMATE = scrape_fund_price.EstimatedDividend("2026-12-17", "", "0.33", "GBP")
 
+    def _stored(self, ex, status="estimated", pay="", as_of=None):
+        """A stored upcoming row for the instrument, as of the day before."""
+        as_of = as_of or (date.fromisoformat(ex) - timedelta(days=1)).isoformat()
+        return self.upcoming("IGLS.L", ex, pay, "0.3", "GBP", status, as_of)
+
     def test_an_estimate_becomes_an_estimated_row_as_of_today(self):
         """Test the projection is published with the run date."""
         self.assertEqual(
             self._rows(estimate=self.ESTIMATE),
-            [["IGLS.L", "2026-12-17", "", "0.33", "GBP", "estimated", "2026-10-26"]],
+            [self.upcoming("IGLS.L", "2026-12-17", "", "0.33", "GBP", "estimated")],
         )
 
     def test_a_declared_dividend_carries_the_last_paid_amount(self):
@@ -5666,15 +5669,9 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
         self.assertEqual(
             self._rows(declared=declared, estimate=self.ESTIMATE),
             [
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.33",
-                    "GBP",
-                    "declared",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    "IGLS.L", "2026-11-12", "2026-11-28", "0.33", "GBP", "declared"
+                )
             ],
         )
 
@@ -5702,31 +5699,19 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     def test_a_stored_estimate_is_replaced_not_accumulated(self):
         """Test a moved estimate leaves one row, the new one."""
-        stored = [
-            ["IGLS.L", "2026-12-10", "", "0.30", "GBP", "estimated", "2026-10-25"]
-        ]
+        stored = [self._stored("2026-12-10", as_of="2026-10-25")]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual([r[1] for r in rows], ["2026-12-17"])
 
     def test_a_stored_estimate_goes_when_there_is_no_estimate_any_more(self):
         """Test an instrument that stopped paying loses its projection."""
-        stored = [
-            ["IGLS.L", "2026-12-10", "", "0.30", "GBP", "estimated", "2026-10-25"]
-        ]
+        stored = [self._stored("2026-12-10", as_of="2026-10-25")]
         self.assertEqual(self._rows(stored=stored), [])
 
     def test_a_stored_declared_row_survives_a_day_yahoo_says_nothing(self):
         """Test a flaky calendar does not retract an announcement."""
         stored = [
-            [
-                "IGLS.L",
-                "2026-11-12",
-                "2026-11-28",
-                "0.3",
-                "GBP",
-                "declared",
-                "2026-10-20",
-            ]
+            self._stored("2026-11-12", "declared", pay="2026-11-28", as_of="2026-10-20")
         ]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual(rows, stored)
@@ -5734,15 +5719,7 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
     def test_a_moved_declaration_replaces_the_stored_one(self):
         """Test a new declared date supersedes the old, with the new AsOf."""
         stored = [
-            [
-                "IGLS.L",
-                "2026-11-12",
-                "2026-11-28",
-                "0.3",
-                "GBP",
-                "declared",
-                "2026-10-20",
-            ]
+            self._stored("2026-11-12", "declared", pay="2026-11-28", as_of="2026-10-20")
         ]
         declared = scrape_fund_price.DeclaredDividend("2026-11-19", "2026-12-03")
         rows = self._rows(stored=stored, declared=declared)
@@ -5750,51 +5727,51 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     def test_a_row_stays_for_seven_days_after_its_ex_date_even_if_in_history(self):
         """Test the downstream has a week to match it."""
-        stored = [
-            ["IGLS.L", "2026-10-19", "", "0.3", "GBP", "estimated", "2026-10-18"],
-            ["IGLS.L", "2026-10-18", "", "0.3", "GBP", "estimated", "2026-10-17"],
-        ]
+        stored = [self._stored("2026-10-19"), self._stored("2026-10-18")]
         rows = self._rows(stored=stored, history_dates={"2026-10-19", "2026-10-18"})
         self.assertEqual([r[1] for r in rows], ["2026-10-19"])
 
     def test_a_row_older_than_seven_days_stays_while_it_is_not_in_the_history(self):
         """Test a missing dividend stays visible for the downstream's 'missing'."""
-        stored = [["IGLS.L", "2026-10-10", "", "0.3", "GBP", "estimated", "2026-10-09"]]
+        stored = [self._stored("2026-10-10")]
         self.assertEqual(self._rows(stored=stored), stored)
 
     def test_a_row_older_than_thirty_days_goes_either_way(self):
         """Test nothing lingers for ever, and day thirty is the last."""
-        stored = [
-            ["IGLS.L", "2026-09-25", "", "0.3", "GBP", "estimated", "2026-09-24"],
-            ["IGLS.L", "2026-09-20", "", "0.3", "GBP", "declared", "2026-09-19"],
-        ]
-        self.assertEqual(self._rows(stored=stored), [])
-        both = {"2026-09-25", "2026-09-20"}
-        self.assertEqual(self._rows(stored=stored, history_dates=both), [])
-        thirty = [["IGLS.L", "2026-09-26", "", "0.3", "GBP", "estimated", "2026-09-25"]]
-        self.assertEqual(self._rows(stored=thirty), thirty)
+        old = [self._stored("2026-09-25"), self._stored("2026-09-20", "declared")]
+        thirty = [self._stored("2026-09-26")]
+        rules = {
+            "not in history": (self._rows(stored=old), []),
+            "in history": (
+                self._rows(stored=old, history_dates={"2026-09-25", "2026-09-20"}),
+                [],
+            ),
+            "day thirty": (self._rows(stored=thirty), thirty),
+        }
+        for rule, (rows, expected) in rules.items():
+            with self.subTest(rule=rule):
+                self.assertEqual(rows, expected)
+
+    def test_a_stored_row_with_an_unreadable_date_is_dropped(self):
+        """Test a damaged file heals itself instead of stopping the run."""
+        stored = [self._stored("soon", "declared", as_of="2026-10-01")]
+        self.assertEqual(self._rows(stored=stored, last_paid=("", "")), [])
 
     def test_rows_are_ordered_by_ex_date(self):
         """Test a carried row precedes the new estimate."""
-        stored = [["IGLS.L", "2026-10-22", "", "0.3", "GBP", "estimated", "2026-10-21"]]
+        stored = [self._stored("2026-10-22")]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual([r[1] for r in rows], ["2026-10-22", "2026-12-17"])
 
 
-class TestBuildDividendUpcoming(unittest.TestCase):
+class TestBuildDividendUpcoming(DividendRunCase):
     """Test the whole upcoming file from the day's inputs (SPEC-010, #85)."""
-
-    TODAY = date(2026, 10, 26)
 
     def _history(self, *rows):
         return {(row[0], row[1]): list(row) for row in rows}
 
     def _dist(self, text):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write(text + "\n")
-            return scrape_fund_price.read_distributions(path, None)
+        return self._dists(text)
 
     def _build(
         self,
@@ -5818,41 +5795,29 @@ class TestBuildDividendUpcoming(unittest.TestCase):
     def test_a_pattern_estimate_is_published_under_every_alias(self):
         """Test one projection, every identifier."""
         history = self._history(
-            ["0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"],
-            ["0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"],
-            ["JFM0003373", "2026-03-05", "", "1", "GBP", "YA"],
-            ["JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"],
+            self.row("0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"),
+            self.row("JFM0003373", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"),
         )
         rows = self._build([FundSpec("YA", "0P00000YAN", ("JFM0003373",))], history)
         self.assertEqual(
             rows,
             [
-                [
-                    "0P00000YAN",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
-                [
-                    "JFM0003373",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
+                self.upcoming(
+                    "0P00000YAN", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
+                self.upcoming(
+                    "JFM0003373", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
             ],
         )
 
     def test_history_held_only_under_an_alias_is_still_used(self):
         """Test an alias may carry the whole history."""
         history = self._history(
-            ["OLD", "2026-03-05", "", "1", "GBP", "YA"],
-            ["OLD", "2026-09-03", "", "1.1", "GBP", "YA"],
+            self.row("OLD", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("OLD", "2026-09-03", "", "1.1", "GBP", "YA"),
         )
         rows = self._build([FundSpec("YA", "NEW", ("OLD",))], history)
         self.assertEqual(sorted({r[0] for r in rows}), ["NEW", "OLD"])
@@ -5863,7 +5828,7 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_a_declared_dividend_is_published_for_the_lookup_id_and_aliases(self):
         """Test the calendar answer is keyed by lookup id, published everywhere."""
-        history = self._history(["QQQ", "2026-09-22", "", "0.9", "USD", "YA"])
+        history = self._history(self.row("QQQ", "2026-09-22", "", "0.9", "USD", "YA"))
         declared = {
             "QQQ": scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
         }
@@ -5871,15 +5836,9 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                [
-                    "QQQ",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.9",
-                    "USD",
-                    "declared",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    "QQQ", "2026-11-12", "2026-11-28", "0.9", "USD", "declared"
+                )
             ],
         )
 
@@ -5894,15 +5853,14 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                [
+                self.upcoming(
                     "GB00B1FXTF86",
                     "2027-03-01",
                     "2027-03-31",
                     "0.0821",
                     "GBP",
                     "estimated",
-                    "2026-10-26",
-                ]
+                )
             ],
         )
 
@@ -5920,8 +5878,8 @@ class TestBuildDividendUpcoming(unittest.TestCase):
     def test_a_distributions_line_beats_the_pattern(self):
         """Test the owner's statement of the dates wins over a projection."""
         history = self._history(
-            ["X", "2026-03-05", "", "1", "GBP", "YA"],
-            ["X", "2026-09-03", "", "1", "GBP", "YA"],
+            self.row("X", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("X", "2026-09-03", "", "1", "GBP", "YA"),
         )
         dists = self._dist("X,annual,12-15,28,0.5")
         [row] = self._build([FundSpec("YA", "X")], history, dists)
@@ -5940,12 +5898,20 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_stored_rows_of_unconfigured_funds_are_dropped(self):
         """Test the file follows funds.txt."""
-        stored = [["GONE", "2026-12-17", "", "1", "GBP", "estimated", "2026-10-25"]]
+        stored = [
+            self.upcoming(
+                "GONE", "2026-12-17", "", "1", "GBP", "estimated", "2026-10-25"
+            )
+        ]
         self.assertEqual(self._build([FundSpec("YA", "QQQ")], stored=stored), [])
 
     def test_a_stored_declared_row_is_carried_for_every_alias(self):
         """Test a lookup that fails today keeps yesterday's announcement."""
-        stored = [["QQQ", "2026-11-12", "", "0.9", "USD", "declared", "2026-10-25"]]
+        stored = [
+            self.upcoming(
+                "QQQ", "2026-11-12", "", "0.9", "USD", "declared", "2026-10-25"
+            )
+        ]
         rows = self._build([FundSpec("YA", "QQQ", ("QQQ.US",))], stored=stored)
         self.assertEqual(
             [(r[0], r[6]) for r in rows],
@@ -5954,8 +5920,8 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_plain_pairs_are_accepted(self):
         """Test callers may pass (source, identifier) pairs."""
-        history = self._history(["QQQ", "2026-09-22", "", "0.9", "USD", "YA"])
-        self.assertEqual(len(self._build([("GF", "QQQ")], history)), 1)
+        history = self._history(self.row("QQQ", "2026-09-22", "", "0.9", "USD", "YA"))
+        self.assertEqual(len(self._build([("YA", "QQQ")], history)), 1)
 
 
 class TestDailyDividendUpdate(DividendRunCase):
@@ -6718,23 +6684,6 @@ class TestDividendBackfillMainMode(unittest.TestCase):
             main(self._argv(start="yesterday"))
         self.assertEqual(error.exception.code, 2)
         mock_backfill.assert_not_called()
-
-
-class TestDividendEdgeCases(unittest.TestCase):
-    """Test the corners of the dividend code that the main cases skip."""
-
-    def test_a_stored_upcoming_row_with_an_unreadable_date_is_dropped(self):
-        """Test a damaged file heals itself instead of stopping the run."""
-        rows = scrape_fund_price.upcoming_rows_for(
-            "X",
-            [["X", "soon", "", "1", "GBP", "declared", "2026-10-01"]],
-            set(),
-            ("", ""),
-            None,
-            None,
-            date(2026, 10, 26),
-        )
-        self.assertEqual(rows, [])
 
 
 class TestDividendSourceConfiguration(unittest.TestCase):
