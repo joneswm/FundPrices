@@ -6333,6 +6333,7 @@ def issuer_table(*rows, currency="GBP"):
     return scrape_fund_price.IssuerTable(
         currency,
         tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
+        "IS",
     )
 
 
@@ -7133,6 +7134,17 @@ class TestIssuerDispatch(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ZZ"):
             scrape_fund_price.fetch_issuer_table(source)
 
+    def test_the_codes_are_the_fetchers(self):
+        """Test DIVIDEND_SOURCE_CODES is derived from ISSUER_FETCHERS, so neither drifts."""
+        self.assertEqual(
+            scrape_fund_price.DIVIDEND_SOURCE_CODES,
+            tuple(scrape_fund_price.ISSUER_FETCHERS),
+        )
+        self.assertEqual(
+            set(scrape_fund_price.DIVIDEND_SOURCE_CODES),
+            set(scrape_fund_price.DIVIDEND_SOURCE_ID_RULES),
+        )
+
 
 class TestIssuerAmounts(unittest.TestCase):
     """Test the issuer's amount in the stored row's currency (SPEC-011, #87)."""
@@ -7870,9 +7882,10 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             source,
         )
 
-    def test_the_table_carries_its_source_and_defaults_to_iShares(self):
-        """Test IssuerTable keeps SPEC-011's two-field construction working."""
-        self.assertEqual(scrape_fund_price.IssuerTable("GBP", ()).source, "IS")
+    def test_the_table_names_its_source(self):
+        """Test IssuerTable has no default source: every parser states its own."""
+        with self.assertRaises(TypeError):
+            scrape_fund_price.IssuerTable("GBP", ())
 
     def test_a_yahoo_row_gains_the_pay_date_and_the_source_of_the_table(self):
         """Test the point of the issue, end to end for QQQ."""
@@ -7943,7 +7956,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         """Test the SSGA workbook is downloaded once per run, not once per process."""
         with patch.object(scrape_fund_price, "clear_issuer_caches") as clear:
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
-                fetch.return_value = scrape_fund_price.IssuerTable("USD", ())
+                fetch.return_value = scrape_fund_price.IssuerTable("USD", (), "IS")
                 scrape_fund_price.collect_issuer_tables(
                     [self.QQQ], [FundSpec("YA", "QQQ")]
                 )

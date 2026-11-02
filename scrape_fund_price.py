@@ -2681,8 +2681,17 @@ def collect_dividends(specs, today, start=None):
 
 DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
 # Source codes a dividend_sources.txt line may name (SPEC-011, SPEC-012): the
-# issuer or its exchange partner that states the pay date.
-DIVIDEND_SOURCE_CODES = ("IS", "IV", "SS", "Q4", "ET")
+# issuer or its exchange partner that states the pay date, each with the fetch
+# of its table for a DividendSource. The fetchers are looked up when called, so
+# a test can patch one by name.
+ISSUER_FETCHERS = {
+    "IS": lambda source: fetch_ishares_distributions(source.source_id),
+    "IV": lambda source: fetch_invesco_distributions(source.source_id),
+    "SS": lambda source: fetch_ssga_distributions(source.source_id),
+    "Q4": lambda source: fetch_q4_distributions(source.source_id, source.identifier),
+    "ET": lambda source: fetch_etnet_distributions(source.source_id),
+}
+DIVIDEND_SOURCE_CODES = tuple(ISSUER_FETCHERS)
 # What each code's source-id must look like, and how the error names it.
 DIVIDEND_SOURCE_ID_RULES = {
     "IS": (
@@ -2828,7 +2837,7 @@ class IssuerTable(NamedTuple):
 
     currency: str  # the share class's currency; "" when the page does not say
     rows: tuple
-    source: str = "IS"  # the DIVIDEND_SOURCE_CODES entry the rows came from
+    source: str  # the DIVIDEND_SOURCE_CODES entry the rows came from
 
 
 def parse_ishares_date(value):
@@ -2911,7 +2920,9 @@ def parse_ishares_distributions(text, product_id):
         + r"\b",
         text,
     )
-    return IssuerTable(currency.group(1) if currency else "", tuple(reversed(rows)))
+    return IssuerTable(
+        currency.group(1) if currency else "", tuple(reversed(rows)), "IS"
+    )
 
 
 def fetch_ishares_distributions(product_id):
@@ -3349,17 +3360,10 @@ def fetch_ssga_distributions(isin):
 
 def fetch_issuer_table(source):
     """Fetch the distribution table of a configured DividendSource."""
-    if source.source == "IS":
-        return fetch_ishares_distributions(source.source_id)
-    if source.source == "IV":
-        return fetch_invesco_distributions(source.source_id)
-    if source.source == "SS":
-        return fetch_ssga_distributions(source.source_id)
-    if source.source == "Q4":
-        return fetch_q4_distributions(source.source_id, source.identifier)
-    if source.source == "ET":
-        return fetch_etnet_distributions(source.source_id)
-    raise ValueError(f"{source.identifier}: no fetch for source {source.source!r}")
+    fetch = ISSUER_FETCHERS.get(source.source)
+    if fetch is None:
+        raise ValueError(f"{source.identifier}: no fetch for source {source.source!r}")
+    return fetch(source)
 
 
 # An issuer date this many days from a Yahoo row with the same amount is the

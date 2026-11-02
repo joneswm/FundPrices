@@ -556,7 +556,7 @@ One line of `dividend_sources.txt` (`<identifier>,<source>,<source-id>`), read f
 the identifier must be one `funds.txt` publishes and two lines may not name one instrument.
 Raises `ValueError` naming the line, before any network call.
 
-### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows, source="IS")`
+### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows, source)`
 
 One distribution as the issuer states it (ISO dates, `""` for a missing record or pay date
 or a pay date before the ex-date; `amount` is decimal text in the share class's currency in
@@ -574,7 +574,8 @@ a bad date or amount.
 ### `fetch_ishares_distributions(product_id)` and `fetch_issuer_table(source)`
 
 One GET (`http_get()`) of `https://www.ishares.com/uk/individual/en/products/<id>`
-(`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` dispatches on the source code
+(`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` looks the source code up in
+`ISSUER_FETCHERS`, the fetch per code that `DIVIDEND_SOURCE_CODES` is derived from
 (`ValueError` for a code it does not know). Errors propagate so `fetch_with_retries()` can
 retry them.
 
