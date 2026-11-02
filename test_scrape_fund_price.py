@@ -9110,26 +9110,16 @@ class TestOnsCpiFetch(unittest.TestCase):
                 scrape_fund_price.fetch_uk_cpi()
 
 
-class TestUkCpiUpdate(unittest.TestCase):
+class TestUkCpiUpdate(DataDirCase):
     """Test the daily update of uk_cpi.csv (SPEC-013, #91)."""
 
     TODAY = date(2026, 10, 27)
     HEADER = "Month,Index,Series,AsOf\n"
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.test_dir, "uk_cpi.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    FILE = "uk_cpi.csv"
 
     def _run(self, fetch):
         with patch.object(scrape_fund_price, "fetch_uk_cpi", fetch):
             return REAL_UPDATE_UK_CPI(self.test_dir, self.TODAY)
-
-    def _read(self):
-        with open(self.path, newline="") as file:
-            return file.read()
 
     def test_the_first_run_writes_the_whole_series(self):
         """Test header, a row per month sorted, series id and the run date."""
@@ -9137,7 +9127,7 @@ class TestUkCpiUpdate(unittest.TestCase):
         results = self._run(lambda: index)
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,99.3,D7BT,2026-10-27\n"
             + "2015-02,99.5,D7BT,2026-10-27\n",
@@ -9146,14 +9136,14 @@ class TestUkCpiUpdate(unittest.TestCase):
     def test_the_file_has_lf_endings(self):
         """Test no CRLF, on any platform."""
         self._run(lambda: {"2015-01": "99.3"})
-        with open(self.path, "rb") as file:
+        with open(self.path(self.FILE), "rb") as file:
             self.assertNotIn(b"\r", file.read())
 
     def test_the_real_response_gives_a_file_from_2015_01(self):
         """Test the recorded response end to end."""
         text = fixture_text("ons_d7bt_cpi.json")
         self._run(lambda: scrape_fund_price.parse_ons_cpi(text))
-        lines = self._read().splitlines()
+        lines = self.read_text(self.FILE).splitlines()
         self.assertEqual(lines[0], "Month,Index,Series,AsOf")
         self.assertEqual(lines[1], "2015-01,99.3,D7BT,2026-10-27")
         self.assertEqual(lines[-1], "2026-09,144.1,D7BT,2026-10-27")
@@ -9165,15 +9155,15 @@ class TestUkCpiUpdate(unittest.TestCase):
         AsOf is when the row's value was last published or revised, so an
         unchanged month keeps its date and the file does not churn daily.
         """
-        with open(self.path, "w", newline="") as file:
-            file.write(
-                self.HEADER
-                + "2015-01,99.3,D7BT,2026-09-01\n"
-                + "2015-02,99.5,D7BT,2026-09-01\n"
-            )
+        self.write_text(
+            self.FILE,
+            self.HEADER
+            + "2015-01,99.3,D7BT,2026-09-01\n"
+            + "2015-02,99.5,D7BT,2026-09-01\n",
+        )
         self._run(lambda: {"2015-01": "99.3", "2015-02": "99.6", "2015-03": "99.7"})
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,99.3,D7BT,2026-09-01\n"
             + "2015-02,99.6,D7BT,2026-10-27\n"
@@ -9187,37 +9177,35 @@ class TestUkCpiUpdate(unittest.TestCase):
             + "2015-01,99.3,D7BT,2026-09-01\n"
             + "2015-02,99.5,D7BT,2026-09-15\n"
         )
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
         self._run(lambda: {"2015-01": "99.3", "2015-02": "99.5"})
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
 
     def test_a_stored_row_from_another_series_is_replaced(self):
         """Test a matching index under a different series id is not kept."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2015-01,99.3,OTHER,2026-09-01\n")
+        self.write_text(self.FILE, self.HEADER + "2015-01,99.3,OTHER,2026-09-01\n")
         self._run(lambda: {"2015-01": "99.3"})
-        self.assertEqual(self._read(), self.HEADER + "2015-01,99.3,D7BT,2026-10-27\n")
+        self.assertEqual(
+            self.read_text(self.FILE), self.HEADER + "2015-01,99.3,D7BT,2026-10-27\n"
+        )
 
     def test_a_published_month_the_response_lacks_is_kept(self):
         """Test the file never loses a month the ONS once published."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2014-12,99.0,D7BT,2026-09-01\n")
+        self.write_text(self.FILE, self.HEADER + "2014-12,99.0,D7BT,2026-09-01\n")
         self._run(lambda: {"2015-01": "99.3"})
-        self.assertIn("2014-12,99.0,D7BT,2026-09-01\n", self._read())
-        self.assertIn("2015-01,99.3,D7BT,2026-10-27\n", self._read())
+        self.assertIn("2014-12,99.0,D7BT,2026-09-01\n", self.read_text(self.FILE))
+        self.assertIn("2015-01,99.3,D7BT,2026-10-27\n", self.read_text(self.FILE))
 
     def test_a_failed_fetch_keeps_the_last_published_file(self):
         """Test the file is byte-identical and the failure is listed."""
         stored = self.HEADER + "2015-01,99.3,D7BT,2026-09-01\n"
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
 
         def refuse():
             raise ValueError("ONS D7BT: months missing")
 
         results = self._run(refuse)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
         self.assertEqual(len(results.failures), 1)
         self.assertTrue(results.failures[0].startswith("uk_cpi: "))
         self.assertIn("months missing", results.failures[0])
@@ -9229,7 +9217,7 @@ class TestUkCpiUpdate(unittest.TestCase):
             raise ConnectionError("down")
 
         results = self._run(refuse)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
         self.assertEqual(len(results.failures), 1)
 
     def test_a_transient_failure_is_retried(self):
@@ -9245,11 +9233,11 @@ class TestUkCpiUpdate(unittest.TestCase):
         results = self._run(flaky)
         self.assertEqual(len(calls), 3)
         self.assertEqual(results.failures, [])
-        self.assertIn("2015-01,99.3", self._read())
+        self.assertIn("2015-01,99.3", self.read_text(self.FILE))
 
     def test_the_data_directory_is_created(self):
         """Test a missing data/ is made, as for the other files."""
-        nested = os.path.join(self.test_dir, "nested")
+        nested = self.path("nested")
         with patch.object(scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "1"}):
             REAL_UPDATE_UK_CPI(nested, self.TODAY)
         self.assertTrue(os.path.isfile(os.path.join(nested, "uk_cpi.csv")))
@@ -9261,7 +9249,7 @@ class TestUkCpiUpdate(unittest.TestCase):
                 scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "99.3"}
             ):
                 REAL_UPDATE_UK_CPI()
-        self.assertIn(date.today().isoformat(), self._read())
+        self.assertIn(date.today().isoformat(), self.read_text(self.FILE))
 
 
 class TestUkCpiInMain(unittest.TestCase):
@@ -9527,34 +9515,24 @@ class TestBankRateFetch(unittest.TestCase):
                 scrape_fund_price.fetch_uk_bank_rate()
 
 
-class TestUkBankRateUpdate(unittest.TestCase):
+class TestUkBankRateUpdate(DataDirCase):
     """Test the daily update of uk_bank_rate.csv (SPEC-014, #93)."""
 
     TODAY = date(2015, 3, 10)
     HEADER = "Month,Rate,Series,AsOf\n"
     CHANGES = [(date(2009, 3, 5), "0.50")]
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.test_dir, "uk_bank_rate.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    FILE = "uk_bank_rate.csv"
 
     def _run(self, fetch):
         with patch.object(scrape_fund_price, "fetch_uk_bank_rate", fetch):
             return REAL_UPDATE_UK_BANK_RATE(self.test_dir, self.TODAY)
-
-    def _read(self):
-        with open(self.path, newline="") as file:
-            return file.read()
 
     def test_the_first_run_writes_every_month(self):
         """Test header, a row per month sorted, series id and the run date."""
         results = self._run(lambda: self.CHANGES)
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,0.50,UK_BANK_RATE,2015-03-10\n"
             + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
@@ -9564,7 +9542,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
     def test_the_file_has_lf_endings(self):
         """Test no CRLF, on any platform."""
         self._run(lambda: self.CHANGES)
-        with open(self.path, "rb") as file:
+        with open(self.path(self.FILE), "rb") as file:
             self.assertNotIn(b"\r", file.read())
 
     def test_the_real_page_gives_a_file_from_2015_01(self):
@@ -9574,7 +9552,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
         )
         with patch.object(scrape_fund_price, "fetch_uk_bank_rate", lambda: changes):
             REAL_UPDATE_UK_BANK_RATE(self.test_dir, date(2026, 11, 1))
-        lines = self._read().splitlines()
+        lines = self.read_text(self.FILE).splitlines()
         self.assertEqual(lines[0], "Month,Rate,Series,AsOf")
         self.assertEqual(lines[1], "2015-01,0.50,UK_BANK_RATE,2026-11-01")
         self.assertEqual(lines[-1], "2026-11,3.75,UK_BANK_RATE,2026-11-01")
@@ -9582,15 +9560,15 @@ class TestUkBankRateUpdate(unittest.TestCase):
 
     def test_a_changed_month_replaces_the_published_one(self):
         """Test the page's rate wins, and only changed rows take the run date."""
-        with open(self.path, "w", newline="") as file:
-            file.write(
-                self.HEADER
-                + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
-                + "2015-02,0.75,UK_BANK_RATE,2015-02-01\n"
-            )
+        self.write_text(
+            self.FILE,
+            self.HEADER
+            + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+            + "2015-02,0.75,UK_BANK_RATE,2015-02-01\n",
+        )
         self._run(lambda: self.CHANGES)
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
             + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
@@ -9605,36 +9583,38 @@ class TestUkBankRateUpdate(unittest.TestCase):
             + "2015-02,0.50,UK_BANK_RATE,2015-02-15\n"
             + "2015-03,0.50,UK_BANK_RATE,2015-03-02\n"
         )
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
         self._run(lambda: self.CHANGES)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
 
     def test_a_stored_row_from_another_series_is_replaced(self):
         """Test a matching rate under a different series id is not kept."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2015-01,0.50,OTHER,2015-02-01\n")
+        self.write_text(self.FILE, self.HEADER + "2015-01,0.50,OTHER,2015-02-01\n")
         self._run(lambda: self.CHANGES)
-        self.assertIn("2015-01,0.50,UK_BANK_RATE,2015-03-10\n", self._read())
+        self.assertIn(
+            "2015-01,0.50,UK_BANK_RATE,2015-03-10\n", self.read_text(self.FILE)
+        )
 
     def test_a_published_month_the_page_lacks_is_kept(self):
         """Test the file never loses a month it once published."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2014-12,0.50,UK_BANK_RATE,2015-01-02\n")
+        self.write_text(
+            self.FILE, self.HEADER + "2014-12,0.50,UK_BANK_RATE,2015-01-02\n"
+        )
         self._run(lambda: self.CHANGES)
-        self.assertIn("2014-12,0.50,UK_BANK_RATE,2015-01-02\n", self._read())
+        self.assertIn(
+            "2014-12,0.50,UK_BANK_RATE,2015-01-02\n", self.read_text(self.FILE)
+        )
 
     def test_a_failed_fetch_keeps_the_last_published_file(self):
         """Test the file is byte-identical and the failure is listed."""
         stored = self.HEADER + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
 
         def refuse():
             raise ValueError("Bank Rate table missing")
 
         results = self._run(refuse)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
         self.assertEqual(len(results.failures), 1)
         self.assertTrue(results.failures[0].startswith("uk_bank_rate: "))
         self.assertIn("table missing", results.failures[0])
@@ -9646,7 +9626,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
             raise ConnectionError("down")
 
         results = self._run(refuse)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
         self.assertEqual(len(results.failures), 1)
 
     def test_a_transient_failure_is_retried(self):
@@ -9662,17 +9642,17 @@ class TestUkBankRateUpdate(unittest.TestCase):
         results = self._run(flaky)
         self.assertEqual(len(calls), 3)
         self.assertEqual(results.failures, [])
-        self.assertIn("2015-01,0.50", self._read())
+        self.assertIn("2015-01,0.50", self.read_text(self.FILE))
 
     def test_a_page_that_starts_after_2014_gives_a_failure_not_a_file(self):
         """Test a history with no rate in force at 2014-12-31 is refused."""
         results = self._run(lambda: [(date(2015, 2, 5), "0.75")])
         self.assertEqual(len(results.failures), 1)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
 
     def test_the_data_directory_is_created(self):
         """Test a missing data/ is made, as for the other files."""
-        nested = os.path.join(self.test_dir, "nested")
+        nested = self.path("nested")
         with patch.object(
             scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
         ):
@@ -9686,7 +9666,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
                 scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
             ):
                 REAL_UPDATE_UK_BANK_RATE()
-        self.assertIn(date.today().isoformat(), self._read())
+        self.assertIn(date.today().isoformat(), self.read_text(self.FILE))
 
 
 class TestUkBankRateInMain(unittest.TestCase):
