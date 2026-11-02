@@ -6876,7 +6876,7 @@ class TestDividendEdgeCases(unittest.TestCase):
         self.assertEqual(rows, [])
 
 
-class TestDividendSourceConfiguration(unittest.TestCase):
+class TestDividendSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
 
     SPECS = [
@@ -6885,16 +6885,8 @@ class TestDividendSourceConfiguration(unittest.TestCase):
         FundSpec("YA", "QQQ"),
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text, specs="default"):
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("dividend_sources.txt", text)
         if specs == "default":
             specs = self.SPECS
         return scrape_fund_price.read_dividend_sources(path, specs)
@@ -6922,14 +6914,12 @@ class TestDividendSourceConfiguration(unittest.TestCase):
 
     def test_a_missing_file_means_no_sources(self):
         """Test the file is optional."""
-        missing = os.path.join(self.test_dir, "none.txt")
+        missing = self.path("none.txt")
         self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
 
     def test_the_default_file_is_the_configured_one(self):
         """Test the production call names no file."""
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write("QQQ,IS,1\n")
+        path = self.write_text("dividend_sources.txt", "QQQ,IS,1\n")
         with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
             [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
         self.assertEqual(source.identifier, "QQQ")
@@ -8168,7 +8158,7 @@ def make_xlsx(rows, sheet_name="Open Fund", inline=False):
     return buffer.getvalue()
 
 
-class TestPayDateSourceConfiguration(unittest.TestCase):
+class TestPayDateSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
 
     SPECS = [
@@ -8178,16 +8168,8 @@ class TestPayDateSourceConfiguration(unittest.TestCase):
         FundSpec("YA", "0639.HK"),
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text):
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("dividend_sources.txt", text)
         return scrape_fund_price.read_dividend_sources(path, self.SPECS)
 
     def test_the_four_codes_are_known(self):
