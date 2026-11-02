@@ -1,7 +1,7 @@
 # FundPrices Project Constitution
 
-**Version**: 1.2  
-**Last Updated**: 2026-09-21  
+**Version**: 1.3  
+**Last Updated**: 2026-11-02  
 **Status**: Active
 
 This document defines the non-negotiable principles and standards for the FundPrices project. All contributors (human and AI) must adhere to these rules.
@@ -89,26 +89,53 @@ isort scrape_fund_price.py test_scrape_fund_price.py
 - Fix all linting errors before committing
 - No warnings in production code
 
+### Module Layout
+- The application is one module, `scrape_fund_price.py`, with one test module beside
+  it. That is a fact about the code today, not a principle: nothing here requires it to
+  stay one file, and a split that keeps the tests green and the coverage gates met needs
+  no amendment
+
 ---
 
 ## 4. Error Handling
 
 ### Resilience Requirements
 - **System must continue** processing if individual funds fail
-- **Failed operations** return `"Error: <message>"` format
-- **No silent failures** - all errors must be logged
-- **Invalid inputs** handled gracefully with clear error messages
+- **No silent failures** - every failure is reported on the run's result object and
+  printed at the end of the run, which then exits non-zero
+- **Invalid inputs** handled gracefully with clear error messages: configuration is
+  validated before any network call, and a malformed line raises `ValueError` naming
+  the line
 
-### Error Format
+### Error Contract
+- **Fetchers raise.** A fetcher that cannot return a dated price raises (`ValueError`
+  for a source that answered with nothing usable, the library's own exception
+  otherwise). It never returns an error string and never returns a made-up row
+- **`fetch_with_retries()` retries.** Every fetch goes through it, up to
+  `MAX_PRICE_ATTEMPTS` (3) attempts; after the last it returns `(None, <error text>)`
+  and the caller carries on with the next instrument
+- **Failures collect on the result object.** `ScrapeResults.failures` (and the
+  equivalent on the FX, dividend, CPI and Bank Rate results) lists each failure as
+  `<identifier>: <error>`; a step that fails as a whole is listed under its name
+  (`uk_cpi: <error>`). A failed fund is carried under its last stored date
+  (`ScrapeResults.carried`); nothing is invented for today
+- **No error text in data files.** Error text goes to the console and the failure
+  list, never to a CSV, `.price` or summary file; the summary marks a failed
+  instrument with `!` and a stale one with `~`
+- The former contract, a returned `"Error: ..."` string, is gone from the daily
+  run. `fetch_with_retries()` still tolerates one from the legacy `fetch_price_api()`,
+  which nothing on the daily path calls, and the `--history` path keeps it until that
+  path is rebuilt
+
 ```python
-# Good: Clear error message
+# Good: raise; the retry wrapper and the result object do the rest
+raise ValueError(f"FT returned no historical rows for {isin}")
+
+# Bad: an error string the caller has to recognise
 return "Error: Invalid symbol XYZ"
 
-# Bad: Silent failure
+# Bad: a silent failure
 return None
-
-# Bad: Crash
-raise Exception("Something went wrong")
 ```
 
 ### Timeout Standards
@@ -145,10 +172,12 @@ raise Exception("Something went wrong")
 ## 6. Documentation Standards
 
 ### Specification Documentation
+- Specifications live at `specs/<NNN>-<feature-name>/`, indexed by `specs/README.md`
 - All specs must include **acceptance criteria**
-- Technical plans must define **architecture**
-- Tasks must be **small and reviewable**
-- Keep `implementation_status.md` updated
+- A `plan.md` defines the **architecture** and a `tasks.md` breaks the work into
+  **small, reviewable** units. Both are optional for a small spec, where `spec.md`
+  alone carries the plan (SPEC-012 to SPEC-014 have neither)
+- Open work is tracked in GitHub Issues, not in a status file
 
 ### Code Documentation
 - Document the "why," not the "what"
@@ -158,10 +187,14 @@ raise Exception("Something went wrong")
 
 ### Documentation Structure
 ```
+constitution.md            # This document
+specs/                     # Spec Kit specifications, one directory per spec
+.specify/                  # Spec Kit configuration and templates
 docs/
-├── user_stories/          # Legacy (archived after migration)
+├── user_stories/          # Legacy (frozen after the Spec Kit migration)
 ├── technical_documentation/
-└── specs/                 # Spec Kit specifications
+├── research/
+└── archive/
 ```
 
 ---
@@ -210,6 +243,10 @@ feat(api): Add Yahoo Finance API integration (SPEC-001)
   change the maintainer wants to try without landing it, such as a large refactor or an
   experiment. Name them `feature/<description>`, `fix/<description>` or
   `spec/<spec-id>-<description>`
+- **Parallel refactoring streams use branches.** When several streams of a programme
+  run at once (one branch each, in its own worktree, with disjoint file ownership), each
+  is rebased onto `main` and squash-merged in the order the programme's plan gives.
+  A branch is deleted when its squash merge lands
 - **Data and code are committed separately.** Files under `data/` are tracked, so stage
   code by filename rather than with `git add -A`
 
@@ -274,21 +311,24 @@ def test_api(self):
 File: `funds.txt`
 
 ```
-<SOURCE>,<IDENTIFIER>[,<ALIAS>]    # Comment
+<SOURCE>,<LOOKUP_ID>[,<ALIAS>[;<ALIAS>...]]    # Comment
 
 # Examples:
-FT,GB00B1FXTF86    # Financial Times
-YA,AAPL            # Yahoo Finance API
-YH,IDTG.L          # Yahoo Finance (web scraping)
+FT,GB00B1FXTF86             # Financial Times
+YA,AAPL                     # Yahoo Finance API
+YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 ```
+
+The price is fetched once using the lookup id and written under every identifier.
+Blank lines and `#` comments are ignored.
 
 ### Source Codes
 - `YA` - Yahoo Finance API (uses yfinance library)
 - `FT` - Financial Times (HTTP endpoint, scraping fallback)
 - `IV` - investing.com (HTTP endpoint; one-off imports only)
-- `YH` - Yahoo Finance (web scraping)
-- `MS` - Morningstar (web scraping)
 - `GF` - deprecated alias for `YA`; warns and still resolves
+- `YH` (Yahoo Finance, web scraping) and `MS` (Morningstar, web scraping) are
+  supported but unused by any configured instrument
 
 Closed holdings use the same source codes but a separate file,
 `closed_holdings.txt`, so the daily run cannot pick them up.
@@ -305,7 +345,12 @@ Closed holdings use the same source codes but a separate file,
 
 ### GitHub Actions Requirements
 - **Test workflow**: Runs on every push/PR
-- **Scrape workflow**: Scheduled daily at 22:30 UTC, after the US close all year round
+- **Scrape workflow**: two runs a day, at 21:05 UTC (after the US close all year
+  round) and 09:17 UTC (the funds' previous-day NAVs, and any close the evening run
+  missed). `.github/workflows/scrape.yml` is canonical for the schedule; GitHub starts
+  scheduled runs hours late, so each time is a "not before"
+- **Scrape and rebuild workflows** share a concurrency group, so the two cannot push at
+  the same time
 - **All tests must pass** on every push to `main`, and before any pull request is merged
 - **Coverage reports** generated automatically
 
@@ -313,7 +358,7 @@ Closed holdings use the same source codes but a separate file,
 - Set up Python environment automatically
 - Install all dependencies (including Playwright)
 - Run tests in headless environment
-- Commit results automatically (scrape workflow)
+- Commit results automatically (scrape workflow), even when some instruments failed
 
 ---
 
@@ -332,10 +377,11 @@ cannot drift out of sync with the actual requirements.
 
 
 ### Dependency Management
-- Pin major versions in `requirements.txt`
-- Test with latest compatible versions
+- `requirements.txt` holds version floors (`>=`), not pinned majors, and Dependabot
+  raises them; CI runs against whatever those floors resolve to
+- A floor is raised by hand only when the code needs the newer behaviour, with the
+  reason in the commit
 - Document breaking changes
-- Keep dependencies up to date
 
 ---
 
@@ -360,7 +406,8 @@ cannot drift out of sync with the actual requirements.
 ### Execution Time
 - Individual fund scrape: < 10 seconds
 - Full scrape (all funds): < 2 minutes
-- Test suite: < 30 seconds
+- Test suite: the mocked suite under 30 seconds; live tests (those that reach a real
+  source, run only when `FUNDPRICES_LIVE` is set) are excluded from that figure
 
 ### Resource Usage
 - Minimize memory footprint
@@ -419,7 +466,9 @@ This constitution is a living document. Amendments require:
 5. Version increment
 
 **Amendment History**:
-- v1.0 (2024-11-20): Initial constitution created during Spec Kit migration
+- v1.0 (2025-11-20): Initial constitution created during Spec Kit migration. Earlier
+  versions of this history dated it 2024-11-20; `git log` shows the migration commit on
+  2025-11-20, four months after the repository's first commit
 - v1.1 (2026-09-21): Brought into line with the code, with no change of principle.
   Section 5 describes the keyed upsert that replaced date-based filtering and states
   the no-synthetic-data rule the implementation already followed; section 10 lists the
@@ -432,6 +481,20 @@ This constitution is a living document. Amendments require:
   maintainer, with pull requests used only by Dependabot. Section 7 now makes direct
   commits the rule for the maintainer and names what replaces the merge gate; sections
   8 and Enforcement describe review as it actually happens and stop claiming CI lints
+- v1.3 (2026-11-02): Six amendments from the documentation review of 2026-11-02 (#97),
+  each bringing a section into line with the code rather than changing a principle.
+  Section 4 states the real error contract: fetchers raise, `fetch_with_retries()`
+  retries, failures collect on the result object, and no error text reaches a data
+  file; the `"Error: <message>"` return form it used to require had been gone since
+  SPEC-003. Section 6 says specs live at `specs/`, makes `plan.md` and `tasks.md`
+  optional for small specs, and no longer asks for `implementation_status.md` to be
+  kept updated, that file being frozen. Section 7 adds branches for parallel
+  refactoring streams and deletion on squash merge. Section 10 shows the `;` alias
+  grammar, drops the `YH,IDTG.L` example and notes `YH` and `MS` as unused. Section
+  11 gives the two daily runs (21:05 and 09:17 UTC) with `scrape.yml` canonical.
+  Section 12 describes version floors maintained by Dependabot instead of pinned
+  majors. Section 14 limits the 30-second budget to the mocked suite. Section 3 notes
+  that the single module is a fact, not a principle
 
 ---
 
