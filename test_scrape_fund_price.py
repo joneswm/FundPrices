@@ -1056,7 +1056,10 @@ class TestConfiguredIdentifiers(DataDirCase):
             "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
         )
         known = scrape_fund_price.configured_identifiers(
-            [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
+            [
+                FundSpec("YA", "0P00000YAN", ("JFM0003373",)),
+                FundSpec("FT", "GB00B1FXTF86"),
+            ],
             closed,
         )
         self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
@@ -1064,7 +1067,7 @@ class TestConfiguredIdentifiers(DataDirCase):
     def test_a_missing_closed_holdings_file_adds_nothing(self):
         """Test the file is optional here."""
         known = scrape_fund_price.configured_identifiers(
-            [("FT", "GB00B1FXTF86")], self.path("no-such-file")
+            [FundSpec("FT", "GB00B1FXTF86")], self.path("no-such-file")
         )
         self.assertEqual(known, {"GB00B1FXTF86"})
 
@@ -5692,11 +5695,6 @@ class TestBuildDividendUpcoming(DividendRunCase):
             [(r[0], r[6]) for r in rows],
             [("QQQ", "2026-10-25"), ("QQQ.US", "2026-10-25")],
         )
-
-    def test_plain_pairs_are_accepted(self):
-        """Test callers may pass (source, identifier) pairs."""
-        history = self._history(self.row("QQQ", "2026-09-22", "", "0.9", "USD", "YA"))
-        self.assertEqual(len(self._build([("YA", "QQQ")], history)), 1)
 
 
 class TestDailyDividendUpdate(DividendRunCase):
