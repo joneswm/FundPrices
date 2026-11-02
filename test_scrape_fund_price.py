@@ -1097,6 +1097,60 @@ class TestMainEntryPoint(unittest.TestCase):
         main()
         mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
 
+    def test_the_summary_reads_the_history_in_the_data_directory(self):
+        """Test main() follows DATA_DIR rather than a path fixed at import.
+
+        The suite redirects DATA_DIR in setUpModule; a path bound at import
+        time to the literal data/prices_history.csv made every main() test
+        summarise the repository's committed history instead.
+        """
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+        with open(os.path.join(test_dir, "prices_history.csv"), "w") as f:
+            f.write(
+                "Fund,Date,Price,Currency\n"
+                "TESTFUND,2026-10-29,100.00,GBP\n"
+                "TESTFUND,2026-10-30,101.00,GBP\n"
+            )
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch("scrape_fund_price.DATA_DIR", test_dir))
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start=None,
+                        end=None,
+                        backfill=False,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "TESTFUND")],
+                )
+            )
+            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
+            enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
+            enter(
+                patch(
+                    "scrape_fund_price.update_dividends",
+                    return_value=scrape_fund_price.DividendResults(),
+                )
+            )
+            summary = enter(patch("scrape_fund_price.write_summary"))
+            main()
+        [row] = summary.call_args.args[0]
+        self.assertEqual(
+            (row.name, row.new_date, row.new, row.old),
+            ("TESTFUND", "2026-10-30", "101.00", "100.00"),
+        )
+
 
 class TestPriceFormatting(unittest.TestCase):
     """Test precision-preserving formatting of Yahoo float32 bar values."""
