@@ -95,7 +95,8 @@ Fetches dated daily quotes from Yahoo Finance.
 - `start` (str): Inclusive ISO start date
 - `end` (str, optional): **Exclusive** ISO end date; `None` for the latest bar
 - `now` (datetime, optional): Aware time used to judge whether the newest bar's session
-  is over; `None` for the current time. It exists for tests
+  is over; `None` for the current time. The run's `now`, handed down by
+  `scrape_fund_quotes()`
 
 **Returns:** `list[Quote]`, oldest first
 
@@ -147,7 +148,7 @@ tearsheet page that resolves FT's internal id for the fund, then the rows.
 **Parameters:**
 - `isin` (str): Fund ISIN as used in `funds.txt`
 - `start` (str): Inclusive ISO start date
-- `end` (str, optional): Inclusive ISO end date; `None` for today
+- `end` (str, optional): Inclusive ISO end date; `None` for `now`'s date
 - `now` (datetime, optional): Aware time used to judge whether a row's day is over;
   `None` for the current time
 
@@ -173,58 +174,70 @@ is not covered.
 `ft_row_settled()` is true once that hour on `price_date` (a `datetime.date`) has passed;
 `now` defaults to the current UTC time. Used by `fetch_ft_quotes()`.
 
-### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None)`
+### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)`
 
 Returns dated quotes for one fund from its configured source: `YA` via
 `fetch_yahoo_quotes()`, `IV` via `fetch_investing_quotes()`, and `FT` via
 `fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. The scraped
-page shows only the current price, so a fallback quote carries the run date and an empty
+page shows only the current price, so a fallback quote carries `now`'s date and an empty
 currency. Any other code raises `ValueError`.
+
+`start` and `end` are **inclusive** for every source (#120); `end=None` means up to the
+newest price. Yahoo's daily bars treat their end as exclusive, so the dispatch asks Yahoo
+for the day after `end` (`day_after()`) and no caller compensates. `now` (default: the
+current time) is handed to every fetcher, which judges by it whether a session or a day
+is over.
 
 ### `LazyBrowser`
 
 Starts Playwright on first use, so a configuration that needs no scraping never
 launches Chromium. `page()` returns a live page; `close()` is safe if unused.
 
-### `scrape_funds(funds, data_dir=None)`
+### `scrape_funds(funds, data_dir=None, now=None)`
 
 Main function to scrape prices for a list of funds. Playwright starts only if an FT
-fetch falls back to scraping (see `LazyBrowser`).
+fetch falls back to scraping (see `LazyBrowser`). Writes no file (#120): what it fetched
+and decided goes to `write_results()`.
 
 **Parameters:**
 - `funds` (list): `FundSpec` instances, or plain `(source, identifier)` pairs, which
   `as_fund_spec()` converts. Each fund is fetched once on its lookup id and published
   under every alias
-- `data_dir` (str, optional): Directory to store results (defaults to `"data"`)
+- `data_dir` (str, optional): Directory whose stored prices are the floor for "latest"
+  and the fallback for a failed fund (`DATA_DIR` at call time when `None`); only read
+- `now` (datetime, optional): Aware time the `SNAP_WINDOW_DAYS` window runs back from
+  and sessions are judged by; `None` for the current time
 
 **Returns:**
-- `ScrapeResults`: a `list` subclass of `[fund_id, date, price, currency]` rows, one
-  per dated quote in the last `SNAP_WINDOW_DAYS` (10) days, with two extra attributes:
+- `ScrapeResults`: a `list` subclass of `PriceRow`, one per dated quote and published
+  identifier in the window, with three extra attributes:
   - `.failures`: `"<lookup_id>: <error>"` strings for funds whose every attempt failed
   - `.carried`: the newest stored row (`newest_stored_rows()`) for each of those
     funds, under its original date, so `latest_prices.csv` keeps reporting a real
     price. A fund with no stored row has no carried row and is simply absent; its
     `.price` file alone carries nothing, since the file holds no date
+  - `.latest`: one `PriceRow` per published identifier for its `latest_<id>.price`:
+    the newest quote, or the stored row when that is newer (`keep_newer_stored_row()`,
+    #78), or the carried row of a failed fund, which heals an old error string
 
 **Result Format:**
 ```python
-results = scrape_funds([("YA", "AAPL"), ("FT", "GB00B1FXTF86")])
-# [["AAPL", "2026-09-18", "150.25", "USD"], ["GB00B1FXTF86", "2026-09-18", "7.15", "GBP"], ...]
+results = scrape_funds([FundSpec("YA", "AAPL"), FundSpec("FT", "GB00B1FXTF86")])
+# [PriceRow("AAPL", "2026-09-18", "150.25", "USD"), PriceRow("GB00B1FXTF86", ...), ...]
 results.failures
 # ["GB00B1FXTF86: Error: Timeout"]   (only for funds that failed all attempts)
 ```
 
-**Side effect:** writes `data/latest_<identifier>.price` for each fund, except that a
-fetch older than the newest stored row for that identifier does not replace it
-(`keep_newer_stored_row()`, #78).
+### `write_results(results, data_dir=None, now=None)`
 
-### `write_results(results, data_dir=None)`
-
-Writes scraping results to CSV files.
+Writes scraping results to CSV files, and the `.price` files a `ScrapeResults` names.
 
 **Parameters:**
-- `results` (list): List of `[fund_id, date, price, currency]` rows
+- `results` (list): `PriceRow` or `[fund_id, date, price, currency]` rows; a
+  `ScrapeResults` also brings its `carried` rows and, on `latest`, one
+  `latest_<identifier>.price` to write per row. Bare rows write no `.price` file
 - `data_dir` (str, optional): Directory to write files (defaults to `"data"`)
+- `now` (datetime, optional): handed to `write_history_files()`
 
 **Output Files:**
 - `latest_prices.csv`: Most recent price per fund, overwritten each run. It never goes
@@ -250,10 +263,10 @@ Writes scraping results to CSV files.
 first three positions are unaffected. Rows written before SPEC-003 have no currency
 and load with an empty value.
 
-### `fetch_historical_data(symbol, start_date, end_date=None, data_dir=None)`
+### `fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=None)`
 
 The `--history` export: one symbol's dated closes from Yahoo, written as a CSV of its own
-on the daily run's path. The bars come from `fetch_yahoo_quotes()` through
+on the daily run's path. The bars come from `scrape_fund_quotes("YA", ...)` through
 `fetch_with_retries()`, so each row is dated as Yahoo dates it, carries the currency and is
 formatted by `format_yahoo_price()`, exactly as `prices_history.csv` would store it.
 Nothing else is touched: not `prices_history.csv`, not `latest_prices.csv`, no `.price` file.
@@ -261,17 +274,18 @@ Nothing else is touched: not `prices_history.csv`, not `latest_prices.csv`, no `
 **Parameters:**
 - `symbol` (str): Yahoo ticker; it need not be in `funds.txt`
 - `start_date` (str): Inclusive start date, `YYYY-MM-DD`
-- `end_date` (str or None): Inclusive end date; `None` means up to the latest bar. Yahoo
-  treats the end as exclusive, so the fetch asks for the day after, as the closed-holding
-  import does
+- `end_date` (str or None): Inclusive end date; `None` means up to the latest bar. The
+  dispatch asks Yahoo, whose end is exclusive, for the day after
 - `data_dir` (str, optional): Output directory; `DATA_DIR` at call time when `None`
+- `now` (datetime, optional): Aware time sessions are judged by and whose date names an
+  open window; `None` for the current time
 
 **Returns:** `HistoryReport`. A symbol that fails after the retries, or returns no bars at
 all (Yahoo answers an unknown ticker with an empty frame), is on `failures` as
 `<symbol>: <error>` and no file is written.
 
 **Output:** `data/history_<symbol>_<start>_<end>.csv` with the history header
-`Fund,Date,Price,Currency`; `<end>` is today's date when `end_date` is `None`.
+`Fund,Date,Price,Currency`; `<end>` is `now`'s date when `end_date` is `None`.
 
 **Example:**
 ```python
@@ -281,24 +295,25 @@ print(report.path, len(report.rows), report.failures)
 
 ### `HistoryReport`
 
-What an export wrote: `symbol`, `path`, `rows` (the `[symbol, date, price, currency]` rows
-written, oldest first) and `failures`. `to_markdown()` renders one table row
+What an export wrote: `symbol`, `path`, `rows` (the `PriceRow`s written, oldest first)
+and `failures`. `to_markdown()` renders one table row
 (`Symbol | Rows | First | Last | Ccy | File`) and a **Failures** list, for stdout and the
 Actions job summary, like `BackfillReport`.
 
-### `validate_history_args(args)`
+### `validate_history_args(args, now=None)`
 
 Returns an error message for an invalid `--history` invocation, else `None`; `None` too when
 `--history` was not given. Rejects a combination with `--backfill`, `--import-closed` or
 `--backfill-dividends`, a missing, malformed or future `--start`, a malformed `--end` and an
 `--end` before `--start`. `main()` exits 2 on an error, before any network call.
 
-### `validate_iso_date(value, flag)` and `validate_start_date(value, flag="--from")`
+### `validate_iso_date(value, flag)` and `validate_start_date(value, flag="--from", now=None)`
 
 `validate_iso_date` returns `Invalid <flag> date format. Use YYYY-MM-DD` for anything but a
 real `YYYY-MM-DD` date, else `None`. `validate_start_date` adds `<flag> date is in the
-future`; the rebuilds call it for `--from`, the export for `--start` (one argument, two
-spellings).
+future` for a date after `now`'s (default: the current time); the rebuilds call it for
+`--from`, the export for `--start` (one argument, two spellings), each passing `main()`'s
+`now`.
 
 ### `parse_arguments(args=None)`
 
@@ -360,17 +375,18 @@ Blank lines and `#` comments are ignored.
 **Raises** `ValueError` naming the line for a malformed line, a retired source code
 (`YH`, `MS`), an unparseable or reversed date, or a repeated identifier.
 
-### `fetch_investing_quotes(pair_id, start, end=None)`
+### `fetch_investing_quotes(pair_id, start, end=None, now=None)`
 
 Dated daily closes from investing.com, for a delisted line that Yahoo and FT no
 longer carry: one GET (`http_get()`, `INVESTING_HEADERS`). Returns `list[Quote]` oldest first with **no currency**: the
 endpoint does not report one, so the caller supplies it from configuration.
 Prices are float32 round-tripped, keeping a genuine half penny that the
-displayed two decimals would round away.
+displayed two decimals would round away. `end` is inclusive; `None` stands for `now`'s
+date (default: the current time).
 
 **Raises** `ValueError` when no usable rows are returned.
 
-### `import_closed_holdings(holdings, data_dir=None)`
+### `import_closed_holdings(holdings, data_dir=None, now=None)`
 
 Imports each window and returns a `BackfillReport`.
 
@@ -385,9 +401,10 @@ a page; a holding that still fails is recorded and the rest are imported.
 
 A holding whose source reports a currency other than the configured one is
 skipped with a failure recorded, rather than importing a window of prices for
-the wrong listing. Sources are asked one day past `end`, because Yahoo treats
-the end date as exclusive while FT and investing.com treat it as inclusive; the
-window filter clips the extra day.
+the wrong listing. The window is passed to `scrape_fund_quotes()` as configured,
+inclusive at both ends: the dispatch asks Yahoo, whose end is exclusive, for the
+day after (#120), and the window filter clips anything a source returns outside it.
+`now` is handed to the fetches.
 
 ## Dividends
 
@@ -611,25 +628,31 @@ file, once per instrument under its lookup identifier, in `funds.txt` order.
 `--backfill --from YYYY-MM-DD` replaces stored history with what the sources report.
 Manual only: locally, or through the **Rebuild Price History** workflow.
 
-### `validate_backfill_args(args)`
+### `validate_backfill_args(args, now=None)`
 
 Returns an error message for an invalid invocation, else `None`. Rejects `--backfill`
-combined with `--history`, a missing or malformed `--from`, and a date in the future.
+combined with `--history`, a missing or malformed `--from`, and a date after `now`'s.
 
-### `backfill_history(specs, start, data_dir=None, pairs=None)`
+### `rebuild_price_rows(specs, start, stored, now=None)`
 
-Rebuilds every identifier in `specs` from `start` and returns a `BackfillReport`.
+Rebuilds every identifier in `specs` from `start`, and returns `(rows, report)`: every
+`PriceRow` with a usable price to store, and a `BackfillReport`. Fetches, but writes
+nothing; `stored` (as `read_history_rows()` returns it) is not modified.
 
 - **Deletes rather than upserts**, because carry-forward rows sit on dates the sources
   never report and would otherwise survive.
 - An instrument whose fetch fails keeps every row it had.
 - Rows before `start`, and rows for identifiers not in `specs` — including closed
   holdings — are never touched.
-- `latest_prices.csv`, the rolling window and the `.price` files are rebuilt for the
-  configured identifiers only.
 - FT requests are separated by `FT_BACKFILL_PAUSE_SECONDS`.
-- Finishes by calling `backfill_fx()` for `pairs`; `None` (the default, and what
-  `main()` passes) reads `fx_pairs.txt`, and an empty list skips the FX rebuild.
+
+### `backfill_history(specs, start, data_dir=None, now=None)`
+
+The writer around `rebuild_price_rows()`: reads `prices_history.csv`, rebuilds it, and
+writes it back in full, with `latest_prices.csv`, the rolling window and the `.price`
+files for the configured identifiers only. Returns the
+`BackfillReport`. It rebuilds prices only: `main()` runs `backfill_fx()` beside it for
+`fx_pairs.txt`'s pairs and merges the two reports (`BackfillReport.extend()`).
 
 ### `is_removable_row(row)`
 
@@ -647,8 +670,9 @@ closed-holding import.
 ### `BackfillReport` and `BackfillEntry`
 
 `entries`, `failures` and `warnings`, with `to_markdown()` rendering the reconciliation
-table printed to stdout and appended to the Actions job summary. Shared by the rebuild
-and the closed-holding import.
+table printed to stdout and appended to the Actions job summary, and `extend(other)`
+appending another report's three lists. Shared by the rebuilds and the closed-holding
+import.
 
 Each entry is a `BackfillEntry` (`identifier`, `before`, `deleted`, `retained`,
 `inserted`, `first`, `last`, `currency`, `status`), built by one of two constructors:
@@ -660,11 +684,18 @@ date order. Both take a `status` keyword for the import's `imported` and
 
 ## Storage Helpers
 
+### `PriceRow(fund, date, price, currency)`
+
+One row of the price files (`prices_history.csv`, `latest_prices.csv`, the rolling window
+and the `--history` export), a NamedTuple of the file's text. `PriceRow.HEADER` is the
+file header, `Fund,Date,Price,Currency`, and `HISTORY_HEADER` is the same list. `currency`
+is `""` for a row stored before the column existed.
+
 ### `read_history_rows(history_csv)`
 
-Returns stored history as `{(fund, date): [fund, date, price, currency]}`, loading
-legacy three-column rows with an empty currency; a row without a price is skipped.
-A `read_keyed_csv()` wrapper.
+Returns stored history as `{(fund, date): PriceRow}`, loading legacy three-column rows
+with an empty currency; a row without a price is skipped. A `read_keyed_csv()` wrapper
+with `row=PriceRow._make`.
 
 ### `write_history_csv(rows, data_dir)`
 
@@ -672,34 +703,34 @@ Writes `prices_history.csv` sorted by date then fund and returns the rows as wri
 Used on its own by the closed-holding import, which must not touch any other file.
 A `write_sorted_csv()` wrapper.
 
-### `write_history_files(rows, data_dir, latest=None)`
+### `write_history_files(rows, data_dir, latest=None, now=None)`
 
 Writes `prices_history.csv`, `latest_prices.csv` and `prices_history_90_days.csv`.
 Shared by the daily run and the rebuild so both produce byte-identical output.
 
 When `latest` is supplied it names the funds currently being priced, and the rolling
 window is limited to that set. When omitted, `latest` is derived from `rows` and the
-window covers every fund. The window ends on the newest date in `latest` (today when
-there is none, or when that stored date does not parse) and runs back
+window covers every fund. The window ends on the newest date in `latest` (`now`'s date
+when there is none, or when that stored date does not parse) and runs back
 `ROLLING_HISTORY_DAYS` days inclusive; a row whose date does not parse is left out.
 
 ### `latest_rows_by_fund(rows)`
 
-Returns `{fund: row}` holding each fund's row with the newest price date.
+Returns `{fund: row}` holding each fund's (or pair's) row with the newest date.
 
 ### `newest_stored_rows(data_dir)`
 
-Returns `{fund: [fund, date, price, currency]}`, the newest usable row per fund across
+Returns `{fund: PriceRow}`, the newest usable row per fund across
 `latest_prices.csv` and `prices_history.csv` (a missing file is skipped). It is the floor
 for the "latest" files: a fetch may not publish anything older. `stored_currencies()`
 reads each instrument's currency from it.
 
 ### `keep_newer_stored_row(fund, row, stored)`
 
-Returns `row`, or a copy of `stored[fund]` when that row has a **newer** date, printing a
-warning that names the fund and both dates (#78). The same date returns `row`, so
-corrections apply. Used by `write_results()` for `latest_prices.csv` and by
-`scrape_funds()` for the `.price` files, so a stale fetch (Yahoo served no Friday close for
+Returns `row`, or `stored[fund]` when that row has a **newer** date, printing a warning
+that names the fund and both dates (#78). The same date returns `row`, so corrections
+apply. Used by `write_results()` for `latest_prices.csv` and by `scrape_funds()` for the
+`.price` rows on `results.latest`, so a stale fetch (Yahoo served no Friday close for
 London ETFs for hours) cannot step either back a day, and the 90-day window with it.
 
 ### `write_latest_price_file(fund_id, price, data_dir)`
@@ -834,7 +865,12 @@ mode only, and adds its failures to the run's.
 
 ## Entry Point
 
-### `main(argv=None)`
+### `main(argv=None, now=None)`
+
+Reads the clock once, as `now` (default: the current UTC time), and hands it to every
+price and FX step it runs: the scrape and its write, the FX snap, the rebuilds, the
+import and the export; the summary's run date is `now`'s date. `--backfill` rebuilds the
+prices, then the rates of `fx_pairs.txt`'s pairs, into one report.
 
 Dispatches on the parsed arguments (`argv`, or `sys.argv` when `None`), in this order:
 `--backfill`, `--import-closed`, `--backfill-dividends`, `--history`, otherwise the daily
@@ -913,15 +949,15 @@ six-letter pair per line; blank lines and `#` comments ignored. A missing file r
 spelling (`GBP/NZD`) is rejected deliberately: by market convention it means the inverse
 of the stored direction, so accepting it would store plausible but wrong values.
 
-### `fetch_fx_quotes(pair, start, end=None, today=None, now=None)`
+### `fetch_fx_quotes(pair, start, end=None, now=None)`
 
 Fetches dated rates as **GBP per 1 unit of the base currency**, via Yahoo's direct
 `<PAIR>=X` ticker. A day's rate is its 17:00 New York close, picked from hourly bars
 by `new_york_fx_closes()` (#80). Days older than Yahoo's hourly history, which is
-requested back `FX_HOURLY_HISTORY_DAYS` (729) days from `today`, come from the daily
+requested back `FX_HOURLY_HISTORY_DAYS` (729) days from `now`'s date, come from the daily
 bars, weekends dropped; that daily Close is the day's opening rate.
 Rates are formatted at a fixed 6 decimal places, unlike prices, which keep the
-source's own precision. `today` and `now` default to the clock and exist for tests.
+source's own precision. `now` defaults to the current time; `end` is exclusive.
 
 **Returns:** `list[Quote]`, whose `currency` field carries the pair name.
 
@@ -933,12 +969,18 @@ for each weekday, the close of the last bar ending at or before 17:00 New York, 
 returns a day only once that cut has passed, so the result does not depend on when
 the job runs.
 
-### `snap_fx_rates(pairs, data_dir=None)`
+### `FxRow(pair, date, rate)`
+
+One row of `fx_history.csv` and `latest_fx.csv`, a NamedTuple of the file's text.
+`FxRow.HEADER` is the file header, `Pair,Date,Rate`, and `FX_HEADER` is the same list.
+
+### `snap_fx_rates(pairs, data_dir=None, now=None)`
 
 Fetches a window of rates per pair, isolating failures so one dead pair does not cost
-the others.
+the others. The window runs back `SNAP_WINDOW_DAYS` from `now` (default: the current
+time), which also decides whose 17:00 New York close has passed.
 
-**Returns:** `ScrapeResults` of `[pair, date, rate]` rows.
+**Returns:** `ScrapeResults` of `FxRow`.
 
 ### `write_fx_results(results, data_dir=None)`
 
@@ -950,18 +992,22 @@ upsert still lets a later run correct the last 10 days if Yahoo revises a bar.
 
 ### `read_fx_rows(fx_csv)`, `write_fx_files(rows, data_dir)` and `format_fx_rate(value)`
 
-`read_fx_rows()` returns stored rates keyed on `(Pair, Date)`, skipping a row without a
-rate (a `read_keyed_csv()` wrapper). `write_fx_files()` writes `fx_history.csv` and
+`read_fx_rows()` returns stored rates as `FxRow` keyed on `(Pair, Date)`, skipping a row
+without a rate (a `read_keyed_csv()` wrapper with `row=FxRow._make`). `write_fx_files()` writes `fx_history.csv` and
 `latest_fx.csv` through `write_sorted_csv()` from an authoritative row set **without
 merging**, so a rebuild that removed rows really removes them; `write_fx_results()`
 does the merging for the daily run before calling it. `format_fx_rate()` renders a
 rate at a fixed `FX_RATE_DECIMALS` places, unlike prices, which keep the source's own
 precision.
 
-### `backfill_fx(pairs, start, data_dir=None, report=None)`
+### `rebuild_fx_rows(pairs, start, stored, now=None)` and `backfill_fx(pairs, start, data_dir=None, now=None)`
 
-Rebuilds stored rates from the start date using the same rule as the price rebuild.
-Called automatically by `--backfill` when `fx_pairs.txt` exists.
+`rebuild_fx_rows()` rebuilds the rates from the start date by the same rule as the price
+rebuild (a pair that fails keeps everything it had) and returns `(rows, report)` without
+writing; `stored` is not modified. `backfill_fx()` is its writer: it reads
+`fx_history.csv`, rebuilds it and writes the FX files through `write_fx_files()`,
+returning the `BackfillReport`. `main()` calls it after `backfill_history()` on
+`--backfill` when `fx_pairs.txt` lists pairs.
 
 ## Configuration Constants
 
@@ -1051,6 +1097,7 @@ write_results(results)
 ### Custom Data Directory
 ```python
 results = scrape_funds(funds, data_dir="custom_data")
+write_results(results, data_dir="custom_data")
 ```
 
 ### Single Fund Scraping
