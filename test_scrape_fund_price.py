@@ -721,7 +721,9 @@ class TestFundPriceScraper(unittest.TestCase):
 
         # Mock the functions
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
-        mock_scrape.return_value = [["TEST123", "2025-01-20", "100.00", "GBP"]]
+        mock_scrape.return_value = ScrapeResults(
+            [["TEST123", "2025-01-20", "100.00", "GBP"]]
+        )
 
         # Call main
         main()
