@@ -1,6 +1,6 @@
 # FundPrices Project Constitution
 
-**Version**: 1.3  
+**Version**: 1.3.1  
 **Last Updated**: 2026-11-02  
 **Status**: Active
 
@@ -84,9 +84,11 @@ isort scrape_fund_price.py test_scrape_fund_price.py
 ./format_code.sh
 ```
 
-### Linting
-- Use flake8 for linting
-- Fix all linting errors before committing
+### Linting and format checks
+- CI checks formatting with Black and isort on every push (`test.yml`, the
+  `make format-check` target and the pre-commit hooks run the same commands)
+- flake8 runs through the pre-commit hooks where they are installed; fix what it
+  reports before committing
 - No warnings in production code
 
 ### Module Layout
@@ -438,8 +440,8 @@ cannot drift out of sync with the actual requirements.
 ### Automated Enforcement
 - CI runs the tests on Python 3.10, 3.12 and 3.14 and enforces both coverage gates on
   every push and pull request
-- Pre-commit hooks (`.pre-commit-config.yaml`) check formatting and linting where they
-  are installed; CI does not lint, so run Black before committing
+- CI checks Black and isort formatting on every push and pull request; the pre-commit
+  hooks (`.pre-commit-config.yaml`) run the same checks plus flake8 where installed
 - A failing run on `main` is fixed or reverted before other work continues
 
 ### Manual Review
@@ -495,6 +497,10 @@ This constitution is a living document. Amendments require:
   Section 12 describes version floors maintained by Dependabot instead of pinned
   majors. Section 14 limits the 30-second budget to the mocked suite. Section 3 notes
   that the single module is a fact, not a principle
+- v1.3.1 (2026-11-02): Wording after Bundle 3 of #97. Section 3 and Enforcement now say
+  CI checks Black and isort formatting (it does, since #116) and that flake8 runs in the
+  pre-commit hooks; section 4 and section 10 record that `YH` and `MS` were removed
+  (#110) and that a configuration line naming them is a validation error (#113)
 
 ---
 

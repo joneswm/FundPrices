@@ -13,7 +13,9 @@
 				"ms-python.python",
 				"ms-python.vscode-pylance",
 				"ms-python.debugpy",
-				"charliermarsh.ruff"
+				"ms-python.black-formatter",
+				"ms-python.isort",
+				"ms-python.flake8"
 			],
 			"settings": {
 				"python.defaultInterpreterPath": "/usr/local/bin/python",
@@ -25,8 +27,13 @@
 					"-p",
 					"test_*.py"
 				],
-				"python.linting.enabled": true,
-				"python.formatting.provider": "black"
+				"[python]": {
+					"editor.defaultFormatter": "ms-python.black-formatter",
+					"editor.formatOnSave": true
+				},
+				"black-formatter.args": ["--line-length=88"],
+				"isort.args": ["--profile=black", "--line-length=88"],
+				"flake8.args": ["--max-line-length=88", "--ignore=E203,W503"]
 			}
 		}
 	},

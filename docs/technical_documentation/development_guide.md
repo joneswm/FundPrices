@@ -171,9 +171,7 @@ date and no currency.
 def fetch_example_quotes(identifier, start, end=None):
     """Fetch dated daily quotes from Example."""
     end = end or datetime.date.today().isoformat()
-    response = requests.get(EXAMPLE_URL.format(id=identifier, start=start, end=end),
-                            timeout=EXAMPLE_REQUEST_TIMEOUT)
-    response.raise_for_status()
+    response = http_get(EXAMPLE_URL.format(id=identifier, start=start, end=end))
 
     quotes = [
         Quote(row["date"], normalize_price(row["close"]), row["currency"])

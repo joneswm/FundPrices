@@ -8,7 +8,14 @@ of what moved. GitHub is the only storage: a scheduled Actions workflow fetches,
 writes and commits.
 
 The whole application is one module, `scrape_fund_price.py`, with one test module,
-`test_scrape_fund_price.py`.
+`test_scrape_fund_price.py`. Both are laid out in banner-headed sections, in this
+order in the module: storage helpers; models; configuration files (the five readers
+together); HTTP; Yahoo prices; Financial Times; investing.com; dispatch, retries and
+the daily scrape; price storage; FX rates; backfill and the closed-holdings import;
+dividends (Yahoo events; storage and merge; issuer sources; estimates and the upcoming
+file; the daily update and the rebuild); UK CPI; UK Bank Rate; daily summary; command
+line. The test module follows the same order, feature by feature, after a shared
+support block.
 
 ## Modes
 

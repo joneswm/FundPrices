@@ -70,6 +70,14 @@ jobs:
             b.close()
         PY
 
+    - name: Check formatting
+      # Black and isort as configured in .pre-commit-config.yaml and the Makefile's
+      # format-check target (constitution section 3). Checks only; never reformats.
+      run: |
+        pip install black isort
+        black --check --line-length=88 .
+        isort --check-only --profile=black --line-length=88 .
+
     - name: Run the mocked suite under coverage
       # The live classes skip without FUNDPRICES_LIVE, so this needs no
       # network and its figure does not depend on which branch a live source
