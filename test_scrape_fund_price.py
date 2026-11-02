@@ -1755,6 +1755,89 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
 
 
+class TestFxInTheDailyRun(unittest.TestCase):
+    """Test main() snaps and writes the configured pairs beside the prices.
+
+    Every other main() test stubs the pairs to [], so the FX branch of the
+    daily run was never exercised.
+    """
+
+    PAIRS = ["USDGBP", "HKDGBP"]
+
+    def setUp(self):
+        # A stored rate for one pair only, so the FX summary can tell a pair
+        # that failed from one that simply has no history.
+        self.test_dir = tempfile.mkdtemp()
+        with open(os.path.join(self.test_dir, "fx_history.csv"), "w") as f:
+            f.write("Pair,Date,Rate\nUSDGBP,2026-10-29,0.750000\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _run(self, fx_results):
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch("scrape_fund_price.DATA_DIR", self.test_dir))
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start=None,
+                        end=None,
+                        backfill=False,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "QQQ")],
+                )
+            )
+            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
+            enter(patch("scrape_fund_price.write_results"))
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=self.PAIRS))
+            self.snap = enter(
+                patch("scrape_fund_price.snap_fx_rates", return_value=fx_results)
+            )
+            self.write_fx = enter(patch("scrape_fund_price.write_fx_results"))
+            self.summary = enter(patch("scrape_fund_price.write_summary"))
+            enter(
+                patch(
+                    "scrape_fund_price.update_dividends",
+                    return_value=scrape_fund_price.DividendResults(),
+                )
+            )
+            self.printed = enter(patch("builtins.print"))
+            main()
+
+    def test_the_configured_pairs_are_snapped_and_written(self):
+        """Test the snap gets the pairs and the write gets its rows."""
+        rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
+        self._run(rates)
+        self.snap.assert_called_once_with(self.PAIRS)
+        self.write_fx.assert_called_once_with(rates)
+        self.summary.assert_called_once()
+
+    def test_a_pairs_failure_reaches_the_exit_code_after_the_summary(self):
+        """Test a dead pair fails the run, marked in the FX summary."""
+        rates = ScrapeResults(failures=["HKDGBP: Error: Timeout"])
+        with self.assertRaises(SystemExit) as error:
+            self._run(rates)
+        self.assertEqual(error.exception.code, 1)
+        self.write_fx.assert_called_once_with(rates)
+        fx_rows = self.summary.call_args.args[1]
+        self.assertEqual(
+            [(row.name, row.failed) for row in fx_rows],
+            [("USDGBP", False), ("HKDGBP", True)],
+        )
+        printed = [str(call.args[0]) for call in self.printed.call_args_list]
+        self.assertIn("Error: HKDGBP: Error: Timeout", printed)
+
+
 class TestFundSpecParsing(unittest.TestCase):
     """Test funds.txt parsing, including aliases and validation."""
 
