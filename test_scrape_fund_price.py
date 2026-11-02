@@ -6249,11 +6249,11 @@ class TestDividendBackfill(DividendRunCase):
         self.assertTrue(os.path.isfile(self.path("dividends_history.csv")))
 
 
-class TestDividendSummary(unittest.TestCase):
+class TestDividendSummary(DividendRunCase):
     """Test the daily summary's Dividends section (SPEC-010, #85)."""
 
     def _row(self, fund, ex, pay="", amount="0.9", ccy="USD", status="estimated"):
-        return [fund, ex, pay, amount, ccy, status, "2026-10-26"]
+        return self.upcoming(fund, ex, pay, amount, ccy, status)
 
     def _build(self, previous, upcoming, specs=None):
         specs = specs or [FundSpec("YA", "QQQ")]
@@ -6360,16 +6360,12 @@ class TestDividendSummary(unittest.TestCase):
                 "QQQ", (), "2026-11-12", "", "0.9", "USD", "declared"
             )
         ]
-        with tempfile.TemporaryDirectory() as directory:
-            write_summary([], [], "2026-10-26", directory, dividend_rows=rows)
-            with open(
-                os.path.join(directory, "daily_summary.md"), encoding="utf-8"
-            ) as f:
-                self.assertIn(
-                    "| QQQ | 2026-11-12 | - | 0.9 | USD | declared |", f.read()
-                )
-            with open(os.path.join(directory, "daily_summary.csv")) as f:
-                self.assertNotIn("QQQ", f.read())
+        write_summary([], [], "2026-10-26", self.test_dir, dividend_rows=rows)
+        self.assertIn(
+            "| QQQ | 2026-11-12 | - | 0.9 | USD | declared |",
+            self.read_text("daily_summary.md"),
+        )
+        self.assertNotIn("QQQ", self.read_text("daily_summary.csv"))
 
 
 class TestDailyDividendSummaryFlow(DividendRunCase):
@@ -6447,26 +6443,24 @@ class TestDividendBackfillArguments(unittest.TestCase):
         self.assertIsNone(validate(self._args(backfill_dividends=False, backfill=True)))
 
 
-class TestConfiguredIdentifiers(unittest.TestCase):
+class TestConfiguredIdentifiers(DataDirCase):
     """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
 
     def test_funds_aliases_and_closed_holdings_are_all_known(self):
         """Test the three sources of identifiers."""
-        with tempfile.TemporaryDirectory() as directory:
-            closed = os.path.join(directory, "closed_holdings.txt")
-            with open(closed, "w") as f:
-                f.write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
-            known = scrape_fund_price.configured_identifiers(
-                [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
-                closed,
-            )
+        closed = self.write_text(
+            "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        known = scrape_fund_price.configured_identifiers(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
+            closed,
+        )
         self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
 
     def test_a_missing_closed_holdings_file_adds_nothing(self):
         """Test the file is optional here."""
         known = scrape_fund_price.configured_identifiers(
-            [("FT", "GB00B1FXTF86")],
-            os.path.join(tempfile.gettempdir(), "no-such-file"),
+            [("FT", "GB00B1FXTF86")], self.path("no-such-file")
         )
         self.assertEqual(known, {"GB00B1FXTF86"})
 
@@ -6477,45 +6471,28 @@ class TestConfiguredIdentifiers(unittest.TestCase):
         scrape_fund_price.read_distributions("distributions.txt", known)
 
 
-class TestDividendsInTheDailyRun(unittest.TestCase):
+class TestDividendsInTheDailyRun(DataDirCase):
     """Test main() runs the dividend update beside the prices (SPEC-010, #85)."""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
-        with open(self.distributions_file, "w") as f:
-            f.write("# nothing yet\n")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        super().setUp()
+        self.distributions_file = self.write_text(
+            "distributions.txt", "# nothing yet\n"
+        )
 
     def _run(self, update=None):
-        """Run main() with prices faked, keeping the mocks that matter."""
+        """Run main() with prices faked, keeping the stubs that matter."""
         if update is None:
             update = scrape_fund_price.DividendResults()
-        outcome = (
-            {"side_effect": update}
-            if isinstance(update, Exception)
-            else {"return_value": update}
-        )
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
-            )
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            self.scrape = enter(
-                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
-            )
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            self.update = enter(patch("scrape_fund_price.update_dividends", **outcome))
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            update_dividends=update,
+            DISTRIBUTIONS_FILE={"new": self.distributions_file},
+        ) as stubs:
+            self.scrape = stubs["scrape_funds"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_dividends"]
+            self.printed = stubs["print"]
             main([])
 
     def test_the_update_runs_after_the_prices_with_the_configuration(self):
@@ -6541,8 +6518,7 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 
     def test_a_bad_distributions_file_fails_before_any_network_call(self):
         """Test validation comes first, as it does for funds.txt."""
-        with open(self.distributions_file, "w") as f:
-            f.write("NOPE,annual,03-01,30\n")
+        self.write_text("distributions.txt", "NOPE,annual,03-01,30\n")
         with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
             self._run()
         self.scrape.assert_not_called()
@@ -6558,16 +6534,15 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 
     def test_a_crash_in_the_dividend_update_does_not_cost_the_summary(self):
         """Test the price summary is still written, and the run still fails."""
-        with patch("builtins.print") as mock_print:
-            with self.assertRaises(SystemExit):
-                self._run(update=RuntimeError("disk full"))
+        with self.assertRaises(SystemExit):
+            self._run(update=RuntimeError("disk full"))
         self.summary.assert_called_once()
         self.assertEqual(self.summary.call_args.kwargs["dividend_rows"], [])
-        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        printed = " ".join(str(call.args[0]) for call in self.printed.call_args_list)
         self.assertIn("dividends: disk full", printed)
 
 
-class TestDividendBackfillMainMode(unittest.TestCase):
+class TestDividendBackfillMainMode(DataDirCase):
     """Test main() with --backfill-dividends (SPEC-010, #85)."""
 
     def _argv(self, start="2024-01-01"):
@@ -6639,12 +6614,10 @@ class TestDividendBackfillMainMode(unittest.TestCase):
     ):
         """Test the rebuild is visible on the run page."""
         mock_backfill.return_value = self._report()
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "step_summary.md")
-            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
-                main(self._argv())
-            with open(path, encoding="utf-8") as f:
-                written = f.read()
+        path = self.path("step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
+            main(self._argv())
+        written = self.read_text("step_summary.md")
         self.assertIn("Dividend rebuild from 2024-01-01", written)
         self.assertIn("QQQ", written)
 
