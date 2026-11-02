@@ -33,7 +33,6 @@ from scrape_fund_price import (
     fetch_yahoo_hourly,
     fetch_yahoo_quotes,
     format_yahoo_price,
-    get_source_config,
     import_closed_holdings,
     main,
     new_york_fx_closes,
@@ -1894,35 +1893,6 @@ class TestFundPriceScraper(DataDirCase):
         launch.return_value.new_context.return_value.new_page.return_value = page
         return page
 
-    def test_get_source_config_ft(self):
-        """Test FT source configuration."""
-        url, selector = get_source_config("FT", "IE0008368742")
-        expected_url = (
-            "https://markets.ft.com/data/funds/tearsheet/summary?s=IE0008368742"
-        )
-        expected_selector = ".mod-ui-data-list__value"
-        self.assertEqual(url, expected_url)
-        self.assertEqual(selector, expected_selector)
-
-    def test_get_source_config_google_finance_returns_none(self):
-        """Test that Google Finance source returns None (uses API instead)."""
-        url, selector = get_source_config("GF", "AAPL")
-        self.assertIsNone(url)
-        self.assertIsNone(selector)
-
-    def test_get_source_config_invalid(self):
-        """Test invalid source configuration."""
-        url, selector = get_source_config("INVALID", "TEST123")
-        self.assertIsNone(url)
-        self.assertIsNone(selector)
-
-    def test_get_source_config_case_insensitive(self):
-        """Test that source configuration is case insensitive."""
-        url1, selector1 = get_source_config("ft", "IE0008368742")
-        url2, selector2 = get_source_config("FT", "IE0008368742")
-        self.assertEqual(url1, url2)
-        self.assertEqual(selector1, selector2)
-
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
     def test_scrape_funds_mock(self, mock_playwright, mock_ft):
@@ -2318,6 +2288,16 @@ class TestWindowedScraping(DataDirCase):
             list(results), [PriceRow("GB00B1FXTF86", "2026-10-19", "7.15", "")]
         )
         mock_pw.assert_called()
+        _, url, selector = mock_scrape.call_args.args
+        self.assertEqual(
+            url, "https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86"
+        )
+        self.assertEqual(selector, ".mod-ui-data-list__value")
+
+    def test_a_source_with_no_route_is_an_error(self):
+        """Test a code with neither a fetch nor a fallback raises naming it."""
+        with self.assertRaisesRegex(ValueError, "Unsupported source XX for ABC"):
+            scrape_fund_price.scrape_fund_quotes("XX", "ABC", "2026-10-01")
 
 
 class TestAliasPublishing(DataDirCase):

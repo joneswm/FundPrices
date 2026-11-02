@@ -32,22 +32,12 @@ read_fund_specs("funds.txt")
 # [FundSpec(source="YA", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
 ```
 
-### `get_source_config(source, fund_id)`
+### `FT_SUMMARY_PAGE` and `FT_SUMMARY_SELECTOR`
 
-Gets the URL and CSS selector for the scraping fallback of a source and fund ID.
-
-**Parameters:**
-- `source` (str): Source identifier; only `FT` has an entry
-- `fund_id` (str): Fund identifier
-
-**Returns:**
-- `tuple`: (url, selector), or (None, None) for a source that is not scraped
-
-**Supported Sources:**
-- **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`),
-  used only when `fetch_ft_quotes()` fails
-- **YA** and **IV** fetch rather than scrape and return `(None, None)` here. The `YH` and
-  `MS` scrapers were removed in #110
+The FT summary page (`https://markets.ft.com/data/funds/tearsheet/summary?s={isin}`) and the
+CSS selector of its price, scraped by `scrape_fund_quotes()` only when `fetch_ft_quotes()`
+fails. The page is undated and gives no currency, so the quote carries `now`'s date and `""`.
+YA and IV have no fallback; the `YH` and `MS` scrapers were removed in #110.
 
 ### `scrape_price_with_common_settings(page, url, selector)`
 
@@ -1142,15 +1132,19 @@ write_results(results, data_dir="custom_data")
 
 ### Single Fund Scraping
 ```python
-from scrape_fund_price import get_source_config, scrape_price_with_common_settings
+from scrape_fund_price import (
+    FT_SUMMARY_PAGE,
+    FT_SUMMARY_SELECTOR,
+    scrape_price_with_common_settings,
+)
 from playwright.sync_api import sync_playwright
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
     page = browser.new_page()
-    
-    url, selector = get_source_config("FT", "GB00B1FXTF86")
-    price = scrape_price_with_common_settings(page, url, selector)
+
+    url = FT_SUMMARY_PAGE.format(isin="GB00B1FXTF86")
+    price = scrape_price_with_common_settings(page, url, FT_SUMMARY_SELECTOR)
     
     browser.close()
 ```

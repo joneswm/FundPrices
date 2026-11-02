@@ -235,11 +235,10 @@ line in `.github/workflows/scrape.yml`.
 - Inject the clock (`now=`, `today=`) rather than patching time
 
 ```python
-def test_get_source_config_invalid(self):
-    """Test get_source_config with invalid source."""
-    url, selector = get_source_config("INVALID", "TEST123")
-    self.assertIsNone(url)
-    self.assertIsNone(selector)
+def test_a_source_with_no_route_is_an_error(self):
+    """Test a code with neither a fetch nor a fallback raises naming it."""
+    with self.assertRaisesRegex(ValueError, "Unsupported source XX for ABC"):
+        scrape_fund_quotes("XX", "ABC", "2026-10-01")
 ```
 
 [tdd_templates.md](tdd_templates.md) points at `TestNewYorkFxCloses` (a pure function with

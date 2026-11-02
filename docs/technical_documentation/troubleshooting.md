@@ -49,9 +49,10 @@ playwright install chromium
 
 **Solutions:**
 - Establish first why the FT HTTP endpoint failed: the scraping fallback only runs after a
-  `Warning: FT historical lookup failed for ...` line.
+  `WARNING: FT historical lookup failed for ...` line.
 - Kill a stuck Chromium and re-run: `pkill -f chromium`.
-- If FT changed its page, the selector lives in `get_source_config()`; see
+- If FT changed its page, the URL and selector are `FT_SUMMARY_PAGE` and
+  `FT_SUMMARY_SELECTOR`; see
   [Wrong CSS selectors](#issue-wrong-css-selectors).
 
 ### 2. Network and Connectivity Issues
@@ -144,12 +145,12 @@ Use `fetch_ft_quotes` for an `FT` line. Each quote is a `Quote(date, price, curr
 ```bash
 # What the fallback would load
 python -c "
-from scrape_fund_price import get_source_config
-print(get_source_config('FT', 'GB00B1FXTF86'))
+from scrape_fund_price import FT_SUMMARY_PAGE, FT_SUMMARY_SELECTOR
+print(FT_SUMMARY_PAGE.format(isin='GB00B1FXTF86'), FT_SUMMARY_SELECTOR)
 "
 ```
-Open the URL in a browser and check the selector still matches. If it does not, update it
-in `get_source_config()`, test first.
+Open the URL in a browser and check the selector still matches. If it does not, update
+`FT_SUMMARY_SELECTOR`, test first.
 
 ### 5. GitHub Actions Issues
 

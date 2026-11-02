@@ -1110,30 +1110,11 @@ def fetch_investing_quotes(pair_id, start, end=None, now=None):
 # ===========================================================================
 
 
-def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for the scraping fallback.
-
-    Only FT has an entry, used when its HTTP endpoint fails. YA and IV fetch
-    rather than scrape. The YH and MS scrapers were removed in #110.
-
-    Args:
-        source: Two-character source code
-        fund_id: Fund identifier specific to the source
-
-    Returns:
-        Tuple of (url, selector), or (None, None) for a source that is not scraped
-    """
-    source_configs = {
-        "FT": {
-            "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
-            "selector": ".mod-ui-data-list__value",
-        },
-    }
-
-    config = source_configs.get(source.upper())
-    if config:
-        return config["url"], config["selector"]
-    return None, None
+# The FT fallback: when the dated endpoint fails, the fund's summary page is
+# scraped for its current price (undated, no currency). The only scraping left
+# after the YH and MS scrapers were removed in #110.
+FT_SUMMARY_PAGE = "https://markets.ft.com/data/funds/tearsheet/summary?s={isin}"
+FT_SUMMARY_SELECTOR = ".mod-ui-data-list__value"
 
 
 def is_error_price(price):
@@ -1192,13 +1173,12 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)
             return fetch_ft_quotes(fund_id, start, end, now=now)
         except Exception as error:
             log.warning(f"FT historical lookup failed for {fund_id}: {error}")
+        price = scrape_price_with_common_settings(
+            browser.page(), FT_SUMMARY_PAGE.format(isin=fund_id), FT_SUMMARY_SELECTOR
+        )
+        return [Quote(now.date().isoformat(), normalize_price(price), "")]
 
-    url, selector = get_source_config(source, fund_id)
-    if not (url and selector):
-        raise ValueError(f"Unsupported source {source} for {fund_id}")
-
-    price = scrape_price_with_common_settings(browser.page(), url, selector)
-    return [Quote(now.date().isoformat(), normalize_price(price), "")]
+    raise ValueError(f"Unsupported source {source} for {fund_id}")
 
 
 def day_after(iso_date):
