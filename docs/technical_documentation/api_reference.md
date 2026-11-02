@@ -44,13 +44,14 @@ for callers that do not need aliases.
 
 **File Format:**
 Each line should contain: `<source>,<identifier>`
-- `source`: Data source identifier (YA, FT, YH, MS)
-- `identifier`: Fund identifier for the specific source
+- `source`: canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`); a deprecated `GF` is
+  canonicalised to `YA` (see `canonical_source()`)
+- `identifier`: the lookup id for that source
 
 **Example:**
 ```python
 funds = read_fund_ids("funds.txt")
-# Returns: [("FT", "GB00B1FXTF86"), ("YH", "IDTG.L"), ...]
+# Returns: [("FT", "GB00B1FXTF86"), ("YA", "IDTG.L"), ...]
 ```
 
 ### `get_source_config(source, fund_id)`
@@ -107,7 +108,7 @@ float32 recovers exactly what the source published.
 
 **Returns:** `str`, e.g. `"124.87"`, `"2.7785"`, `"6317"`, `"126530.25"`
 
-### `fetch_yahoo_quotes(symbol, start, end=None)`
+### `fetch_yahoo_quotes(symbol, start, end=None, now=None)`
 
 Fetches dated daily quotes from Yahoo Finance.
 
@@ -115,6 +116,8 @@ Fetches dated daily quotes from Yahoo Finance.
 - `symbol` (str): Yahoo ticker (e.g. `IDTG.L`, `0P00000YAN`)
 - `start` (str): Inclusive ISO start date
 - `end` (str, optional): **Exclusive** ISO end date; `None` for the latest bar
+- `now` (datetime, optional): Aware time used to judge whether the newest bar's session
+  is over; `None` for the current time. It exists for tests
 
 **Returns:** `list[Quote]`, oldest first
 
@@ -122,6 +125,41 @@ Uses `Close` with `auto_adjust=False`, so values match the price quoted that day
 than a dividend-adjusted series. Does **not** use the summary endpoint (`.info`), which
 carries no date and was observed returning a stale price for mutual funds. Exceptions
 propagate so `fetch_with_retries()` can retry them.
+
+Three guards stop a bad bar becoming a stored price (#78, #83, #84); the last two print a
+warning naming the symbol and date when they drop a bar:
+
+- **Null newest close.** Yahoo sometimes serves the newest bar with a null close for hours
+  after the session ended. Its close is then taken from the chart metadata by
+  `closing_price_from_metadata()`, or the bar is dropped when that gives `None`. Only the
+  newest bar is filled this way; any other null-close bar is dropped.
+- **Open session.** A priced newest bar is dropped while `session_still_open()` says its
+  regular session has not ended, so a run during market hours stores no intraday price.
+- **Untraded spike.** An interior bar (never the first or last) that
+  `is_untraded_spike()` flags is dropped.
+
+### `UNTRADED_SPIKE_RATIO` and `is_untraded_spike(close, volume, previous, following)`
+
+`UNTRADED_SPIKE_RATIO` is `1.2`. `is_untraded_spike()` is true for an isolated, untraded
+outlier (#83): the bar's `volume` is exactly `0` and its `close` is more than 20% above
+both neighbouring closes, or more than 20% below both. A real move either traded or
+persists into the next bar. A volume of `None` or any non-zero number is never a spike
+(funds report no volume, so zero volume alone proves nothing). Used by
+`fetch_yahoo_quotes()`.
+
+### `session_still_open(ticker, bar_date, now=None)`
+
+True when `bar_date`'s regular session has not ended (#84): the chart metadata's
+regular trading period ends on `bar_date` and `now` (default: the current UTC time) is
+before that end. Unusable metadata gives `False`, so a price that is probably final is
+kept rather than lost.
+
+### `closing_price_from_metadata(ticker, bar_date)`
+
+The finished session's price for `bar_date` from the chart metadata
+(`regularMarketPrice`), or `None`. The price must be finite and positive, must have traded
+on `bar_date` (exchange time), and the regular session must be over. Any missing or
+malformed field gives `None`.
 
 ### `fetch_ft_quotes(isin, start, end=None, now=None)`
 
@@ -144,10 +182,17 @@ returned, so the caller can fall back to scraping.
 Two plain HTTP requests, no browser. Prices are kept as text so published digits are
 preserved exactly.
 
-A row is stored only once 16:00 New York (the US close) on its own date has passed
-(#84). FT serves a provisional row for the current day that moves until the evening and
-carries no session times to judge it by; the 21:05 UTC run is after the cut all year
-round.
+A row is stored only once `ft_row_settled()` says 16:00 New York (the US close) on its
+own date has passed (#84). FT serves a provisional row for the current day that moves
+until the evening and carries no session times to judge it by; the 21:05 UTC run is after
+the cut all year round. A held-back row prints a warning. The undated scraping fallback
+is not covered.
+
+### `FT_SETTLED_HOUR` and `ft_row_settled(price_date, now=None)`
+
+`FT_SETTLED_HOUR` is `16`, read in the `America/New_York` zone (`FT_SETTLED_ZONE`).
+`ft_row_settled()` is true once that hour on `price_date` (a `datetime.date`) has passed;
+`now` defaults to the current UTC time. Used by `fetch_ft_quotes()`.
 
 ### `scrape_fund_quotes(source, fund_id, start, end=None, browser=None)`
 
@@ -168,23 +213,19 @@ Returns a fund's most recent stored `[date, price, currency]`, or `None`.
 Used when every fetch attempt failed: the fund keeps reporting its real last price
 against the date that price belongs to, instead of a row invented for today.
 
-### `fetch_price_api(symbol)`
+### `fetch_price_api(symbol)` (legacy)
 
-Fetches a price via the Yahoo Finance API instead of scraping. Used for the `YA` source.
+A thin wrapper kept from before dated quotes. It calls `fetch_yahoo_quotes()` for the last
+`SNAP_WINDOW_DAYS` (10) days and returns the newest quote's price. It reads no `.info`
+fields (`currentPrice` and `regularMarketPrice` are not used), and **nothing in the module
+calls it**; it is slated for removal. Use `fetch_yahoo_quotes()` instead.
 
 **Parameters:**
-- `symbol` (str): Ticker symbol (e.g. `AAPL`, `MSFT`) with no exchange prefix
+- `symbol` (str): Yahoo ticker
 
 **Returns:**
-- `str`: Price as a string, or `"Error: <message>"` on failure
-
-Reads `currentPrice`, falling back to `regularMarketPrice`. Returns
-`"Error: Price not available"` when neither field is present.
-
-**Example:**
-```python
-price = fetch_price_api("AAPL")   # "150.25"
-```
+- `str`: the newest quote's price; `"Error: Price not available"` when there are no
+  quotes; `"Error: <message>"` when the fetch raises
 
 ### `scrape_funds(funds, data_dir=None)`
 
@@ -192,7 +233,9 @@ Main function to scrape prices for a list of funds. Launches a Playwright browse
 only if at least one fund actually needs scraping (see `source_requires_browser`).
 
 **Parameters:**
-- `funds` (list): List of (source, identifier) tuples
+- `funds` (list): `FundSpec` instances, or plain `(source, identifier)` pairs, which
+  `as_fund_spec()` converts. Each fund is fetched once on its lookup id and published
+  under every alias
 - `data_dir` (str, optional): Directory to store results (defaults to `"data"`)
 
 **Returns:**
@@ -211,7 +254,9 @@ results.failures
 # ["GB00B1FXTF86: Error: Timeout"]   (only for funds that failed all attempts)
 ```
 
-**Side effect:** writes `data/latest_<identifier>.price` for each fund.
+**Side effect:** writes `data/latest_<identifier>.price` for each fund, except that a
+fetch older than the newest stored row for that identifier does not replace it
+(`keep_newer_stored_row()`, #78).
 
 ### `write_results(results, data_dir=None)`
 
@@ -222,7 +267,10 @@ Writes scraping results to CSV files.
 - `data_dir` (str, optional): Directory to write files (defaults to `"data"`)
 
 **Output Files:**
-- `latest_prices.csv`: Most recent price per fund, overwritten each run
+- `latest_prices.csv`: Most recent price per fund, overwritten each run. It never goes
+  backwards (#78): where the newest stored row (from `latest_prices.csv` or history) is
+  newer than the fetched one, the stored row stays and a warning is printed. The same
+  date still replaces, so a correction applies
 - `prices_history.csv`: Full history, keyed on **(Fund, Date)**. An incoming row
   replaces an existing row with the same key, so corrections apply and re-runs
   cannot duplicate
@@ -274,8 +322,11 @@ Parses the command line:
 - `--history SYMBOL` with `--start YYYY-MM-DD` and optional `--end YYYY-MM-DD`
 - `--backfill` with `--from YYYY-MM-DD` (`--from` is an alias of `--start`)
 - `--import-closed`
+- `--backfill-dividends` with an optional `--from YYYY-MM-DD`
 
-With none of these, the daily run executes.
+With none of these, the daily run executes. `args=None` reads `sys.argv`; pass a list
+in tests. Parsing does not reject combinations: `main()` checks a rebuild with
+`validate_backfill_args()` or `validate_dividend_backfill_args()`.
 
 ## Resilience: Retries and Last Known Price
 
@@ -645,6 +696,21 @@ window covers every fund.
 
 Returns `{fund: row}` holding each fund's row with the newest price date.
 
+### `newest_stored_rows(data_dir)`
+
+Returns `{fund: [fund, date, price, currency]}`, the newest usable row per fund across
+`latest_prices.csv` and `prices_history.csv` (a missing file is skipped). It is the floor
+for the "latest" files: a fetch may not publish anything older. `stored_currencies()`
+reads each instrument's currency from it.
+
+### `keep_newer_stored_row(fund, row, stored)`
+
+Returns `row`, or a copy of `stored[fund]` when that row has a **newer** date, printing a
+warning that names the fund and both dates (#78). The same date returns `row`, so
+corrections apply. Used by `write_results()` for `latest_prices.csv` and by
+`scrape_funds()` for the `.price` files, so a stale fetch (Yahoo served no Friday close for
+London ETFs for hours) cannot step either back a day, and the 90-day window with it.
+
 ### `write_latest_price_file(fund_id, price, data_dir)`
 
 Writes `latest_<fund_id>.price`.
@@ -805,10 +871,11 @@ percentage instead of a division error.
 
 ## FX Rates
 
-### `read_fx_pairs(filename=FX_PAIRS_FILE)`
+### `read_fx_pairs(filename=None)`
 
-Reads currency pairs to snap. One six-letter pair per line; blank lines and `#` comments
-ignored. A missing file returns `[]`, so FX is optional.
+Reads currency pairs to snap, from `FX_PAIRS_FILE` when `filename` is `None`. One
+six-letter pair per line; blank lines and `#` comments ignored. A missing file returns
+`[]`, so FX is optional.
 
 **Raises:** `ValueError` naming the line, for a malformed or repeated pair. The slash
 spelling (`GBP/NZD`) is rejected deliberately: by market convention it means the inverse
@@ -818,8 +885,9 @@ of the stored direction, so accepting it would store plausible but wrong values.
 
 Fetches dated rates as **GBP per 1 unit of the base currency**, via Yahoo's direct
 `<PAIR>=X` ticker. A day's rate is its 17:00 New York close, picked from hourly bars
-by `new_york_fx_closes()` (#80). Days older than Yahoo's 730-day hourly history come
-from the daily bars, weekends dropped; that daily Close is the day's opening rate.
+by `new_york_fx_closes()` (#80). Days older than Yahoo's hourly history, which is
+requested back `FX_HOURLY_HISTORY_DAYS` (729) days from `today`, come from the daily
+bars, weekends dropped; that daily Close is the day's opening rate.
 Rates are formatted at a fixed 6 decimal places, unlike prices, which keep the
 source's own precision. `today` and `now` default to the clock and exist for tests.
 
@@ -885,6 +953,14 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning (50)
 - `FT_BACKFILL_PAUSE_SECONDS`: Pause between FT requests during a rebuild (1)
 - `FX_RATE_DECIMALS`: Decimal places stored for FX rates (6)
+- `FX_CLOSE_ZONE`, `FX_CLOSE_HOUR`: The clock a day's FX rate is read at, 17:00 in
+  `America/New_York` (17), #80
+- `FX_HOURLY_HISTORY_DAYS`: How far back Yahoo's hourly bars are requested (729; Yahoo
+  keeps 730 days, and one day's margin keeps a request in range)
+- `UNTRADED_SPIKE_RATIO`: How far a zero-volume bar must sit from both neighbours to be
+  dropped as untraded (1.2), #83
+- `FT_SETTLED_ZONE`, `FT_SETTLED_HOUR`: The clock an FT row is held back until, 16:00 in
+  `America/New_York` (16), #84
 - `DIVIDEND_WINDOW_DAYS`: Days of Yahoo dividend events each daily run re-reads once a
   history exists (400)
 - `ESTIMATE_WINDOW_DAYS`, `ESTIMATE_STOP_MARGIN_DAYS`, `FREQUENCY_BANDS`: the twelve-month
