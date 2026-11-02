@@ -1,6 +1,6 @@
 # User Stories
 
-**Status**: Migrated to Spec Kit (2024-11-20) — migration complete
+**Status**: Migrated to Spec Kit (2025-11-20) — migration complete
 
 > **Task tracking lives in [GitHub Issues](https://github.com/joneswm/FundPrices/issues).**
 > Everything in this directory is a historical record of completed work.
@@ -19,7 +19,7 @@ This directory now contains only the frozen **implementation status** record. Th
 
 ## What Happened to User Stories?
 
-As of 2024-11-20, the project migrated to **Spec Kit** for spec-driven development. The original user story files have been moved to:
+As of 2025-11-20, the project migrated to **Spec Kit** for spec-driven development. The original user story files have been moved to:
 
 ```
 docs/archive/user_stories/

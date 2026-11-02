@@ -11,7 +11,7 @@ the project before its migration to Spec Kit. It is not updated.
 > [open an issue](https://github.com/joneswm/FundPrices/issues/new) instead. What each Spec Kit
 > specification delivered is recorded in [`specs/README.md`](../../specs/README.md), not here.
 
-**Note**: As of 2024-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory, indexed in `specs/README.md`.
+**Note**: As of 2025-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory, indexed in `specs/README.md`.
 
 ## Status Legend
 - ✅ **COMPLETED**: Fully implemented and tested

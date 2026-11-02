@@ -14,10 +14,10 @@ For current information:
 
 ### [`user_stories/`](user_stories/README.md)
 The 27 original user stories (US-001 … US-027) that guided initial development.
-All completed 100% before the project migrated to Spec Kit on 2024-11-20.
+All completed 100% before the project migrated to Spec Kit on 2025-11-20.
 
 ### [`spec_kit_assessment.md`](spec_kit_assessment.md)
-The 2024-11-20 assessment that evaluated Spec Kit against the project's existing
+The 2025-11-20 assessment that evaluated Spec Kit against the project's existing
 user-story + TDD workflow, and the three-phase transformation plan it recommended.
 Archived 2026-09-20: the migration it proposed is complete and Spec Kit is now the
 primary approach, so the document is background rather than a live decision.

@@ -933,8 +933,6 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 
 ### Data Directory Settings
 - `DATA_DIR`: Default data directory ("data")
-- `LATEST_CSV`: Latest prices file path
-- `HISTORY_CSV`: Historical prices file path
 - `FUNDS_FILE`: Default funds configuration file ("funds.txt")
 
 - `CLOSED_HOLDINGS_FILE`: One-off import configuration ("closed_holdings.txt")

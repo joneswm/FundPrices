@@ -1,6 +1,6 @@
 # Archived User Stories
 
-**Status**: Archived (2024-11-20)  
+**Status**: Archived (2025-11-20)  
 **Reason**: Migrated to Spec Kit format  
 **Completion**: 100% (27/27 user stories completed)
 
@@ -14,7 +14,7 @@ This directory contains the original user stories that guided the initial develo
 
 ## Why Archived?
 
-As of 2024-11-20, the project adopted **Spec Kit** for new feature development. The Spec Kit approach provides:
+As of 2025-11-20, the project adopted **Spec Kit** for new feature development. The Spec Kit approach provides:
 - More structured specifications (SPECIFY → PLAN → TASKS → IMPLEMENT)
 - Better AI collaboration through codified principles (constitution.md)
 - Clearer task breakdown and traceability
@@ -166,7 +166,7 @@ These files provide a complete audit trail of:
 
 ---
 
-**Archive Date**: 2024-11-20  
+**Archive Date**: 2025-11-20  
 **Archive Reason**: Migration to Spec Kit  
 **Completion Status**: 100% (27/27 completed)  
 **Historical Value**: High (complete project history)

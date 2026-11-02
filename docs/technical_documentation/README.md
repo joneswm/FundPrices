@@ -14,7 +14,7 @@ This directory contains technical documentation for the Fund Price Scraping proj
 - `development_guide.md` - Development setup and guidelines
 - `tdd_workflow.md` - **MANDATORY** RED-GREEN-REFACTOR workflow
 - `tdd_templates.md` - Templates and checklists for TDD cycles
-- `dev_tools_config.md` - Black, isort, flake8, pre-commit and Makefile configuration
+- `dev_tools_config.md` - where the Black, isort, flake8, pre-commit and Makefile configuration lives, with links
 
 ### Environment Setup
 - `ide_setup.md` - VS Code / Cursor setup
