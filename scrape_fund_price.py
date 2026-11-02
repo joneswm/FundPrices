@@ -62,13 +62,15 @@ def csv_writer(file):
     return csv.writer(file, lineterminator=LINE_ENDING)
 
 
-def read_keyed_csv(path, header, key):
+def read_keyed_csv(path, header, key, row=list):
     """Read a stored CSV as `{key(row): row}`; a missing file is empty.
 
     Every row is padded or truncated to the header's width, so a legacy row
     that lacks a trailing column still reads and a damaged one cannot stop
-    the run. `key` maps a padded row to its dict key; a row it maps to `None`
-    is skipped. Rows keep the file's order.
+    the run. `row` builds the stored value from that padded list of fields (a
+    list by default; a NamedTuple's `_make` gives typed rows), and `key` maps
+    the built row to its dict key; a row it maps to `None` is skipped. Rows
+    keep the file's order.
     """
     if not os.path.isfile(path):
         return {}
@@ -78,11 +80,11 @@ def read_keyed_csv(path, header, key):
     with open(path, mode="r", newline="") as file:
         reader = csv.reader(file)
         next(reader, None)  # Skip header
-        for row in reader:
-            row = (row + [""] * width)[:width]
-            row_key = key(row)
+        for fields in reader:
+            stored = row((fields + [""] * width)[:width])
+            row_key = key(stored)
             if row_key is not None:
-                rows[row_key] = row
+                rows[row_key] = stored
     return rows
 
 

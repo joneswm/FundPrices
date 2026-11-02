@@ -712,13 +712,14 @@ Every output file goes through these. They force LF line endings on every platfo
 `csv.writer` defaults to CRLF everywhere and Windows text mode translates LF to CRLF,
 which once made a four-row update show as 3,906 changed lines.
 
-### `read_keyed_csv(path, header, key)` and `write_sorted_csv(path, header, rows, key)`
+### `read_keyed_csv(path, header, key, row=list)` and `write_sorted_csv(path, header, rows, key)`
 
 The one reader and one writer behind every stored CSV (prices, FX, the two dividend
 files, UK CPI and the Bank Rate; #112). `read_keyed_csv()` returns `{key(row): row}`
 in file order: a missing file is `{}`, every row is padded or truncated to the header's
-width so a legacy or damaged row still reads, and a row the key maps to `None` is
-skipped. `write_sorted_csv()` creates the directory, writes the header and the rows
+width so a legacy or damaged row still reads, `row` builds the stored value from that
+list of fields (a list by default; pass a NamedTuple's `_make` for typed rows), `key`
+sees the built row, and a row the key maps to `None` is skipped. `write_sorted_csv()` creates the directory, writes the header and the rows
 sorted by `key` through `open_for_write()` and `csv_writer()`, and returns the rows as
 written. Sorting is what makes a repeated run byte-identical. The twelve readers and
 writers named in this document keep their own names and signatures as wrappers.
