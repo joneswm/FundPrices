@@ -186,23 +186,6 @@ class TestFundPriceScraper(unittest.TestCase):
         self.assertEqual(url1, url2)
         self.assertEqual(selector1, selector2)
 
-    def test_fetch_price_api_valid_symbol(self):
-        """Test fetching price via API with valid symbol."""
-        price = fetch_price_api("AAPL")
-        self.assertIsNotNone(price)
-        self.assertNotEqual(price, "N/A")
-        # Price should be a valid number
-        try:
-            float(price)
-        except ValueError:
-            self.fail(f"Price should be a valid number, got: {price}")
-
-    def test_fetch_price_api_invalid_symbol(self):
-        """Test fetching price via API with invalid symbol."""
-        price = fetch_price_api("INVALID_SYMBOL_XYZ123")
-        # Should return error message or N/A
-        self.assertTrue(price.startswith("Error:") or price == "N/A")
-
     @patch("scrape_fund_price.fetch_yahoo_quotes")
     def test_fetch_price_api_mock(self, mock_quotes):
         """Test fetching price via API with mocked quote retrieval."""
@@ -829,6 +812,21 @@ class TestFunctionalScraping(unittest.TestCase):
         self.assertTrue(all(q.currency == "USD" for q in quotes))
         # Consecutive trading days must be distinct, not a carried-forward run.
         self.assertEqual(len({q.date for q in quotes}), len(quotes))
+
+    def test_fetch_price_api_valid_symbol(self):
+        """Functional test for fetch_price_api with a real symbol."""
+        price = fetch_price_api("AAPL")
+        self.assertIsNotNone(price)
+        self.assertNotEqual(price, "N/A")
+        try:
+            float(price)
+        except ValueError:
+            self.fail(f"Price should be a valid number, got: {price}")
+
+    def test_fetch_price_api_invalid_symbol(self):
+        """Functional test for fetch_price_api with a symbol Yahoo lacks."""
+        price = fetch_price_api("INVALID_SYMBOL_XYZ123")
+        self.assertTrue(price.startswith("Error:") or price == "N/A")
 
 
 class TestHistoricalData(unittest.TestCase):
