@@ -839,7 +839,27 @@ FT_HISTORICAL_AJAX = (
     "https://markets.ft.com/data/equities/ajax/get-historical-prices"
     "?startDate={start}&endDate={end}&symbol={xid}"
 )
-FT_REQUEST_TIMEOUT = 30
+# Every plain HTTP fetch shares one timeout, one browser identity and one call.
+HTTP_TIMEOUT = 30
+# A bare "Mozilla/5.0" is refused with a 403 by investing.com; the endpoints
+# that look at the header want a realistic browser string.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def http_get(url, *, headers=None, timeout=HTTP_TIMEOUT):
+    """GET `url` and return the response, raising on an HTTP error status.
+
+    Transport and status errors propagate so fetch_with_retries can retry
+    them. Calls requests.get, which the tests patch.
+    """
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response
+
+
 # FT's dated endpoint returns a provisional row for the current day that moves
 # until the evening (#84), and carries no session times to judge it by. A row
 # is stored only once the US close on its own date has passed, which the
@@ -886,10 +906,7 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
     """
     end = end or datetime.date.today().isoformat()
 
-    page = requests.get(
-        FT_HISTORICAL_PAGE.format(isin=isin), timeout=FT_REQUEST_TIMEOUT
-    )
-    page.raise_for_status()
+    page = http_get(FT_HISTORICAL_PAGE.format(isin=isin))
 
     ids = re.findall(r"&quot;symbol&quot;:&quot;(\d+)&quot;", page.text)
     if not ids:
@@ -898,13 +915,11 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
     currency_match = re.search(r"Price \(([A-Za-z]{3})\)", page.text)
     currency = currency_match.group(1) if currency_match else ""
 
-    response = requests.get(
+    response = http_get(
         FT_HISTORICAL_AJAX.format(
             start=start.replace("-", "/"), end=end.replace("-", "/"), xid=ids[0]
-        ),
-        timeout=FT_REQUEST_TIMEOUT,
+        )
     )
-    response.raise_for_status()
 
     quotes = []
     held_back = False
@@ -943,16 +958,10 @@ INVESTING_HISTORICAL_URL = (
     "?start-date={start}&end-date={end}&time-frame=Daily&add-missing-rows=false"
 )
 INVESTING_HEADERS = {
-    # A bare "Mozilla/5.0" is refused with a 403; the endpoint wants a
-    # realistic browser string.
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": BROWSER_USER_AGENT,
     "domain-id": "uk",
     "Accept": "application/json",
 }
-INVESTING_REQUEST_TIMEOUT = 30
 
 
 def fetch_investing_quotes(pair_id, start, end=None):
@@ -977,12 +986,10 @@ def fetch_investing_quotes(pair_id, start, end=None):
     """
     end = end or datetime.date.today().isoformat()
 
-    response = requests.get(
+    response = http_get(
         INVESTING_HISTORICAL_URL.format(pair_id=pair_id, start=start, end=end),
         headers=INVESTING_HEADERS,
-        timeout=INVESTING_REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
 
     quotes = []
     # A window after the fund stopped publishing comes back with "data"
@@ -2799,7 +2806,6 @@ def read_dividend_sources(filename=None, specs=None):
 
 
 ISHARES_PRODUCT_URL = "https://www.ishares.com/uk/individual/en/products/{product_id}"
-ISHARES_REQUEST_TIMEOUT = 30
 # The page embeds its data model entity-escaped inside attributes; the
 # distributions section is this container (SPEC-011).
 ISHARES_TABLE_MARKER = "&quot;performance.distributions.table&quot;"
@@ -2918,11 +2924,7 @@ def fetch_ishares_distributions(product_id):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        ISHARES_PRODUCT_URL.format(product_id=product_id),
-        timeout=ISHARES_REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    response = http_get(ISHARES_PRODUCT_URL.format(product_id=product_id))
     return parse_ishares_distributions(response.text, product_id)
 
 
@@ -2941,7 +2943,6 @@ Q4_DIVIDEND_URL = (
 ETNET_DIVIDEND_URL = (
     "https://www.etnet.com.hk/www/eng/stocks/realtime/quote_dividend.php?code={code}"
 )
-ISSUER_REQUEST_TIMEOUT = 30
 SSGA_REQUEST_TIMEOUT = 60  # the workbook is 300 KB of zipped XML
 
 
@@ -3063,10 +3064,7 @@ def fetch_invesco_distributions(cusip):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        INVESCO_DISTRIBUTION_URL.format(cusip=cusip), timeout=ISSUER_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(INVESCO_DISTRIBUTION_URL.format(cusip=cusip))
     return parse_invesco_distributions(response.text, cusip)
 
 
@@ -3125,13 +3123,11 @@ def fetch_q4_distributions(source_id, symbol):
             fetch_with_retries can retry them
     """
     host, mic = source_id.split("/", 1)
-    response = requests.get(
+    response = http_get(
         Q4_DIVIDEND_URL.format(
             host=host, mic=mic, symbol=urllib.parse.quote(symbol, safe="")
-        ),
-        timeout=ISSUER_REQUEST_TIMEOUT,
+        )
     )
-    response.raise_for_status()
     return parse_q4_distributions(response.text, symbol)
 
 
@@ -3194,10 +3190,7 @@ def fetch_etnet_distributions(code):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        ETNET_DIVIDEND_URL.format(code=code), timeout=ISSUER_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(ETNET_DIVIDEND_URL.format(code=code))
     return parse_etnet_distributions(response.text, code)
 
 
@@ -3349,8 +3342,7 @@ def fetch_ssga_distributions(isin):
             fetch_with_retries can retry them
     """
     if "content" not in _ssga_workbook:
-        response = requests.get(SSGA_WORKBOOK_URL, timeout=SSGA_REQUEST_TIMEOUT)
-        response.raise_for_status()
+        response = http_get(SSGA_WORKBOOK_URL, timeout=SSGA_REQUEST_TIMEOUT)
         _ssga_workbook["content"] = response.content
     return parse_ssga_distributions(_ssga_workbook["content"], isin)
 
@@ -4253,11 +4245,7 @@ UK_CPI_URL = (
     "https://www.ons.gov.uk/economy/inflationandpriceindices/"
     "timeseries/d7bt/mm23/data"
 )
-UK_CPI_HEADERS = {
-    "User-Agent": INVESTING_HEADERS["User-Agent"],
-    "Accept": "application/json",
-}
-UK_CPI_REQUEST_TIMEOUT = 30
+UK_CPI_HEADERS = {"User-Agent": BROWSER_USER_AGENT, "Accept": "application/json"}
 UK_CPI_INDEX_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 MONTH_NUMBERS = {
     name: number
@@ -4359,10 +4347,7 @@ def fetch_uk_cpi():
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        UK_CPI_URL, headers=UK_CPI_HEADERS, timeout=UK_CPI_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(UK_CPI_URL, headers=UK_CPI_HEADERS)
     return parse_ons_cpi(response.text)
 
 
@@ -4438,11 +4423,7 @@ UK_BANK_RATE_HEADER = ["Month", "Rate", "Series", "AsOf"]
 UK_BANK_RATE_SERIES = "UK_BANK_RATE"
 UK_BANK_RATE_START = "2015-01"
 UK_BANK_RATE_URL = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
-UK_BANK_RATE_HEADERS = {
-    "User-Agent": INVESTING_HEADERS["User-Agent"],
-    "Accept": "text/html",
-}
-UK_BANK_RATE_REQUEST_TIMEOUT = 30
+UK_BANK_RATE_HEADERS = {"User-Agent": BROWSER_USER_AGENT, "Accept": "text/html"}
 UK_BANK_RATE_TABLE_ID = "stats-table"
 UK_BANK_RATE_DATE_PATTERN = re.compile(r"(\d{2}) ([A-Z][a-z]{2}) (\d{2})")
 UK_BANK_RATE_PATTERN = re.compile(r"\d+(?:\.\d+)?")
@@ -4584,12 +4565,7 @@ def fetch_uk_bank_rate():
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        UK_BANK_RATE_URL,
-        headers=UK_BANK_RATE_HEADERS,
-        timeout=UK_BANK_RATE_REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    response = http_get(UK_BANK_RATE_URL, headers=UK_BANK_RATE_HEADERS)
     return parse_boe_bank_rate(response.text)
 
 
