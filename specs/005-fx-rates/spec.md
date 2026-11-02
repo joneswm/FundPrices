@@ -50,16 +50,28 @@ number (0.4273 against the direct 0.4267).
 
 ### What "end of day" means
 
-FX has no official close. Yahoo's daily bar for a date runs on London time, and a
-partial in-progress bar appears for the current day.
+FX has no official close. As shipped, this spec took Yahoo's daily bar for a date,
+which runs on London time, with the current day's partial bar stored as a provisional
+value and overwritten by the upsert once complete; the single evening run of the time
+read that value just after the New York 5pm close, the conventional FX end of day.
 
-- Each run fetches the last `SNAP_WINDOW_DAYS` days and upserts them
-- Today's bar is provisional and is overwritten once complete; no flag is stored,
-  because the upsert makes it self-correcting
+#80 replaced that rule, and Yahoo's daily bar is no longer used for recent days: its
+Close is the rate at the start of the day (London midnight), not its close.
+
+- A day's rate is the New York close: the rate at 17:00 in New York, read from Yahoo's
+  hourly bars (the close of the bar starting at 16:00 New York). New York's own clock
+  is used, so the cut is 21:00 UTC in summer and 22:00 UTC in winter
+- A day is stored only once its cut has passed, so no rate is provisional and a run at
+  any time afterwards gives the same value; each run re-reads the last
+  `SNAP_WINDOW_DAYS` (10) days and upserts them
 - Saturday and Sunday bars are skipped; Yahoo shows a transient Sunday bar at market
   reopen (1 weekend row in 5,929 of `GBPUSD=X` history)
-- With the 22:30 UTC schedule, the provisional value is taken just after the New York
-  5pm close, the conventional FX end of day
+- Yahoo keeps hourly bars for 730 days. Older dates, which only a rebuild reaches,
+  still come from the daily bars, so they are the day's opening rate rather than its
+  close
+- The schedule is now two runs, 21:05 and 09:17 UTC (`.github/workflows/scrape.yml` is
+  canonical). In winter the cut (22:00 UTC) falls after the evening run's cron time,
+  so the morning run stores any close the evening run was too early for
 
 ## Success Criteria
 
