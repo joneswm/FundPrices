@@ -31,13 +31,11 @@ dev-setup: ## Run development environment setup script
 validate: ## Validate development environment
 	python validate_dev_env.py
 
-test: ## Run tests
-	python test_scrape_fund_price.py
+test: ## Run the mocked test suite (no network)
+	./run_tests.sh unit
 
-test-coverage: ## Run tests with coverage
-	coverage run -m unittest test_scrape_fund_price.py
-	coverage report -m
-	coverage html
+test-coverage: ## Run the mocked suite under coverage; both gates from .coveragerc
+	./run_tests.sh coverage
 
 format: ## Format code with Black and isort
 	black --line-length=88 .
@@ -55,15 +53,15 @@ clean: ## Clean up temporary files
 
 tdd-red: ## TDD RED Phase - Run tests to verify they fail
 	@echo "🔴 TDD RED Phase: Run tests to verify they fail"
-	python test_scrape_fund_price.py
+	./run_tests.sh unit
 
 tdd-green: ## TDD GREEN Phase - Run tests to verify they pass
 	@echo "🟢 TDD GREEN Phase: Run tests to verify they pass"
-	python test_scrape_fund_price.py
+	./run_tests.sh unit
 
 tdd-refactor: ## TDD REFACTOR Phase - Run tests to verify refactoring
 	@echo "🔵 TDD REFACTOR Phase: Run tests to verify refactoring"
-	python test_scrape_fund_price.py
+	./run_tests.sh unit
 
 all-checks: format lint test ## Run all code quality checks
 	@echo "All checks completed successfully!"
