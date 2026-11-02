@@ -2407,6 +2407,30 @@ class TestHistoryUpsert(DataDirCase):
         )
         self.assertEqual(list(read_history_rows(path)), [("AAA", "2026-09-18")])
 
+    def test_read_keyed_csv_pads_truncates_and_skips_what_the_key_rejects(self):
+        """Test the reader every storage file shares (#112).
+
+        A missing file is empty; a short row is padded and a long one cut to
+        the header's width; the key decides what a row is stored under and
+        a row it maps to None is left out, in file order.
+        """
+        header = ["Name", "Date", "Value"]
+        key = lambda row: (row[0], row[1]) if row[0] else None  # noqa: E731
+        self.assertEqual(
+            scrape_fund_price.read_keyed_csv(self.path("none.csv"), header, key), {}
+        )
+        path = self.write_text(
+            "keyed.csv",
+            "Name,Date,Value\nB,2026-01-02,2,extra\n,2026-01-03,3\nA,2026-01-01\n",
+        )
+        self.assertEqual(
+            scrape_fund_price.read_keyed_csv(path, header, key),
+            {
+                ("B", "2026-01-02"): ["B", "2026-01-02", "2"],
+                ("A", "2026-01-01"): ["A", "2026-01-01", ""],
+            },
+        )
+
 
 class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.

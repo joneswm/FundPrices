@@ -51,6 +51,51 @@ def csv_writer(file):
     return csv.writer(file, lineterminator=LINE_ENDING)
 
 
+def read_keyed_csv(path, header, key):
+    """Read a stored CSV as `{key(row): row}`; a missing file is empty.
+
+    Every row is padded or truncated to the header's width, so a legacy row
+    that lacks a trailing column still reads and a damaged one cannot stop
+    the run. `key` maps a padded row to its dict key; a row it maps to `None`
+    is skipped. Rows keep the file's order.
+    """
+    if not os.path.isfile(path):
+        return {}
+
+    width = len(header)
+    rows = {}
+    with open(path, mode="r", newline="") as file:
+        reader = csv.reader(file)
+        next(reader, None)  # Skip header
+        for row in reader:
+            row = (row + [""] * width)[:width]
+            row_key = key(row)
+            if row_key is not None:
+                rows[row_key] = row
+    return rows
+
+
+def write_sorted_csv(path, header, rows, key):
+    """Write `rows` under `header`, sorted by `key`, with LF line endings.
+
+    Creates the directory. Sorting makes repeated runs byte-identical and
+    keeps the daily diffs readable.
+
+    Returns:
+        The rows as written, in order.
+    """
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    ordered = sorted(rows, key=key)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(header)
+        writer.writerows(ordered)
+    return ordered
+
+
 class Quote(NamedTuple):
     """A single dated price as reported by a source."""
 
@@ -1357,21 +1402,16 @@ def scrape_funds(funds, data_dir=None):
 
 
 def read_history_rows(history_csv):
-    """Read stored history, tolerating legacy rows that carry no currency."""
-    if not os.path.isfile(history_csv):
-        return {}
+    """Read stored history keyed on (Fund, Date).
 
-    rows = {}
-    with open(history_csv, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            if len(row) < 3:
-                continue
-            fund, date_text, price = row[0], row[1], row[2]
-            currency = row[3] if len(row) > 3 else ""
-            rows[(fund, date_text)] = [fund, date_text, price, currency]
-    return rows
+    A legacy row without a currency reads with an empty one; a row without a
+    price is skipped.
+    """
+    return read_keyed_csv(
+        history_csv,
+        HISTORY_HEADER,
+        lambda row: (row[0], row[1]) if row[2] else None,
+    )
 
 
 HISTORY_HEADER = ["Fund", "Date", "Price", "Currency"]
@@ -2137,19 +2177,10 @@ def snap_fx_rates(pairs, data_dir=None):
 
 
 def read_fx_rows(fx_csv):
-    """Read stored FX rates keyed on (Pair, Date)."""
-    if not os.path.isfile(fx_csv):
-        return {}
-
-    rows = {}
-    with open(fx_csv, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            if len(row) < 3:
-                continue
-            rows[(row[0], row[1])] = [row[0], row[1], row[2]]
-    return rows
+    """Read stored FX rates keyed on (Pair, Date); a row without a rate is skipped."""
+    return read_keyed_csv(
+        fx_csv, FX_HEADER, lambda row: (row[0], row[1]) if row[2] else None
+    )
 
 
 def write_fx_files(rows, data_dir):
@@ -2568,20 +2599,16 @@ def read_dividend_history(data_dir):
     A missing file is an empty history, and a row without a fund or an
     ex-date cannot be keyed, so it is skipped rather than stopping the run.
     """
-    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
-    if not os.path.isfile(path):
-        return {}
+    return read_keyed_csv(
+        os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
+        DIVIDEND_HISTORY_HEADER,
+        fund_and_ex_date,
+    )
 
-    width = len(DIVIDEND_HISTORY_HEADER)
-    rows = {}
-    with open(path, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            row = (row + [""] * width)[:width]
-            if row[0] and row[1]:
-                rows[(row[0], row[1])] = row
-    return rows
+
+def fund_and_ex_date(row):
+    """The (Fund, ExDate) key of a dividend row, or None when it has neither."""
+    return (row[0], row[1]) if row[0] and row[1] else None
 
 
 def write_dividend_history(rows, data_dir):
@@ -3788,20 +3815,12 @@ def read_dividend_upcoming(data_dir):
     A missing file has no rows, and a row without a fund or an ex-date is
     skipped rather than stopping the run.
     """
-    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
-    if not os.path.isfile(path):
-        return []
-
-    width = len(DIVIDEND_UPCOMING_HEADER)
-    rows = []
-    with open(path, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            row = (row + [""] * width)[:width]
-            if row[0] and row[1]:
-                rows.append(row)
-    return rows
+    rows = read_keyed_csv(
+        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
+        DIVIDEND_UPCOMING_HEADER,
+        fund_and_ex_date,
+    )
+    return list(rows.values())
 
 
 def write_dividend_upcoming(rows, data_dir):
@@ -4368,20 +4387,9 @@ def fetch_uk_cpi():
 
 def read_uk_cpi(data_dir):
     """Read uk_cpi.csv keyed on Month; a missing file is an empty series."""
-    path = os.path.join(data_dir, UK_CPI_FILE)
-    if not os.path.isfile(path):
-        return {}
-
-    width = len(UK_CPI_HEADER)
-    rows = {}
-    with open(path, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            row = (row + [""] * width)[:width]
-            if row[0]:
-                rows[row[0]] = row
-    return rows
+    return read_keyed_csv(
+        os.path.join(data_dir, UK_CPI_FILE), UK_CPI_HEADER, lambda row: row[0] or None
+    )
 
 
 def write_uk_cpi(rows, data_dir):
@@ -4595,20 +4603,11 @@ def fetch_uk_bank_rate():
 
 def read_uk_bank_rate(data_dir):
     """Read uk_bank_rate.csv keyed on Month; a missing file is an empty series."""
-    path = os.path.join(data_dir, UK_BANK_RATE_FILE)
-    if not os.path.isfile(path):
-        return {}
-
-    width = len(UK_BANK_RATE_HEADER)
-    rows = {}
-    with open(path, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header
-        for row in reader:
-            row = (row + [""] * width)[:width]
-            if row[0]:
-                rows[row[0]] = row
-    return rows
+    return read_keyed_csv(
+        os.path.join(data_dir, UK_BANK_RATE_FILE),
+        UK_BANK_RATE_HEADER,
+        lambda row: row[0] or None,
+    )
 
 
 def write_uk_bank_rate(rows, data_dir):
