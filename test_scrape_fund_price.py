@@ -319,6 +319,7 @@ class BackfillCase(DataDirCase):
 
 # The dividend files' row types, as the tests spell them.
 DividendRow = scrape_fund_price.DividendRow
+UpcomingRow = scrape_fund_price.UpcomingRow
 
 
 def dividend_run(specs=(), currencies=None, today=date(2026, 10, 26), data_dir=None):
@@ -354,12 +355,18 @@ class DividendRunCase(DataDirCase):
     def upcoming(cls, fund, ex, pay, amount, currency, status, as_of=None):
         """A dividends_upcoming.csv row, as of the run date unless given."""
         as_of = as_of or cls.TODAY.isoformat()
-        return [fund, ex, pay, amount, currency, status, as_of]
+        return UpcomingRow(fund, ex, pay, amount, currency, status, as_of)
 
     def write_history(self, *rows):
         """Store dividends_history.csv rows, as an earlier run would have."""
         header = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
         return self.write_csv("dividends_history.csv", header, rows)
+
+    def upcoming_rows(self):
+        """dividends_upcoming.csv as UpcomingRow, in file order."""
+        return [
+            UpcomingRow._make(row) for row in self.read_rows("dividends_upcoming.csv")
+        ]
 
     def history_rows(self):
         """dividends_history.csv as DividendRow, in file order."""
@@ -5355,6 +5362,19 @@ class TestDistributionSchedules(DividendRunCase):
 class TestDividendUpcomingStorage(DividendRunCase):
     """Test dividends_upcoming.csv reading and writing (SPEC-010, #85)."""
 
+    def test_rows_are_typed_and_the_header_constant_is_the_rows(self):
+        """Test UpcomingRow names the columns and carries the file's header."""
+        row = self.upcoming("QQQ", "2026-12-22", "", "0.9", "USD", "estimated")
+        self.assertEqual(
+            (row.fund, row.ex_date, row.amount, row.status, row.as_of),
+            ("QQQ", "2026-12-22", "0.9", "estimated", "2026-10-26"),
+        )
+        self.assertEqual(
+            UpcomingRow.HEADER,
+            ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Status", "AsOf"],
+        )
+        self.assertIs(scrape_fund_price.DIVIDEND_UPCOMING_HEADER, UpcomingRow.HEADER)
+
     def test_rows_are_written_sorted_with_a_header(self):
         """Test the file is ordered by ex-date then fund."""
         scrape_fund_price.write_dividend_upcoming(
@@ -5396,7 +5416,7 @@ class TestDividendUpcomingStorage(DividendRunCase):
         )
         self.assertEqual(
             scrape_fund_price.read_dividend_upcoming(self.test_dir),
-            [["QQQ", "2026-12-22", "", "", "", "", ""]],
+            [UpcomingRow("QQQ", "2026-12-22", "", "", "", "", "")],
         )
 
 
@@ -5414,7 +5434,7 @@ class TestUpcomingRowsForOneInstrument(DividendRunCase):
         return scrape_fund_price.upcoming_rows_for(
             dividend_run(today=self.TODAY),
             "IGLS.L",
-            [list(row) for row in stored],
+            [UpcomingRow._make(row) for row in stored],
             set(history_dates),
             last_paid,
             declared=declared,
@@ -5451,7 +5471,7 @@ class TestUpcomingRowsForOneInstrument(DividendRunCase):
         """Test nothing is invented when there is nothing to base an amount on."""
         declared = scrape_fund_price.DeclaredDividend("2026-11-12", "")
         [row] = self._rows(declared=declared, last_paid=("", ""))
-        self.assertEqual(row[3:5], ["", ""])
+        self.assertEqual((row.amount, row.currency), ("", ""))
 
     def test_a_declared_row_replaces_the_estimate_for_the_same_period(self):
         """Test there is one row per period, not an estimate beside the fact."""
@@ -5545,7 +5565,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
         return scrape_fund_price.upcoming_rows_for(
             dividend_run(today=self.TODAY),
             "IGLS.L",
-            [list(row) for row in stored],
+            [UpcomingRow._make(row) for row in stored],
             set(),
             ("0.33", "GBP"),
             declared=declared,
@@ -5560,7 +5580,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
         self.assertEqual(
             self._rows(declared),
             [
-                [
+                UpcomingRow(
                     "IGLS.L",
                     "2026-11-12",
                     "2026-11-25",
@@ -5568,7 +5588,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
                     "GBp",
                     "declared",
                     "2026-10-26",
-                ]
+                )
             ],
         )
 
@@ -5576,13 +5596,17 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
         """Test Yahoo's declaration, as in SPEC-010."""
         declared = scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-25")
         [row] = self._rows(declared)
-        self.assertEqual(row[3:5], ["0.33", "GBP"])
+        self.assertEqual((row.amount, row.currency), ("0.33", "GBP"))
 
     def test_it_replaces_the_estimate_and_an_earlier_declaration(self):
         """Test the issuer's date wins over a Yahoo date stored yesterday."""
         stored = [
-            ["IGLS.L", "2026-11-19", "", "0.33", "GBP", "declared", "2026-10-25"],
-            ["IGLS.L", "2026-11-21", "", "0.33", "GBP", "estimated", "2026-10-25"],
+            UpcomingRow(
+                "IGLS.L", "2026-11-19", "", "0.33", "GBP", "declared", "2026-10-25"
+            ),
+            UpcomingRow(
+                "IGLS.L", "2026-11-21", "", "0.33", "GBP", "estimated", "2026-10-25"
+            ),
         ]
         estimate = scrape_fund_price.EstimatedDividend("2026-11-21", "", "0.33", "GBP")
         declared = scrape_fund_price.DeclaredDividend(
@@ -5616,7 +5640,7 @@ class TestBuildDividendUpcoming(DividendRunCase):
             dividend_run(specs, currencies, self.TODAY),
             list(distributions),
             history or {},
-            [list(row) for row in stored],
+            [UpcomingRow._make(row) for row in stored],
             declared or {},
         )
 
@@ -5782,7 +5806,7 @@ class TestDailyDividendUpdate(DividendRunCase):
             ],
         )
         self.assertEqual(
-            self.read_rows("dividends_upcoming.csv"),
+            self.upcoming_rows(),
             [
                 self.upcoming(
                     "0P00000YAN", "2027-03-03", "", "1.1", "GBP", "estimated"
@@ -5801,7 +5825,7 @@ class TestDailyDividendUpdate(DividendRunCase):
         }
         self._run([FundSpec("YA", "QQQ")], events, declared)
         self.assertEqual(
-            self.read_rows("dividends_upcoming.csv"),
+            self.upcoming_rows(),
             [
                 self.upcoming(
                     "QQQ", "2026-11-12", "2026-11-28", "0.9", "USD", "declared"
@@ -5880,7 +5904,7 @@ class TestDailyDividendUpdate(DividendRunCase):
             ],
         )
         self.assertEqual(
-            self.read_rows("dividends_upcoming.csv"),
+            self.upcoming_rows(),
             [
                 self.upcoming(
                     fund, "2027-03-01", "2027-03-31", "0.0821", "GBP", "estimated"
