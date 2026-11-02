@@ -1699,15 +1699,21 @@ def summarise_series(name, aliases, rows, failures, run_date, places=None):
     )
 
 
+def group_by_name(rows):
+    """Group stored rows by their first cell, the fund or pair, in file order."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[0], []).append(row)
+    return groups
+
+
 def build_price_summary(history_rows, specs, failures, run_date):
     """Summarise each configured instrument's latest movement.
 
     An aliased instrument is reported once, under its lookup identifier, since
     its aliases carry an identical series by construction.
     """
-    by_fund = {}
-    for row in history_rows:
-        by_fund.setdefault(row[0], []).append(row)
+    by_fund = group_by_name(history_rows)
 
     rows = []
     for entry in specs:
@@ -1727,9 +1733,7 @@ def build_price_summary(history_rows, specs, failures, run_date):
 
 def build_fx_summary(fx_rows, pairs, failures, run_date):
     """Summarise each currency pair's latest movement."""
-    by_pair = {}
-    for row in fx_rows:
-        by_pair.setdefault(row[0], []).append(row)
+    by_pair = group_by_name(fx_rows)
 
     return [
         summarise_series(
