@@ -4613,21 +4613,13 @@ class TestFTUnfinishedDay(unittest.TestCase):
         browser.page.assert_not_called()
 
 
-class TestDistributionConfiguration(unittest.TestCase):
+class TestDistributionConfiguration(DataDirCase):
     """Test distributions.txt parsing and validation (SPEC-010, #85)."""
 
     KNOWN = {"GB00B1FXTF86", "IE0008368742", "BMV7ZZ3"}
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text, known="default"):
-        path = os.path.join(self.test_dir, "distributions.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("distributions.txt", text)
         if known == "default":
             known = self.KNOWN
         return scrape_fund_price.read_distributions(path, known)
@@ -4677,10 +4669,14 @@ class TestDistributionConfiguration(unittest.TestCase):
         monthly = ";".join(f"{month:02d}-10" for month in range(1, 13))
         [dist] = self._read(f"GB00B1FXTF86,monthly,{monthly},5\n")
         self.assertEqual(len(dist.xd_dates), 12)
-        with self.assertRaisesRegex(ValueError, "line 1.*2 ex-dates"):
-            self._read("GB00B1FXTF86,quarterly,03-01;09-01,30\n")
-        with self.assertRaisesRegex(ValueError, "line 1.*1 ex-date"):
-            self._read("GB00B1FXTF86,annual,03-01;09-01,30\n")
+        wrong = {
+            "quarterly": "2 ex-dates",
+            "annual": "1 ex-date",
+        }
+        for frequency, complaint in wrong.items():
+            with self.subTest(frequency=frequency):
+                with self.assertRaisesRegex(ValueError, f"line 1.*{complaint}"):
+                    self._read(f"GB00B1FXTF86,{frequency},03-01;09-01,30\n")
 
     def test_leap_day_is_allowed(self):
         """Test 02-29 is a real ex-date for the years that have one."""
@@ -4705,8 +4701,15 @@ class TestDistributionConfiguration(unittest.TestCase):
 
     def test_a_missing_file_has_no_entries(self):
         """Test the file is optional."""
-        path = os.path.join(self.test_dir, "absent.txt")
+        path = self.path("absent.txt")
         self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+    def test_the_configured_file_is_read_by_default(self):
+        """Test the production call names no file."""
+        path = self.write_text("distributions.txt", "X,annual,03-01,30\n")
+        with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
+            [dist] = scrape_fund_price.read_distributions()
+        self.assertEqual(dist.identifier, "X")
 
     def test_identifier_must_be_configured(self):
         """Test a line for an unknown instrument names the line."""
@@ -4765,17 +4768,13 @@ class TestYahooDividendEvents(unittest.TestCase):
     """Test dividend events from the Yahoo daily-bar route (SPEC-010, #85)."""
 
     def _ticker(self, mock_ticker, rows, currency="GBP", column=True):
-        import pandas as pd
-
-        inst = MagicMock()
-        idx = pd.to_datetime([d for d, _ in rows])
-        data = {"Close": [1.0] * len(rows)}
-        if column:
-            data["Dividends"] = [v for _, v in rows]
-        inst.history.return_value = pd.DataFrame(data, index=idx)
-        inst.fast_info = {"currency": currency}
-        mock_ticker.return_value = inst
-        return inst
+        """Bars closing at 1.0, with `rows` as [(date, dividend)]."""
+        return fake_ticker(
+            mock_ticker,
+            bars=[(day, 1.0) for day, _ in rows],
+            currency=currency,
+            dividends=[amount for _, amount in rows] if column else None,
+        )
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_returns_one_event_per_ex_date_with_the_price_currency(self, mock_ticker):
@@ -4839,12 +4838,16 @@ class TestYahooDividendEvents(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_missing_values_and_columns_give_no_events(self, mock_ticker):
         """Test NaN, an absent column and an empty frame are not errors."""
-        self._ticker(mock_ticker, [("2026-09-18", float("nan"))])
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
-        self._ticker(mock_ticker, [("2026-09-18", 1.0)], column=False)
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
-        self._ticker(mock_ticker, [])
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
+        shapes = {
+            "nan": dict(rows=[("2026-09-18", float("nan"))]),
+            "no column": dict(rows=[("2026-09-18", 1.0)], column=False),
+            "empty frame": dict(rows=[]),
+        }
+        for shape, frame in shapes.items():
+            with self.subTest(frame=shape):
+                self._ticker(mock_ticker, **frame)
+                events = scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01")
+                self.assertEqual(events, [])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unknown_currency_is_empty_not_an_error(self, mock_ticker):
@@ -4953,34 +4956,26 @@ class TestYahooDeclaredDividends(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_date_values_come_in_several_shapes(self, mock_ticker):
         """Test datetimes, ISO text and garbage are each handled."""
-        as_datetime = self._declared(
-            mock_ticker,
-            calendar={"Ex-Dividend Date": datetime.datetime(2026, 11, 12, 9, 30)},
-        )
-        self.assertEqual(as_datetime.ex_date, "2026-11-12")
-        as_text = self._declared(
-            mock_ticker, calendar={"Ex-Dividend Date": "2026-11-12"}
-        )
-        self.assertEqual(as_text.ex_date, "2026-11-12")
+        readable = {
+            "datetime": datetime.datetime(2026, 11, 12, 9, 30),
+            "text": "2026-11-12",
+        }
+        for shape, value in readable.items():
+            with self.subTest(shape=shape):
+                declared = self._declared(
+                    mock_ticker, calendar={"Ex-Dividend Date": value}
+                )
+                self.assertEqual(declared.ex_date, "2026-11-12")
         for junk in ("soon", "", None, True, 1e30, [date(2026, 11, 12)]):
-            self.assertIsNone(
-                self._declared(
+            with self.subTest(junk=junk):
+                declared = self._declared(
                     mock_ticker, calendar={"Ex-Dividend Date": junk}, info={}
                 )
-            )
+                self.assertIsNone(declared)
 
 
-class TestDividendHistoryStorage(unittest.TestCase):
+class TestDividendHistoryStorage(DataDirCase):
     """Test dividends_history.csv reading and writing (SPEC-010, #85)."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _path(self):
-        return os.path.join(self.test_dir, "dividends_history.csv")
 
     def test_rows_are_written_sorted_with_a_header_and_lf_endings(self):
         """Test the file is ordered by ex-date then fund, deterministically."""
@@ -4992,10 +4987,8 @@ class TestDividendHistoryStorage(unittest.TestCase):
             ],
             self.test_dir,
         )
-        with open(self._path(), newline="") as f:
-            text = f.read()
         self.assertEqual(
-            text,
+            self.read_text("dividends_history.csv"),
             "Fund,ExDate,PayDate,Amount,Currency,Source\n"
             "QQQ,2026-03-24,,0.8,USD,YA\n"
             "IGLS.L,2026-06-23,,0.1,GBP,YA\n"
@@ -5015,20 +5008,22 @@ class TestDividendHistoryStorage(unittest.TestCase):
 
     def test_rows_without_a_fund_or_ex_date_are_skipped(self):
         """Test a damaged line cannot stop the run."""
-        with open(self._path(), "w", newline="") as f:
-            f.write(
-                "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-                ",2026-03-24,,0.8,USD,YA\n"
-                "QQQ,,,0.8,USD,YA\n"
-                "QQQ,2026-06-23,,0.9,USD,YA\n"
-            )
+        self.write_text(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            ",2026-03-24,,0.8,USD,YA\n"
+            "QQQ,,,0.8,USD,YA\n"
+            "QQQ,2026-06-23,,0.9,USD,YA\n",
+        )
         stored = scrape_fund_price.read_dividend_history(self.test_dir)
         self.assertEqual(list(stored), [("QQQ", "2026-06-23")])
 
     def test_short_rows_are_padded(self):
         """Test a row missing its trailing columns still reads."""
-        with open(self._path(), "w", newline="") as f:
-            f.write("Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2026-06-23\n")
+        self.write_text(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2026-06-23\n",
+        )
         stored = scrape_fund_price.read_dividend_history(self.test_dir)
         self.assertEqual(
             stored[("QQQ", "2026-06-23")], ["QQQ", "2026-06-23", "", "", "", ""]
@@ -6733,16 +6728,6 @@ class TestDividendBackfillMainMode(unittest.TestCase):
 
 class TestDividendEdgeCases(unittest.TestCase):
     """Test the corners of the dividend code that the main cases skip."""
-
-    def test_distributions_are_read_from_the_configured_file_by_default(self):
-        """Test the production call names no file."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write("X,annual,03-01,30\n")
-            with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
-                [dist] = scrape_fund_price.read_distributions()
-        self.assertEqual(dist.identifier, "X")
 
     def test_a_stored_upcoming_row_with_an_unreadable_date_is_dropped(self):
         """Test a damaged file heals itself instead of stopping the run."""
