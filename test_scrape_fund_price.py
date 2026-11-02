@@ -1769,6 +1769,12 @@ class TestInvestingEmptyPayloads(DataDirCase):
 # ===========================================================================
 
 
+# The evening of Monday 2026-10-19, after every session the tests below serve
+# has closed. Handed to the scrape as `now`, it keeps the clock out of the run,
+# so the real fetchers run against a faked yf.Ticker (#120).
+RUN_NOW = utc(2026, 10, 19, 21)
+
+
 class TestFundPriceScraper(DataDirCase):
 
     TIMEOUT = (
@@ -1819,30 +1825,26 @@ class TestFundPriceScraper(DataDirCase):
         page = self._browser_page(mock_playwright)
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
+        results = scrape_funds([("FT", "IE0008368742")], self.test_dir, now=RUN_NOW)
 
-        today = date.today().isoformat()
-        self.assertEqual(list(results), [["IE0008368742", today, "123.45", ""]])
+        self.assertEqual(list(results), [["IE0008368742", "2026-10-19", "123.45", ""]])
         self.assertEqual(self.read_text("latest_IE0008368742.price").strip(), "123.45")
 
+    @patch("scrape_fund_price.yf.Ticker")
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
     def test_scrape_funds_removes_commas_from_all_price_sources(
-        self, mock_playwright, mock_ft
+        self, mock_playwright, mock_ft, mock_ticker
     ):
         """Test that every route stores prices without thousands separators."""
         page = self._browser_page(mock_playwright)
         page.locator.return_value.first.text_content.return_value = "1,234.56"
+        fake_ticker(mock_ticker, [("2026-10-19", 1234.56)], currency="USD")
 
         # FT_FUND takes the scraping fallback; API_FUND the Yahoo route.
         test_funds = [("FT", "FT_FUND"), ("YA", "API_FUND")]
 
-        today = date.today().isoformat()
-        with patch(
-            "scrape_fund_price.fetch_yahoo_quotes",
-            return_value=[Quote(today, "1234.56", "USD")],
-        ):
-            results = scrape_funds(test_funds, self.test_dir)
+        results = scrape_funds(test_funds, self.test_dir, now=RUN_NOW)
 
         self.assertEqual([row[2] for row in results], ["1234.56"] * 2)
         for _, fund_id in test_funds:
@@ -2006,13 +2008,12 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(len(results.failures), 1)
         self.assertIn("TEST123", results.failures[0])
 
-    def test_scrape_funds_with_api_source(self):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_scrape_funds_with_api_source(self, mock_ticker):
         """Test the Yahoo API source stores the quote's own date, no browser."""
-        with patch(
-            "scrape_fund_price.fetch_yahoo_quotes",
-            return_value=[Quote("2026-09-18", "150.25", "USD")],
-        ):
-            results = scrape_funds([("YA", "AAPL")], self.test_dir)
+        fake_ticker(mock_ticker, [("2026-09-18", 150.25)], currency="USD")
+
+        results = scrape_funds([("YA", "AAPL")], self.test_dir, now=RUN_NOW)
 
         self.assertEqual(list(results), [["AAPL", "2026-09-18", "150.25", "USD"]])
 
@@ -2039,11 +2040,9 @@ class TestFundPriceScraper(DataDirCase):
         page.goto.side_effect = [Exception(self.TIMEOUT), None]
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        results = scrape_funds([("FT", "TEST123")], self.test_dir)
+        results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
 
-        self.assertEqual(
-            list(results), [["TEST123", date.today().isoformat(), "123.45", ""]]
-        )
+        self.assertEqual(list(results), [["TEST123", "2026-10-19", "123.45", ""]])
         self.assertEqual(results.failures, [])
         self.assertEqual(page.goto.call_count, 2)
         self.assertEqual(self.read_text("latest_TEST123.price").strip(), "123.45")
@@ -2062,12 +2061,12 @@ class TestFundPriceScraper(DataDirCase):
             ["Fund", "Date", "Price"],
             [
                 ["TEST123", "2025-01-19", "111.11"],
-                ["TEST123", date.today().isoformat(), f"Error: {self.TIMEOUT}"],
+                ["TEST123", "2026-10-19", f"Error: {self.TIMEOUT}"],
             ],
         )
         self.write_text("latest_TEST123.price", f"Error: {self.TIMEOUT}\n")
 
-        results = scrape_funds([("FT", "TEST123")], self.test_dir)
+        results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
 
         # No fabricated row for today; the real last price is carried instead,
         # against the date it actually belongs to.
@@ -2078,22 +2077,22 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(page.goto.call_count, 3)
         self.assertEqual(self.read_text("latest_TEST123.price").strip(), "111.11")
 
-    def test_scrape_funds_retries_api_error_and_succeeds(self):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_scrape_funds_retries_api_error_and_succeeds(self, mock_ticker):
         """Test transient API errors are retried before writing a price."""
-        with patch(
-            "scrape_fund_price.fetch_yahoo_quotes",
-            side_effect=[
-                Exception("curl: (28) Operation timed out"),
-                [Quote("2026-09-18", "220.50", "GBp")],
-            ],
-        ) as mock_quotes:
-            results = scrape_funds([("YA", "IWDG.L")], self.test_dir)
+        inst = fake_ticker(mock_ticker, [("2026-09-18", 220.5)], currency="GBp")
+        mock_ticker.side_effect = [Exception("curl: (28) Operation timed out"), inst]
 
-        self.assertEqual(list(results), [["IWDG.L", "2026-09-18", "220.50", "GBp"]])
+        results = scrape_funds([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
+
+        self.assertEqual(list(results), [["IWDG.L", "2026-09-18", "220.5", "GBp"]])
         self.assertEqual(results.failures, [])
-        self.assertEqual(mock_quotes.call_count, 2)
+        self.assertEqual(mock_ticker.call_count, 2)
 
-    def test_scrape_funds_keeps_last_good_price_after_api_retry_failure(self):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_scrape_funds_keeps_last_good_price_after_api_retry_failure(
+        self, mock_ticker
+    ):
         """Test persistent API errors keep the last good stored price."""
         self.write_csv(
             "prices_history.csv",
@@ -2101,11 +2100,8 @@ class TestFundPriceScraper(DataDirCase):
             [["IWDG.L", "2025-01-19", "210.75", "GBp"]],
         )
 
-        with patch(
-            "scrape_fund_price.fetch_yahoo_quotes",
-            side_effect=Exception("curl: (28) Operation timed out"),
-        ) as mock_quotes:
-            results = scrape_funds([("YA", "IWDG.L")], self.test_dir)
+        mock_ticker.side_effect = Exception("curl: (28) Operation timed out")
+        results = scrape_funds([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
 
         # The last good price is carried for reporting, against the date it
         # really belongs to, and is kept out of history.
@@ -2113,7 +2109,7 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(results.carried, [["IWDG.L", "2025-01-19", "210.75", "GBp"]])
         self.assertEqual(len(results.failures), 1)
         self.assertIn("IWDG.L", results.failures[0])
-        self.assertEqual(mock_quotes.call_count, 3)
+        self.assertEqual(mock_ticker.call_count, 3)
 
     def test_write_results_default_data_dir(self):
         """Test write_results without a data_dir writes under DATA_DIR."""
@@ -2129,51 +2125,50 @@ class TestFundPriceScraper(DataDirCase):
 class TestWindowedScraping(DataDirCase):
     """Test scrape_funds over dated windows, and lazy browser startup."""
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_emits_a_row_per_quote_with_currency(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_emits_a_row_per_quote_with_currency(self, mock_ticker):
         """Test every quote in the window becomes a dated result row."""
-        mock_quotes.return_value = [
-            Quote("2026-09-17", "1.50", "GBp"),
-            Quote("2026-09-18", "1.60", "GBp"),
-        ]
-        results = scrape_funds([("YA", "SGLN.L")], self.test_dir)
+        bars = [("2026-09-17", 1.5), ("2026-09-18", 1.6)]
+        fake_ticker(mock_ticker, bars, currency="GBp")
+        results = scrape_funds([("YA", "SGLN.L")], self.test_dir, now=RUN_NOW)
         self.assertEqual(
             list(results),
             [
-                ["SGLN.L", "2026-09-17", "1.50", "GBp"],
-                ["SGLN.L", "2026-09-18", "1.60", "GBp"],
+                ["SGLN.L", "2026-09-17", "1.5", "GBp"],
+                ["SGLN.L", "2026-09-18", "1.6", "GBp"],
             ],
         )
 
     @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_ft_quotes")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    @patch("scrape_fund_price.yf.Ticker")
     def test_browser_not_started_for_api_only_config(self, mock_y, mock_ft, mock_pw):
         """Test Playwright is not launched when no fund needs scraping."""
-        mock_y.return_value = [Quote("2026-09-18", "1.60", "USD")]
+        fake_ticker(mock_y, [("2026-09-18", 1.6)], currency="USD")
         mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
-        scrape_funds([("YA", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
+        funds = [("YA", "QQQ"), ("FT", "GB00B1FXTF86")]
+        scrape_funds(funds, self.test_dir, now=RUN_NOW)
         mock_pw.assert_not_called()
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_total_failure_writes_no_history_row(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_total_failure_writes_no_history_row(self, mock_ticker):
         """Test a fund that cannot be fetched contributes no dated row."""
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir)
+        mock_ticker.side_effect = Exception("Network error")
+        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         self.assertEqual(list(results), [])
         self.assertEqual(len(results.failures), 1)
         self.assertIn("QQQ", results.failures[0])
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_failed_fund_keeps_its_last_known_price_file(self, mock_ticker):
         """Test the per-fund price file is not overwritten with an error."""
         self.write_text("latest_QQQ.price", "700.00\n")
-        mock_quotes.side_effect = Exception("Network error")
-        scrape_funds([("YA", "QQQ")], self.test_dir)
+        mock_ticker.side_effect = Exception("Network error")
+        scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_file_alone_carries_nothing(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_price_file_alone_carries_nothing(self, mock_ticker):
         """Test a fund stored only in its .price file has no row to carry.
 
         The file holds a bare price with no date, so the only date a carried
@@ -2182,8 +2177,8 @@ class TestWindowedScraping(DataDirCase):
         left alone, and the fund has no row until a fetch succeeds.
         """
         self.write_text("latest_QQQ.price", "700.00\n")
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir)
+        mock_ticker.side_effect = Exception("Network error")
+        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         self.assertEqual(results.carried, [])
         self.assertEqual(len(results.failures), 1)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
@@ -2195,9 +2190,8 @@ class TestWindowedScraping(DataDirCase):
         """Test an FT endpoint failure still yields a price, dated as today."""
         mock_ft.side_effect = ValueError("FT internal id not found")
         mock_scrape.return_value = "7.15"
-        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir)
-        today = date.today().isoformat()
-        self.assertEqual(list(results), [["GB00B1FXTF86", today, "7.15", ""]])
+        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir, now=RUN_NOW)
+        self.assertEqual(list(results), [["GB00B1FXTF86", "2026-10-19", "7.15", ""]])
         mock_pw.assert_called()
 
 
@@ -2205,22 +2199,26 @@ class TestAliasPublishing(DataDirCase):
     """Test that one fetch publishes under every configured identifier."""
 
     SPEC = FundSpec("YA", "0P00000YAN", ("JFM0003373",))
-    QUOTE = Quote("2026-09-17", "192.43", "USD")
+    BAR = ("2026-09-17", 192.43)
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_is_fetched_once_for_all_identifiers(self, mock_quotes):
+    def _scrape(self, mock_ticker, specs, error=None):
+        """Scrape `specs` with Yahoo serving BAR in USD, or raising `error`."""
+        fake_ticker(mock_ticker, [self.BAR], currency="USD")
+        if error is not None:
+            mock_ticker.side_effect = error
+        return scrape_funds(specs, self.test_dir, now=RUN_NOW)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_price_is_fetched_once_for_all_identifiers(self, mock_ticker):
         """Test aliases cost no extra network calls."""
-        mock_quotes.return_value = [self.QUOTE]
-        scrape_funds(
-            [FundSpec("YA", "0P00000YAN", ("JFM0003373", "EXTRA"))], self.test_dir
-        )
-        self.assertEqual(mock_quotes.call_count, 1)
+        spec = FundSpec("YA", "0P00000YAN", ("JFM0003373", "EXTRA"))
+        self._scrape(mock_ticker, [spec])
+        self.assertEqual(mock_ticker.call_count, 1)
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_each_identifier_gets_an_identical_row(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_each_identifier_gets_an_identical_row(self, mock_ticker):
         """Test every identifier records the same date, price and currency."""
-        mock_quotes.return_value = [self.QUOTE]
-        results = scrape_funds([self.SPEC], self.test_dir)
+        results = self._scrape(mock_ticker, [self.SPEC])
         self.assertEqual(
             list(results),
             [
@@ -2229,18 +2227,17 @@ class TestAliasPublishing(DataDirCase):
             ],
         )
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_a_price_file_is_written_per_identifier(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_price_file_is_written_per_identifier(self, mock_ticker):
         """Test per-fund price files exist for aliases too."""
-        mock_quotes.return_value = [self.QUOTE]
-        scrape_funds([self.SPEC], self.test_dir)
+        self._scrape(mock_ticker, [self.SPEC])
         for fund_id in ("0P00000YAN", "JFM0003373"):
             with self.subTest(fund=fund_id):
                 price_file = self.read_text(f"latest_{fund_id}.price")
                 self.assertEqual(price_file.strip(), "192.43")
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_fallback_uses_an_alias_stored_price(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_fallback_uses_an_alias_stored_price(self, mock_ticker):
         """Test day-one failure can fall back to the alias's existing history.
 
         The lookup identifier is new and has nothing stored, while the alias
@@ -2252,8 +2249,7 @@ class TestAliasPublishing(DataDirCase):
             [["JFM0003373", "2026-09-17", "192.43", "USD"]],
         )
 
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([self.SPEC], self.test_dir)
+        results = self._scrape(mock_ticker, [self.SPEC], Exception("Network error"))
 
         self.assertEqual(list(results), [])
         self.assertEqual(
@@ -2264,20 +2260,18 @@ class TestAliasPublishing(DataDirCase):
             ],
         )
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failure_is_reported_once_per_fund(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_failure_is_reported_once_per_fund(self, mock_ticker):
         """Test an aliased fund is not reported twice for one failure."""
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([self.SPEC], self.test_dir)
+        results = self._scrape(mock_ticker, [self.SPEC], Exception("Network error"))
         self.assertEqual(len(results.failures), 1)
         self.assertIn("0P00000YAN", results.failures[0])
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_plain_tuples_are_still_accepted(self, mock_quotes):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_plain_tuples_are_still_accepted(self, mock_ticker):
         """Test existing callers passing (source, id) pairs keep working."""
-        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        results = scrape_funds([("YA", "QQQ")], self.test_dir)
-        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        results = self._scrape(mock_ticker, [("YA", "QQQ")])
+        self.assertEqual(list(results), [["QQQ", "2026-09-17", "192.43", "USD"]])
 
 
 # 13:56 London on Monday 2026-10-19, with SWDA.L's session open until 16:30:
@@ -2594,39 +2588,44 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
         self.assertEqual(latest["IWDG.L"], self.FRIDAY[1])
 
+    # The 2026-10-10 run, the Saturday after the Friday session.
+    NOW = utc(2026, 10, 10, 9)
+
     @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_file_keeps_the_newer_price(self, mock_quotes, mock_pw):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_price_file_keeps_the_newer_price(self, mock_ticker, mock_pw):
         """Test latest_<id>.price is not rewritten from an older bar."""
         write_results(list(self.FRIDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "133800", self.test_dir)
-        mock_quotes.return_value = [
-            Quote("2026-10-07", "135120", "GBp"),
-            Quote("2026-10-08", "134720", "GBp"),
-        ]
-        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        bars = [("2026-10-07", 135120.0), ("2026-10-08", 134720.0)]
+        fake_ticker(mock_ticker, bars, currency="GBp")
+        scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
     @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_file_advances_on_a_newer_bar(self, mock_quotes, mock_pw):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_price_file_advances_on_a_newer_bar(self, mock_ticker, mock_pw):
         """Test the price file still follows a newer bar."""
         write_results(list(self.THURSDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "134720", self.test_dir)
-        mock_quotes.return_value = [Quote("2026-10-09", "133800", "GBp")]
-        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        fake_ticker(mock_ticker, [("2026-10-09", 133800.0)], currency="GBp")
+        scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
     @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_whole_daily_run_with_stale_bars(self, mock_quotes, mock_pw):
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_whole_daily_run_with_stale_bars(self, mock_ticker, mock_pw):
         """Test the exact 2026-10-10 sequence end to end."""
         write_results(list(self.FRIDAY), self.test_dir)
         for row in self.FRIDAY:
             write_latest_price_file(row[0], row[2], self.test_dir)
-        quotes = {row[0]: [Quote(row[1], row[2], row[3])] for row in self.THURSDAY}
-        mock_quotes.side_effect = lambda symbol, start, end, now: quotes[symbol]
-        results = scrape_funds([("YA", s) for s in quotes], self.test_dir)
+        tickers = {
+            fund: fake_ticker(MagicMock(), [(day, float(price))], currency=currency)
+            for fund, day, price, currency in self.THURSDAY
+        }
+        mock_ticker.side_effect = tickers.get
+        funds = [("YA", fund) for fund in tickers]
+        results = scrape_funds(funds, self.test_dir, now=self.NOW)
         write_results(results, self.test_dir)
         self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
@@ -2656,7 +2655,7 @@ class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
 
     def setUp(self):
         super().setUp()
-        self.recent = (date.today() - timedelta(days=5)).isoformat()
+        self.recent = "2026-10-14"
 
     def _rolling(self):
         return self.read_rows("prices_history_90_days.csv")
@@ -2830,9 +2829,9 @@ class TestBackfillArguments(unittest.TestCase):
 
     def test_validate_rejects_future_start(self):
         """Test a future start date is rejected rather than fetching nothing."""
-        future = (date.today() + timedelta(days=1)).isoformat()
-        args = parse_arguments(["--backfill", "--from", future])
-        self.assertIn("future", validate_backfill_args(args).lower())
+        args = parse_arguments(["--backfill", "--from", "2026-10-20"])
+        error = validate_backfill_args(args, now=utc(2026, 10, 19, 23))
+        self.assertIn("future", error.lower())
 
     def test_validate_rejects_backfill_with_history(self):
         """Test the two bulk modes cannot be combined."""
@@ -3956,8 +3955,8 @@ class TestFxQuoteFetching(unittest.TestCase):
         self.assertEqual(mock_hourly.call_args.args[1], hourly_from)
 
     @patch("scrape_fund_price.fetch_yahoo_hourly")
-    def test_defaults_to_today_and_now(self, mock_hourly):
-        """Test the daily run needs no clock arguments."""
+    def test_defaults_to_now(self, mock_hourly):
+        """Test a caller that passes no now gets the current time."""
         mock_hourly.return_value = []
         start = (date.today() - timedelta(days=10)).isoformat()
         self.assertEqual(fetch_fx_quotes("USDGBP", start), [])
@@ -9324,10 +9323,9 @@ class TestHistoryArguments(unittest.TestCase):
             "Invalid --start",
             self._validate("--history", "AAPL", "--start", "2024-13-45"),
         )
-        future = (date.today() + timedelta(days=1)).isoformat()
-        self.assertIn(
-            "future", self._validate("--history", "AAPL", "--start", future).lower()
-        )
+        args = parse_arguments(["--history", "AAPL", "--start", "2026-10-20"])
+        error = scrape_fund_price.validate_history_args(args, now=utc(2026, 10, 19, 23))
+        self.assertIn("future", error.lower())
 
     def test_a_bad_end_date_is_rejected(self):
         """Test --end is checked the same way."""
@@ -9401,17 +9399,6 @@ class TestHistoricalData(DataDirCase):
         self.assertIsNone(args.end)
 
     @patch("scrape_fund_price.yf.Ticker")
-    def test_an_open_window_is_named_by_now(self, mock_ticker):
-        """Test the file of an export with no end takes now's date (#120)."""
-        fake_ticker(mock_ticker, bars=[("2026-10-01", 1.5)])
-        report = fetch_historical_data(
-            "AAPL", "2026-10-01", None, self.test_dir, now=utc(2026, 10, 19, 21)
-        )
-        self.assertEqual(
-            report.path, self.path("history_AAPL_2026-10-01_2026-10-19.csv")
-        )
-
-    @patch("scrape_fund_price.yf.Ticker")
     def test_rows_are_dated_and_formatted_as_the_source_reports_them(self, mock_ticker):
         """Test the file holds history rows: source date, exact price, currency.
 
@@ -9449,16 +9436,19 @@ class TestHistoricalData(DataDirCase):
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_no_end_date_reaches_the_latest_bar(self, mock_ticker):
-        """Test an open window runs to the newest bar and is named by today."""
+        """Test an open window runs to the newest bar and is named by now."""
         fake_ticker(mock_ticker, bars=[("2026-10-01", 1.5)])
 
-        report = fetch_historical_data("AAPL", "2026-10-01", None, self.test_dir)
+        report = fetch_historical_data(
+            "AAPL", "2026-10-01", None, self.test_dir, now=utc(2026, 10, 19, 21)
+        )
 
         mock_ticker.return_value.history.assert_called_once_with(
             start="2026-10-01", end=None, auto_adjust=False
         )
-        today = date.today().isoformat()
-        self.assertEqual(report.path, self.path(f"history_AAPL_2026-10-01_{today}.csv"))
+        self.assertEqual(
+            report.path, self.path("history_AAPL_2026-10-01_2026-10-19.csv")
+        )
         self.assertEqual(report.failures, [])
 
     @patch("scrape_fund_price.fetch_yahoo_quotes")
