@@ -4816,7 +4816,7 @@ def main(argv=None):
             raise SystemExit(2)
 
         specs = read_fund_specs(FUNDS_FILE)
-        report = backfill_history(specs, args.start)
+        report = backfill_history(specs, args.start, pairs=read_fx_pairs())
         # Everything obtainable has been written before signalling failure.
         publish_report(report, f"Backfill from {args.start}")
         return

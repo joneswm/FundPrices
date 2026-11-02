@@ -3327,6 +3327,7 @@ class TestBackfillMainMode(DataDirCase):
         self.assertEqual(mock_print.call_args.args[0][:7], "Error: ")
 
     @patch("builtins.print")
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_successful_backfill_prints_the_report(
@@ -3338,11 +3339,14 @@ class TestBackfillMainMode(DataDirCase):
 
         main(["--backfill", "--from", "2023-01-01"])
 
-        mock_backfill.assert_called_once_with(mock_specs.return_value, "2023-01-01")
+        mock_backfill.assert_called_once_with(
+            mock_specs.return_value, "2023-01-01", pairs=["USDGBP"]
+        )
         printed = mock_print.call_args.args[0]
         self.assertIn(self.QQQ_ROW, printed.splitlines())
 
     @patch("builtins.print")
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_failures_exit_non_zero_after_writing(
@@ -3363,6 +3367,7 @@ class TestBackfillMainMode(DataDirCase):
         self.assertIn("- QQQ: Error: Timeout", printed)
 
     @patch("builtins.print")
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_report_is_added_to_the_actions_job_summary(
@@ -3380,6 +3385,7 @@ class TestBackfillMainMode(DataDirCase):
         self.assertIn(self.QQQ_ROW, written)
 
     @patch("builtins.print")
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_no_summary_written_outside_actions(
