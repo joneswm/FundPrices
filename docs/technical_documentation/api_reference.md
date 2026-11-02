@@ -164,7 +164,8 @@ malformed field gives `None`.
 
 ### `fetch_ft_quotes(isin, start, end=None, now=None)`
 
-Fetches dated daily quotes from Financial Times.
+Fetches dated daily quotes from Financial Times: two plain GETs (`http_get()`), the
+tearsheet page that resolves FT's internal id for the fund, then the rows.
 
 **Parameters:**
 - `isin` (str): Fund ISIN as used in `funds.txt`
@@ -394,7 +395,7 @@ Blank lines and `#` comments are ignored.
 ### `fetch_investing_quotes(pair_id, start, end=None)`
 
 Dated daily closes from investing.com, for a delisted line that Yahoo and FT no
-longer carry. Returns `list[Quote]` oldest first with **no currency**: the
+longer carry: one GET (`http_get()`, `INVESTING_HEADERS`). Returns `list[Quote]` oldest first with **no currency**: the
 endpoint does not report one, so the caller supplies it from configuration.
 Prices are float32 round-tripped, keeping a genuine half penny that the
 displayed two decimals would round away.
@@ -558,7 +559,7 @@ One line of `dividend_sources.txt` (`<identifier>,<source>,<source-id>`), read f
 the identifier must be one `funds.txt` publishes and two lines may not name one instrument.
 Raises `ValueError` naming the line, before any network call.
 
-### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows, source="IS")`
+### `IssuerDistribution(ex_date, record_date, pay_date, amount)`, `IssuerTable(currency, rows, source)`
 
 One distribution as the issuer states it (ISO dates, `""` for a missing record or pay date
 or a pay date before the ex-date; `amount` is decimal text in the share class's currency in
@@ -569,20 +570,22 @@ page does not say), and the source code the rows came from (`IS`, `IV`, `SS`, `Q
 
 Reads the `performance.distributions.table` container a product page embeds
 (entity-escaped, four parallel lists `exDate`, `recordDate`, `payableDate`,
-`totalDistribution`) and the class currency from the share-class selector. `ValueError`
-when there is no table (an accumulating class, or a changed page) or it is ragged or holds
-a bad date or amount.
+`totalDistribution`) and the class currency from the share-class selector, reading each
+row through the issuer helpers the SPEC-012 parsers share (`parse_issuer_date()` takes the
+page's YYYYMMDD integers). `ValueError` when there is no table (an accumulating class, or
+a changed page) or it is ragged or holds a missing ex-date, a bad date or a bad amount.
 
 ### `fetch_ishares_distributions(product_id)` and `fetch_issuer_table(source)`
 
-One GET of `https://www.ishares.com/uk/individual/en/products/<id>` (30 s timeout,
-`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` dispatches on the source code
+One GET (`http_get()`) of `https://www.ishares.com/uk/individual/en/products/<id>`
+(`ISHARES_PRODUCT_URL`), parsed; `fetch_issuer_table` looks the source code up in
+`ISSUER_FETCHERS`, the fetch per code that `DIVIDEND_SOURCE_CODES` is derived from
 (`ValueError` for a code it does not know). Errors propagate so `fetch_with_retries()` can
 retry them.
 
 ### SPEC-012 sources: `fetch_invesco_distributions(cusip)`, `fetch_ssga_distributions(isin)`, `fetch_q4_distributions(source_id, symbol)`, `fetch_etnet_distributions(code)`
 
-Each is one GET (30 s; 60 s for SSGA's workbook, which is kept for the run and shared:
+Each is one GET (`http_get()`; `SSGA_REQUEST_TIMEOUT`, 60 s, for SSGA's workbook, which is kept for the run and shared:
 `clear_issuer_caches()` empties it, `collect_issuer_tables()` calls that first), parsed by
 `parse_invesco_distributions(text, cusip)`, `parse_ssga_distributions(content, isin)`,
 `parse_q4_distributions(text, symbol)` or `parse_etnet_distributions(text, code)`. Every
@@ -782,7 +785,7 @@ not a positive plain decimal.
 
 ### `fetch_uk_cpi()`
 
-One GET of `UK_CPI_URL` (30 s timeout, browser `User-Agent`), parsed by `parse_ons_cpi()`. Errors
+One GET (`http_get()`) of `UK_CPI_URL` with `UK_CPI_HEADERS` (the browser `User-Agent`), parsed by `parse_ons_cpi()`. Errors
 propagate so `fetch_with_retries()` can retry them.
 
 ### `read_uk_cpi(data_dir)` and `write_uk_cpi(rows, data_dir)`
@@ -826,7 +829,7 @@ month with no change, so there is no gap. Raises `ValueError` if no change is in
 
 ### `fetch_uk_bank_rate()`
 
-One GET of `UK_BANK_RATE_URL` (30 s timeout, browser `User-Agent`), parsed by
+One GET (`http_get()`) of `UK_BANK_RATE_URL` with `UK_BANK_RATE_HEADERS` (the browser `User-Agent`), parsed by
 `parse_boe_bank_rate()`. Errors propagate so `fetch_with_retries()` can retry them.
 
 ### `read_uk_bank_rate(data_dir)` and `write_uk_bank_rate(rows, data_dir)`
@@ -1009,9 +1012,15 @@ Called automatically by `--backfill` when `fx_pairs.txt` exists.
 - `LINE_ENDING`: Line ending for every written file (LF)
 
 ### Endpoints and Timeouts
-- `FT_HISTORICAL_PAGE`, `FT_HISTORICAL_AJAX`, `FT_REQUEST_TIMEOUT` (30s)
-- `INVESTING_HISTORICAL_URL`, `INVESTING_HEADERS`, `INVESTING_REQUEST_TIMEOUT` (30s).
-  The headers carry a realistic browser user agent; a bare `Mozilla/5.0` gets a 403
+- `http_get(url, *, headers=None, timeout=HTTP_TIMEOUT)`: the one plain GET every HTTP
+  fetcher makes, raising on an error status so `fetch_with_retries()` can retry it
+- `HTTP_TIMEOUT` (30 s): the timeout of every plain HTTP fetch; `SSGA_REQUEST_TIMEOUT`
+  (60 s) only for SSGA's workbook
+- `BROWSER_USER_AGENT`: the realistic browser user agent that `INVESTING_HEADERS`,
+  `UK_CPI_HEADERS` and `UK_BANK_RATE_HEADERS` carry; a bare `Mozilla/5.0` gets a 403
+  from investing.com
+- `FT_HISTORICAL_PAGE`, `FT_HISTORICAL_AJAX`
+- `INVESTING_HISTORICAL_URL`, `INVESTING_HEADERS`
 
 ### File Headers
 - `HISTORY_HEADER`: `Fund,Date,Price,Currency`

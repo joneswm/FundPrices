@@ -6410,6 +6410,7 @@ def issuer_table(*rows, currency="GBP"):
     return scrape_fund_price.IssuerTable(
         currency,
         tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
+        "IS",
     )
 
 
@@ -6555,11 +6556,28 @@ class TestIsharesPageParsing(unittest.TestCase):
 
     def test_a_bad_ex_date_is_an_error(self):
         """Test a date that is not one stops the page, not just the row."""
-        for bad in (None, 20261340, "x", 2026071):
+        for bad in (20261340, "x", 2026071, True):
             with self.subTest(bad=bad):
                 page = ishares_page([(bad, 20260717, 20260729, "1.5")])
-                with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                with self.assertRaisesRegex(ValueError, "251804.*malformed date"):
                     self._parse(page)
+
+    def test_a_missing_ex_date_is_an_error(self):
+        """Test the ex-date is the row's key, so a null one stops the page."""
+        page = ishares_page([(None, 20260717, 20260729, "1.5")])
+        with self.assertRaisesRegex(ValueError, "251804.*missing date"):
+            self._parse(page)
+
+    def test_a_bad_record_or_pay_date_is_an_error(self):
+        """Test a date that is not one is refused in any column, as the other issuers do."""
+        for bad in (20261340, "x", 2026071, True):
+            for column in (1, 2):
+                row = [20260716, 20260717, 20260729, "1.5"]
+                row[column] = bad
+                with self.subTest(bad=bad, column=column):
+                    page = ishares_page([tuple(row)])
+                    with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                        self._parse(page)
 
     def test_a_bad_amount_is_an_error(self):
         """Test the amount must be a decimal."""
@@ -7209,6 +7227,17 @@ class TestIssuerDispatch(unittest.TestCase):
         source = scrape_fund_price.DividendSource("X", "ZZ", "1")
         with self.assertRaisesRegex(ValueError, "ZZ"):
             scrape_fund_price.fetch_issuer_table(source)
+
+    def test_the_codes_are_the_fetchers(self):
+        """Test DIVIDEND_SOURCE_CODES is derived from ISSUER_FETCHERS, so neither drifts."""
+        self.assertEqual(
+            scrape_fund_price.DIVIDEND_SOURCE_CODES,
+            tuple(scrape_fund_price.ISSUER_FETCHERS),
+        )
+        self.assertEqual(
+            set(scrape_fund_price.DIVIDEND_SOURCE_CODES),
+            set(scrape_fund_price.DIVIDEND_SOURCE_ID_RULES),
+        )
 
 
 class TestIssuerAmounts(unittest.TestCase):
@@ -7947,9 +7976,10 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             source,
         )
 
-    def test_the_table_carries_its_source_and_defaults_to_iShares(self):
-        """Test IssuerTable keeps SPEC-011's two-field construction working."""
-        self.assertEqual(scrape_fund_price.IssuerTable("GBP", ()).source, "IS")
+    def test_the_table_names_its_source(self):
+        """Test IssuerTable has no default source: every parser states its own."""
+        with self.assertRaises(TypeError):
+            scrape_fund_price.IssuerTable("GBP", ())
 
     def test_a_yahoo_row_gains_the_pay_date_and_the_source_of_the_table(self):
         """Test the point of the issue, end to end for QQQ."""
@@ -8020,7 +8050,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         """Test the SSGA workbook is downloaded once per run, not once per process."""
         with patch.object(scrape_fund_price, "clear_issuer_caches") as clear:
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
-                fetch.return_value = scrape_fund_price.IssuerTable("USD", ())
+                fetch.return_value = scrape_fund_price.IssuerTable("USD", (), "IS")
                 scrape_fund_price.collect_issuer_tables(
                     [self.QQQ], [FundSpec("YA", "QQQ")]
                 )

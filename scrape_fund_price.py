@@ -852,7 +852,27 @@ FT_HISTORICAL_AJAX = (
     "https://markets.ft.com/data/equities/ajax/get-historical-prices"
     "?startDate={start}&endDate={end}&symbol={xid}"
 )
-FT_REQUEST_TIMEOUT = 30
+# Every plain HTTP fetch shares one timeout, one browser identity and one call.
+HTTP_TIMEOUT = 30
+# A bare "Mozilla/5.0" is refused with a 403 by investing.com; the endpoints
+# that look at the header want a realistic browser string.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def http_get(url, *, headers=None, timeout=HTTP_TIMEOUT):
+    """GET `url` and return the response, raising on an HTTP error status.
+
+    Transport and status errors propagate so fetch_with_retries can retry
+    them. Calls requests.get, which the tests patch.
+    """
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response
+
+
 # FT's dated endpoint returns a provisional row for the current day that moves
 # until the evening (#84), and carries no session times to judge it by. A row
 # is stored only once the US close on its own date has passed, which the
@@ -899,10 +919,7 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
     """
     end = end or datetime.date.today().isoformat()
 
-    page = requests.get(
-        FT_HISTORICAL_PAGE.format(isin=isin), timeout=FT_REQUEST_TIMEOUT
-    )
-    page.raise_for_status()
+    page = http_get(FT_HISTORICAL_PAGE.format(isin=isin))
 
     ids = re.findall(r"&quot;symbol&quot;:&quot;(\d+)&quot;", page.text)
     if not ids:
@@ -911,13 +928,11 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
     currency_match = re.search(r"Price \(([A-Za-z]{3})\)", page.text)
     currency = currency_match.group(1) if currency_match else ""
 
-    response = requests.get(
+    response = http_get(
         FT_HISTORICAL_AJAX.format(
             start=start.replace("-", "/"), end=end.replace("-", "/"), xid=ids[0]
-        ),
-        timeout=FT_REQUEST_TIMEOUT,
+        )
     )
-    response.raise_for_status()
 
     quotes = []
     held_back = False
@@ -956,16 +971,10 @@ INVESTING_HISTORICAL_URL = (
     "?start-date={start}&end-date={end}&time-frame=Daily&add-missing-rows=false"
 )
 INVESTING_HEADERS = {
-    # A bare "Mozilla/5.0" is refused with a 403; the endpoint wants a
-    # realistic browser string.
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": BROWSER_USER_AGENT,
     "domain-id": "uk",
     "Accept": "application/json",
 }
-INVESTING_REQUEST_TIMEOUT = 30
 
 
 def fetch_investing_quotes(pair_id, start, end=None):
@@ -990,12 +999,10 @@ def fetch_investing_quotes(pair_id, start, end=None):
     """
     end = end or datetime.date.today().isoformat()
 
-    response = requests.get(
+    response = http_get(
         INVESTING_HISTORICAL_URL.format(pair_id=pair_id, start=start, end=end),
         headers=INVESTING_HEADERS,
-        timeout=INVESTING_REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
 
     quotes = []
     # A window after the fund stopped publishing comes back with "data"
@@ -2640,8 +2647,17 @@ def collect_dividends(specs, today, start=None):
 
 DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
 # Source codes a dividend_sources.txt line may name (SPEC-011, SPEC-012): the
-# issuer or its exchange partner that states the pay date.
-DIVIDEND_SOURCE_CODES = ("IS", "IV", "SS", "Q4", "ET")
+# issuer or its exchange partner that states the pay date, each with the fetch
+# of its table for a DividendSource. The fetchers are looked up when called, so
+# a test can patch one by name.
+ISSUER_FETCHERS = {
+    "IS": lambda source: fetch_ishares_distributions(source.source_id),
+    "IV": lambda source: fetch_invesco_distributions(source.source_id),
+    "SS": lambda source: fetch_ssga_distributions(source.source_id),
+    "Q4": lambda source: fetch_q4_distributions(source.source_id, source.identifier),
+    "ET": lambda source: fetch_etnet_distributions(source.source_id),
+}
+DIVIDEND_SOURCE_CODES = tuple(ISSUER_FETCHERS)
 # What each code's source-id must look like, and how the error names it.
 DIVIDEND_SOURCE_ID_RULES = {
     "IS": (
@@ -2742,7 +2758,6 @@ def read_dividend_sources(filename=None, specs=None):
 
 
 ISHARES_PRODUCT_URL = "https://www.ishares.com/uk/individual/en/products/{product_id}"
-ISHARES_REQUEST_TIMEOUT = 30
 # The page embeds its data model entity-escaped inside attributes; the
 # distributions section is this container (SPEC-011).
 ISHARES_TABLE_MARKER = "&quot;performance.distributions.table&quot;"
@@ -2765,19 +2780,7 @@ class IssuerTable(NamedTuple):
 
     currency: str  # the share class's currency; "" when the page does not say
     rows: tuple
-    source: str = "IS"  # the DIVIDEND_SOURCE_CODES entry the rows came from
-
-
-def parse_ishares_date(value):
-    """Return an ISO date for the YYYYMMDD integer iShares holds, or None."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    try:
-        return datetime.date(
-            value // 10000, value // 100 % 100, value % 100
-        ).isoformat()
-    except ValueError:
-        return None
+    source: str  # the DIVIDEND_SOURCE_CODES entry the rows came from
 
 
 def parse_ishares_distributions(text, product_id):
@@ -2799,9 +2802,10 @@ def parse_ishares_distributions(text, product_id):
         ValueError: no table, or a table that is not four lists of equal length
             holding real dates and amounts
     """
+    label = f"iShares product {product_id}"
     start = text.find(ISHARES_TABLE_MARKER)
     if start < 0:
-        raise ValueError(f"iShares product {product_id}: no distributions table")
+        raise ValueError(f"{label}: no distributions table")
 
     lead = max(0, start - 2000)
     segment = html.unescape(text[lead : start + ISHARES_TABLE_SPAN])
@@ -2809,7 +2813,7 @@ def parse_ishares_distributions(text, product_id):
     table, _ = json.JSONDecoder().raw_decode(segment[segment.rfind("{", 0, at) :])
     points = table.get("dataPointsByNameMap", {})
     if "exDate" not in points:
-        raise ValueError(f"iShares product {product_id}: no distributions table")
+        raise ValueError(f"{label}: no distributions table")
 
     columns = [
         points.get(name, {}).get("value")
@@ -2818,29 +2822,18 @@ def parse_ishares_distributions(text, product_id):
     if not all(isinstance(column, list) for column in columns) or (
         len({len(column) for column in columns}) != 1
     ):
-        raise ValueError(f"iShares product {product_id}: malformed distributions table")
+        raise ValueError(f"{label}: malformed distributions table")
 
-    rows = []
-    for ex_value, record_value, pay_value, amount in zip(*columns):
-        ex_date = parse_ishares_date(ex_value)
-        try:
-            amount_value = decimal.Decimal(amount)
-        except (decimal.InvalidOperation, TypeError):
-            amount_value = None
-        usable = amount_value is not None and amount_value.is_finite()
-        if ex_date is None or not usable or amount_value < 0:
-            raise ValueError(
-                f"iShares product {product_id}: malformed distributions table"
-            )
-        pay_date = parse_ishares_date(pay_value) or ""
-        rows.append(
-            IssuerDistribution(
-                ex_date,
-                parse_ishares_date(record_value) or "",
-                pay_date if pay_date >= ex_date else "",
-                amount,
-            )
+    # The page holds dates as YYYYMMDD integers.
+    rows = [
+        issuer_row(
+            parse_issuer_date(ex_value, "%Y%m%d", label),
+            parse_issuer_date(record_value, "%Y%m%d", label, required=False),
+            parse_issuer_date(pay_value, "%Y%m%d", label, required=False),
+            parse_issuer_amount(amount, label),
         )
+        for ex_value, record_value, pay_value, amount in zip(*columns)
+    ]
 
     currency = re.search(
         r"&quot;currency&quot;:&quot;([A-Z]{3})&quot;,&quot;pId&quot;:"
@@ -2848,7 +2841,9 @@ def parse_ishares_distributions(text, product_id):
         + r"\b",
         text,
     )
-    return IssuerTable(currency.group(1) if currency else "", tuple(reversed(rows)))
+    return IssuerTable(
+        currency.group(1) if currency else "", tuple(reversed(rows)), "IS"
+    )
 
 
 def fetch_ishares_distributions(product_id):
@@ -2861,11 +2856,7 @@ def fetch_ishares_distributions(product_id):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        ISHARES_PRODUCT_URL.format(product_id=product_id),
-        timeout=ISHARES_REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    response = http_get(ISHARES_PRODUCT_URL.format(product_id=product_id))
     return parse_ishares_distributions(response.text, product_id)
 
 
@@ -2884,7 +2875,6 @@ Q4_DIVIDEND_URL = (
 ETNET_DIVIDEND_URL = (
     "https://www.etnet.com.hk/www/eng/stocks/realtime/quote_dividend.php?code={code}"
 )
-ISSUER_REQUEST_TIMEOUT = 30
 SSGA_REQUEST_TIMEOUT = 60  # the workbook is 300 KB of zipped XML
 
 
@@ -2932,12 +2922,20 @@ def parse_issuer_amount(value, label):
 
 
 def parse_issuer_date(value, pattern, label, required=True):
-    """Return an ISO date from text in `pattern`; "" when absent and not required."""
+    """Return an ISO date from text in `pattern`; "" when absent and not required.
+
+    An integer is a YYYYMMDD date, which is how iShares holds them; it is not
+    read through `pattern`, which would take 2026071 for a day in July.
+    """
     if value is None or (isinstance(value, str) and value.strip() in ("", "--")):
         if required:
             raise ValueError(f"{label}: missing date")
         return ""
     try:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return datetime.date(
+                value // 10000, value // 100 % 100, value % 100
+            ).isoformat()
         return (
             datetime.datetime.strptime(str(value).strip(), pattern).date().isoformat()
         )
@@ -3006,10 +3004,7 @@ def fetch_invesco_distributions(cusip):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        INVESCO_DISTRIBUTION_URL.format(cusip=cusip), timeout=ISSUER_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(INVESCO_DISTRIBUTION_URL.format(cusip=cusip))
     return parse_invesco_distributions(response.text, cusip)
 
 
@@ -3068,13 +3063,11 @@ def fetch_q4_distributions(source_id, symbol):
             fetch_with_retries can retry them
     """
     host, mic = source_id.split("/", 1)
-    response = requests.get(
+    response = http_get(
         Q4_DIVIDEND_URL.format(
             host=host, mic=mic, symbol=urllib.parse.quote(symbol, safe="")
-        ),
-        timeout=ISSUER_REQUEST_TIMEOUT,
+        )
     )
-    response.raise_for_status()
     return parse_q4_distributions(response.text, symbol)
 
 
@@ -3137,10 +3130,7 @@ def fetch_etnet_distributions(code):
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        ETNET_DIVIDEND_URL.format(code=code), timeout=ISSUER_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(ETNET_DIVIDEND_URL.format(code=code))
     return parse_etnet_distributions(response.text, code)
 
 
@@ -3292,25 +3282,17 @@ def fetch_ssga_distributions(isin):
             fetch_with_retries can retry them
     """
     if "content" not in _ssga_workbook:
-        response = requests.get(SSGA_WORKBOOK_URL, timeout=SSGA_REQUEST_TIMEOUT)
-        response.raise_for_status()
+        response = http_get(SSGA_WORKBOOK_URL, timeout=SSGA_REQUEST_TIMEOUT)
         _ssga_workbook["content"] = response.content
     return parse_ssga_distributions(_ssga_workbook["content"], isin)
 
 
 def fetch_issuer_table(source):
     """Fetch the distribution table of a configured DividendSource."""
-    if source.source == "IS":
-        return fetch_ishares_distributions(source.source_id)
-    if source.source == "IV":
-        return fetch_invesco_distributions(source.source_id)
-    if source.source == "SS":
-        return fetch_ssga_distributions(source.source_id)
-    if source.source == "Q4":
-        return fetch_q4_distributions(source.source_id, source.identifier)
-    if source.source == "ET":
-        return fetch_etnet_distributions(source.source_id)
-    raise ValueError(f"{source.identifier}: no fetch for source {source.source!r}")
+    fetch = ISSUER_FETCHERS.get(source.source)
+    if fetch is None:
+        raise ValueError(f"{source.identifier}: no fetch for source {source.source!r}")
+    return fetch(source)
 
 
 # An issuer date this many days from a Yahoo row with the same amount is the
@@ -4187,11 +4169,7 @@ UK_CPI_URL = (
     "https://www.ons.gov.uk/economy/inflationandpriceindices/"
     "timeseries/d7bt/mm23/data"
 )
-UK_CPI_HEADERS = {
-    "User-Agent": INVESTING_HEADERS["User-Agent"],
-    "Accept": "application/json",
-}
-UK_CPI_REQUEST_TIMEOUT = 30
+UK_CPI_HEADERS = {"User-Agent": BROWSER_USER_AGENT, "Accept": "application/json"}
 UK_CPI_INDEX_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 MONTH_NUMBERS = {
     name: number
@@ -4293,10 +4271,7 @@ def fetch_uk_cpi():
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        UK_CPI_URL, headers=UK_CPI_HEADERS, timeout=UK_CPI_REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
+    response = http_get(UK_CPI_URL, headers=UK_CPI_HEADERS)
     return parse_ons_cpi(response.text)
 
 
@@ -4358,11 +4333,7 @@ UK_BANK_RATE_HEADER = ["Month", "Rate", "Series", "AsOf"]
 UK_BANK_RATE_SERIES = "UK_BANK_RATE"
 UK_BANK_RATE_START = "2015-01"
 UK_BANK_RATE_URL = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
-UK_BANK_RATE_HEADERS = {
-    "User-Agent": INVESTING_HEADERS["User-Agent"],
-    "Accept": "text/html",
-}
-UK_BANK_RATE_REQUEST_TIMEOUT = 30
+UK_BANK_RATE_HEADERS = {"User-Agent": BROWSER_USER_AGENT, "Accept": "text/html"}
 UK_BANK_RATE_TABLE_ID = "stats-table"
 UK_BANK_RATE_DATE_PATTERN = re.compile(r"(\d{2}) ([A-Z][a-z]{2}) (\d{2})")
 UK_BANK_RATE_PATTERN = re.compile(r"\d+(?:\.\d+)?")
@@ -4504,12 +4475,7 @@ def fetch_uk_bank_rate():
         Exception: transport, status and format errors propagate so
             fetch_with_retries can retry them
     """
-    response = requests.get(
-        UK_BANK_RATE_URL,
-        headers=UK_BANK_RATE_HEADERS,
-        timeout=UK_BANK_RATE_REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    response = http_get(UK_BANK_RATE_URL, headers=UK_BANK_RATE_HEADERS)
     return parse_boe_bank_rate(response.text)
 
 
