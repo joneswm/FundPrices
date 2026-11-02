@@ -1665,6 +1665,93 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
 
         mock_write.assert_called_once()
 
+    def _crashing_run(self, crash):
+        """Run the daily mode with every step stubbed and one of them raising.
+
+        `crash` names the stub that raises. Returns the stubs by name together
+        with what was printed, so a test can assert which steps still ran.
+        """
+        stubs = {}
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.parse_arguments",
+                    return_value=MagicMock(
+                        history=None,
+                        start=None,
+                        end=None,
+                        backfill=False,
+                        import_closed=False,
+                        backfill_dividends=False,
+                    ),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.read_fund_specs",
+                    return_value=[FundSpec("YA", "QQQ")],
+                )
+            )
+            enter(patch("scrape_fund_price.read_fx_pairs", return_value=["USDGBP"]))
+            returns = {
+                "scrape_funds": ScrapeResults(),
+                "write_results": None,
+                "snap_fx_rates": ScrapeResults(),
+                "write_fx_results": None,
+                "update_dividends": scrape_fund_price.DividendResults(),
+                "update_uk_cpi": scrape_fund_price.UkCpiResults(),
+                "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
+                "write_summary": None,
+            }
+            for name, value in returns.items():
+                outcome = (
+                    {"side_effect": RuntimeError(f"{name} exploded")}
+                    if name == crash
+                    else {"return_value": value}
+                )
+                stubs[name] = enter(patch(f"scrape_fund_price.{name}", **outcome))
+            printed = enter(patch("builtins.print"))
+            with self.assertRaises(SystemExit) as error:
+                main()
+        stubs["exit_code"] = error.exception.code
+        stubs["printed"] = [str(call.args[0]) for call in printed.call_args_list]
+        return stubs
+
+    def test_a_crash_in_the_price_step_does_not_cost_the_other_files(self):
+        """Test an exception outside the per-fund retries is a price failure.
+
+        AGENTS.md promises the run writes everything it obtained and only
+        then exits non-zero; the dividend, CPI and Bank Rate steps keep that
+        promise, so the price step must too.
+        """
+        ran = self._crashing_run("scrape_funds")
+        ran["write_fx_results"].assert_called_once()
+        ran["update_dividends"].assert_called_once()
+        ran["update_uk_cpi"].assert_called_once()
+        ran["update_uk_bank_rate"].assert_called_once()
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: prices: scrape_funds exploded", ran["printed"])
+
+    def test_a_crash_writing_the_prices_is_a_price_failure_too(self):
+        """Test the whole step is covered, not only the fetch."""
+        ran = self._crashing_run("write_results")
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: prices: write_results exploded", ran["printed"])
+
+    def test_a_crash_in_the_fx_step_does_not_cost_the_other_files(self):
+        """Test the FX step is isolated the same way, as `fx: <error>`."""
+        ran = self._crashing_run("snap_fx_rates")
+        ran["write_results"].assert_called_once()
+        ran["update_dividends"].assert_called_once()
+        ran["update_uk_cpi"].assert_called_once()
+        ran["update_uk_bank_rate"].assert_called_once()
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
+
 
 class TestFundSpecParsing(unittest.TestCase):
     """Test funds.txt parsing, including aliases and validation."""
