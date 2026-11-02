@@ -6485,6 +6485,17 @@ class TestIsharesPageParsing(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "251804.*malformed"):
                     self._parse(page)
 
+    def test_a_bad_record_or_pay_date_is_an_error(self):
+        """Test a date that is not one is refused in any column, as the other issuers do."""
+        for bad in (20261340, "x", 2026071, True):
+            for column in (1, 2):
+                row = [20260716, 20260717, 20260729, "1.5"]
+                row[column] = bad
+                with self.subTest(bad=bad, column=column):
+                    page = ishares_page([tuple(row)])
+                    with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                        self._parse(page)
+
     def test_a_bad_amount_is_an_error(self):
         """Test the amount must be a decimal."""
         for bad in (None, "x", "", "-1.5", "NaN", "Infinity"):
