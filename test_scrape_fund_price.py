@@ -2764,19 +2764,14 @@ class TestFxBackfill(DataDirCase):
 class TestPriceSummary(unittest.TestCase):
     """Test day-on-day change calculation."""
 
-    def _rows(self, triples):
-        return [[f, d, p, c] for f, d, p, c in triples]
-
     def test_compares_against_the_previous_distinct_price_date(self):
         """Test a Friday-to-Monday gap is a real comparison, not 0%."""
-        rows = self._rows(
-            [
-                ("QQQ", "2026-09-18", "700.00", "USD"),  # Friday
-                ("QQQ", "2026-09-21", "714.00", "USD"),  # Monday
-            ]
-        )
+        rows = [
+            ["QQQ", "2026-09-18", "700.00", "USD"],  # Friday
+            ["QQQ", "2026-09-21", "714.00", "USD"],  # Monday
+        ]
         summary = build_price_summary(
-            rows, [FundSpec("GF", "QQQ", ())], [], "2026-09-21"
+            rows, [FundSpec("YA", "QQQ", ())], [], "2026-09-21"
         )
         row = summary[0]
         self.assertEqual(row.new_date, "2026-09-21")
@@ -2786,12 +2781,10 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_delta_uses_exact_decimal_arithmetic(self):
         """Test 7.15 - 7.09 is 0.06, not a binary-float artefact."""
-        rows = self._rows(
-            [
-                ("ISIN1", "2026-09-17", "7.09", "GBP"),
-                ("ISIN1", "2026-09-18", "7.15", "GBP"),
-            ]
-        )
+        rows = [
+            ["ISIN1", "2026-09-17", "7.09", "GBP"],
+            ["ISIN1", "2026-09-18", "7.15", "GBP"],
+        ]
         row = build_price_summary(
             rows, [FundSpec("FT", "ISIN1", ())], [], "2026-09-18"
         )[0]
@@ -2799,13 +2792,11 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_negative_move_is_signed(self):
         """Test a fall is reported with its sign."""
-        rows = self._rows(
-            [
-                ("AAA", "2026-09-17", "100.00", "USD"),
-                ("AAA", "2026-09-18", "98.00", "USD"),
-            ]
-        )
-        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[
+        rows = [
+            ["AAA", "2026-09-17", "100.00", "USD"],
+            ["AAA", "2026-09-18", "98.00", "USD"],
+        ]
+        row = build_price_summary(rows, [FundSpec("YA", "AAA", ())], [], "2026-09-18")[
             0
         ]
         self.assertEqual(row.delta, "-2")
@@ -2813,17 +2804,15 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_instruments_with_different_latest_dates(self):
         """Test a fund lagging an exchange instrument is handled per instrument."""
-        rows = self._rows(
-            [
-                ("FUND", "2026-09-16", "100.00", "USD"),
-                ("FUND", "2026-09-17", "101.00", "USD"),
-                ("ETF", "2026-09-17", "50.00", "USD"),
-                ("ETF", "2026-09-18", "52.00", "USD"),
-            ]
-        )
+        rows = [
+            ["FUND", "2026-09-16", "100.00", "USD"],
+            ["FUND", "2026-09-17", "101.00", "USD"],
+            ["ETF", "2026-09-17", "50.00", "USD"],
+            ["ETF", "2026-09-18", "52.00", "USD"],
+        ]
         summary = build_price_summary(
             rows,
-            [FundSpec("GF", "FUND", ()), FundSpec("GF", "ETF", ())],
+            [FundSpec("YA", "FUND", ()), FundSpec("YA", "ETF", ())],
             [],
             "2026-09-18",
         )
@@ -2833,8 +2822,8 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_single_price_has_no_comparison(self):
         """Test a newly added instrument does not invent a delta."""
-        rows = self._rows([("NEW", "2026-09-18", "10.00", "GBP")])
-        row = build_price_summary(rows, [FundSpec("GF", "NEW", ())], [], "2026-09-18")[
+        rows = [["NEW", "2026-09-18", "10.00", "GBP"]]
+        row = build_price_summary(rows, [FundSpec("YA", "NEW", ())], [], "2026-09-18")[
             0
         ]
         self.assertEqual(row.old, "")
@@ -2843,13 +2832,11 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_zero_previous_price_gives_no_percentage(self):
         """Test a zero prior price does not divide by zero."""
-        rows = self._rows(
-            [
-                ("AAA", "2026-09-17", "0", "USD"),
-                ("AAA", "2026-09-18", "5.00", "USD"),
-            ]
-        )
-        row = build_price_summary(rows, [FundSpec("GF", "AAA", ())], [], "2026-09-18")[
+        rows = [
+            ["AAA", "2026-09-17", "0", "USD"],
+            ["AAA", "2026-09-18", "5.00", "USD"],
+        ]
+        row = build_price_summary(rows, [FundSpec("YA", "AAA", ())], [], "2026-09-18")[
             0
         ]
         self.assertEqual(row.delta, "5")
@@ -2857,37 +2844,35 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_instrument_with_no_history_is_reported_as_failed(self):
         """Test a configured instrument with nothing stored is visible."""
-        summary = build_price_summary([], [FundSpec("GF", "AAA", ())], [], "2026-09-18")
+        summary = build_price_summary([], [FundSpec("YA", "AAA", ())], [], "2026-09-18")
         self.assertEqual(summary[0].new, "")
         self.assertTrue(summary[0].failed)
 
     def test_stale_boundary(self):
         """Test the stale threshold covers a long weekend but not longer."""
-        rows = self._rows([("AAA", "2026-09-14", "10.00", "USD")])
-        spec = [FundSpec("GF", "AAA", ())]
+        rows = [["AAA", "2026-09-14", "10.00", "USD"]]
+        spec = [FundSpec("YA", "AAA", ())]
         self.assertFalse(build_price_summary(rows, spec, [], "2026-09-18")[0].stale)
         self.assertTrue(build_price_summary(rows, spec, [], "2026-09-19")[0].stale)
 
     def test_failed_instrument_is_flagged(self):
         """Test a fund that fell back to its last price is marked."""
-        rows = self._rows([("AAA", "2026-09-18", "10.00", "USD")])
+        rows = [["AAA", "2026-09-18", "10.00", "USD"]]
         summary = build_price_summary(
-            rows, [FundSpec("GF", "AAA", ())], ["AAA: Error: Timeout"], "2026-09-18"
+            rows, [FundSpec("YA", "AAA", ())], ["AAA: Error: Timeout"], "2026-09-18"
         )
         self.assertTrue(summary[0].failed)
 
     def test_aliased_instrument_appears_once_with_its_aliases(self):
         """Test an alias is not reported as a second, identical instrument."""
-        rows = self._rows(
-            [
-                ("0P00000YAN", "2026-09-16", "192.23", "USD"),
-                ("0P00000YAN", "2026-09-17", "192.43", "USD"),
-                ("JFM0003373", "2026-09-16", "192.23", "USD"),
-                ("JFM0003373", "2026-09-17", "192.43", "USD"),
-            ]
-        )
+        rows = [
+            ["0P00000YAN", "2026-09-16", "192.23", "USD"],
+            ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+            ["JFM0003373", "2026-09-16", "192.23", "USD"],
+            ["JFM0003373", "2026-09-17", "192.43", "USD"],
+        ]
         summary = build_price_summary(
-            rows, [FundSpec("GF", "0P00000YAN", ("JFM0003373",))], [], "2026-09-17"
+            rows, [FundSpec("YA", "0P00000YAN", ("JFM0003373",))], [], "2026-09-17"
         )
         self.assertEqual(len(summary), 1)
         self.assertEqual(summary[0].name, "0P00000YAN")
@@ -2895,14 +2880,12 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_pence_instrument_keeps_its_unit(self):
         """Test GBp is shown, and the percentage is unit-independent."""
-        rows = self._rows(
-            [
-                ("IGWD.L", "2026-09-17", "13000", "GBp"),
-                ("IGWD.L", "2026-09-18", "13339", "GBp"),
-            ]
-        )
+        rows = [
+            ["IGWD.L", "2026-09-17", "13000", "GBp"],
+            ["IGWD.L", "2026-09-18", "13339", "GBp"],
+        ]
         row = build_price_summary(
-            rows, [FundSpec("GF", "IGWD.L", ())], [], "2026-09-18"
+            rows, [FundSpec("YA", "IGWD.L", ())], [], "2026-09-18"
         )[0]
         self.assertEqual(row.currency, "GBp")
         self.assertEqual(row.delta, "339")
@@ -2910,15 +2893,13 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_rows_follow_funds_file_order(self):
         """Test the summary reads in the order the config lists instruments."""
-        rows = self._rows(
-            [
-                ("BBB", "2026-09-18", "2.00", "USD"),
-                ("AAA", "2026-09-18", "1.00", "USD"),
-            ]
-        )
+        rows = [
+            ["BBB", "2026-09-18", "2.00", "USD"],
+            ["AAA", "2026-09-18", "1.00", "USD"],
+        ]
         summary = build_price_summary(
             rows,
-            [FundSpec("GF", "BBB", ()), FundSpec("GF", "AAA", ())],
+            [FundSpec("YA", "BBB", ()), FundSpec("YA", "AAA", ())],
             [],
             "2026-09-18",
         )
@@ -2926,14 +2907,12 @@ class TestPriceSummary(unittest.TestCase):
 
     def test_spot_check_from_the_issue(self):
         """Test the documented ASEAN fund example."""
-        rows = self._rows(
-            [
-                ("0P00000YAN", "2026-09-16", "192.23", "USD"),
-                ("0P00000YAN", "2026-09-17", "192.43", "USD"),
-            ]
-        )
+        rows = [
+            ["0P00000YAN", "2026-09-16", "192.23", "USD"],
+            ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+        ]
         row = build_price_summary(
-            rows, [FundSpec("GF", "0P00000YAN", ())], [], "2026-09-17"
+            rows, [FundSpec("YA", "0P00000YAN", ())], [], "2026-09-17"
         )[0]
         self.assertEqual(
             (row.new, row.old, row.old_date), ("192.43", "192.23", "2026-09-16")
@@ -2964,11 +2943,11 @@ class TestFxSummary(unittest.TestCase):
         self.assertTrue(summary[0].failed)
 
 
-class TestSummaryRendering(unittest.TestCase):
+class TestSummaryRendering(DataDirCase):
     """Test the Markdown and CSV output."""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        super().setUp()
         self.price_rows = build_price_summary(
             [
                 ["QQQ", "2026-09-17", "700.00", "USD"],
@@ -2976,7 +2955,7 @@ class TestSummaryRendering(unittest.TestCase):
                 ["IGWD.L", "2026-09-17", "13000", "GBp"],
                 ["IGWD.L", "2026-09-18", "13339", "GBp"],
             ],
-            [FundSpec("GF", "QQQ", ()), FundSpec("GF", "IGWD.L", ())],
+            [FundSpec("YA", "QQQ", ()), FundSpec("YA", "IGWD.L", ())],
             [],
             "2026-09-18",
         )
@@ -2989,9 +2968,6 @@ class TestSummaryRendering(unittest.TestCase):
             [],
             "2026-09-18",
         )
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     def test_markdown_has_both_sections(self):
         """Test prices and FX are both rendered."""
@@ -3018,7 +2994,7 @@ class TestSummaryRendering(unittest.TestCase):
         """Test problems are surfaced in their own section."""
         rows = build_price_summary(
             [["OLD", "2026-09-01", "1.00", "USD"]],
-            [FundSpec("GF", "OLD", ())],
+            [FundSpec("YA", "OLD", ())],
             [],
             "2026-09-18",
         )
@@ -3035,26 +3011,30 @@ class TestSummaryRendering(unittest.TestCase):
     def test_write_summary_produces_both_files(self):
         """Test the CSV and Markdown are written together."""
         write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
-        with open(os.path.join(self.test_dir, "daily_summary.csv"), newline="") as f:
-            rows = list(csv.reader(f))
-        self.assertEqual(rows[0][0], "Name")
-        self.assertTrue(any(r[0] == "QQQ" for r in rows))
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
+        self.assertEqual(
+            self.read_text("daily_summary.csv").splitlines()[0],
+            ",".join(scrape_fund_price.SUMMARY_HEADER),
+        )
+        names = [row[0] for row in self.read_rows("daily_summary.csv")]
+        self.assertEqual(names, ["QQQ", "IGWD.L", "USDGBP"])
+        self.assertEqual(
+            self.read_text("daily_summary.md"),
+            render_summary_markdown(self.price_rows, self.fx_rows, "2026-09-18"),
+        )
 
     def test_summary_is_added_to_the_actions_job_summary(self):
         """Test the table appears on the workflow run page."""
-        path = os.path.join(self.test_dir, "step_summary.md")
+        path = self.path("step_summary.md")
         with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
-        with open(path, encoding="utf-8") as f:
-            self.assertIn("QQQ", f.read())
+        self.assertIn("QQQ", self.read_text("step_summary.md"))
 
     def test_no_job_summary_outside_actions(self):
         """Test a local run does not need the Actions environment."""
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
         with patch.dict(os.environ, env, clear=True):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
+        self.assertTrue(os.path.exists(self.path("daily_summary.md")))
 
 
 class TestSourceCodeCanonicalisation(unittest.TestCase):
