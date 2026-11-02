@@ -533,11 +533,11 @@ class TestSourceCodeCanonicalisation(DataDirCase):
                 ):
                     read_closed_holdings(path)
 
-    @patch("builtins.print")
-    def test_deprecated_code_warns_naming_the_line(self, mock_print):
+    def test_deprecated_code_warns_naming_the_line(self):
         """Test the warning says where to fix the configuration."""
-        read_fund_specs(self._write("YA,QQQ\nGF,GRAB\n"))
-        warned = " ".join(str(c) for c in mock_print.call_args_list)
+        with self.assertLogs("fundprices", "WARNING") as logged:
+            read_fund_specs(self._write("YA,QQQ\nGF,GRAB\n"))
+        warned = " ".join(logged.output)
         self.assertIn("GF", warned)
         self.assertIn("YA", warned)
         self.assertIn("line 2", warned)
@@ -2458,9 +2458,9 @@ class TestLatestNeverGoesBackwards(DataDirCase):
     def test_stale_fetch_is_logged(self):
         """Test the ignored stale row is reported, not silently dropped."""
         write_results(list(self.FRIDAY), self.test_dir)
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("fundprices", "WARNING") as logged:
             write_results([self.THURSDAY[0]], self.test_dir)
-        output = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        output = " ".join(logged.output)
         self.assertIn("CNX1.L", output)
         self.assertIn("2026-10-08", output)
         self.assertIn("2026-10-09", output)
@@ -4946,13 +4946,13 @@ class TestDividendCollection(unittest.TestCase):
 
     def test_a_failing_calendar_is_a_warning_not_a_failure(self):
         """Test a missing optional fact does not turn the run red."""
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("fundprices", "WARNING") as logged:
             results = self._collect(
                 [FundSpec("YA", "QQQ")], declared={"QQQ": RuntimeError("boom")}
             )
         self.assertEqual(results.failures, [])
         self.assertEqual(results.declared, {})
-        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        printed = " ".join(logged.output)
         self.assertIn("QQQ", printed)
         self.assertIn("declared", printed)
 
