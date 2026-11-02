@@ -3790,6 +3790,18 @@ class TestInvestingQuotes(unittest.TestCase):
         self.assertEqual([q.date for q in quotes], ["2024-01-04"])
 
     @patch("scrape_fund_price.requests.get")
+    def test_a_row_without_a_date_is_skipped(self, mock_get):
+        """Test a row that cannot be dated is dropped, not stored under ''."""
+        mock_get.return_value = self._response(
+            [
+                {"last_closeRaw": "200.00"},
+                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
+
+    @patch("scrape_fund_price.requests.get")
     def test_empty_payload_raises(self, mock_get):
         """Test an empty response is an error, not an empty import."""
         mock_get.return_value = self._response([])
@@ -3809,22 +3821,17 @@ class TestInvestingQuotes(unittest.TestCase):
         mock_fetch.assert_called_once_with("1182866", "2024-01-04", "2024-03-13")
 
 
-class TestClosedHoldingImport(unittest.TestCase):
+class TestClosedHoldingImport(DataDirCase):
     """Test the one-off import writes history and nothing else."""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        super().setUp()
         self.holding = ClosedHolding(
             "BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2023-01-05"
         )
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _history(self):
-        path = os.path.join(self.test_dir, "prices_history.csv")
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows("prices_history.csv")
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_rows_are_stored_under_the_identifier(self, mock_quotes):
@@ -3839,15 +3846,19 @@ class TestClosedHoldingImport(unittest.TestCase):
         """Test a source that over-returns cannot extend a closed holding.
 
         The window is the period actually held; a source returning the fund's
-        whole life would otherwise import years of irrelevant prices.
+        whole life would otherwise import years of irrelevant prices. Both
+        ends are inclusive: a quote on the window's last day is stored.
         """
         mock_quotes.return_value = [
             Quote("2022-12-30", "2.40", "USD"),
             Quote("2023-01-03", "2.4705", "USD"),
+            Quote("2023-01-05", "2.50", "USD"),
             Quote("2023-01-06", "2.60", "USD"),
         ]
         import_closed_holdings([self.holding], self.test_dir)
-        self.assertEqual([row[1] for row in self._history()], ["2023-01-03"])
+        self.assertEqual(
+            [row[1] for row in self._history()], ["2023-01-03", "2023-01-05"]
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_configured_currency_is_stored(self, mock_quotes):
@@ -3881,7 +3892,6 @@ class TestClosedHoldingImport(unittest.TestCase):
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_existing_rows_for_other_funds_are_untouched(self, mock_quotes):
         """Test the import adds to history and never rewrites it."""
-        os.makedirs(self.test_dir, exist_ok=True)
         write_history_files([["QQQ", "2023-01-03", "266.28", "USD"]], self.test_dir)
         mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
         import_closed_holdings([self.holding], self.test_dir)
@@ -3912,7 +3922,7 @@ class TestClosedHoldingImport(unittest.TestCase):
             "latest_BKCH.price",
         ):
             self.assertFalse(
-                os.path.exists(os.path.join(self.test_dir, name)),
+                os.path.exists(self.path(name)),
                 f"{name} should not be written by a closed-holding import",
             )
 
@@ -3944,20 +3954,29 @@ class TestClosedHoldingImport(unittest.TestCase):
         self.assertEqual(entry["deleted"], 0)
         self.assertIn("BKCH", report.to_markdown())
 
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
+        """Test a pence/pounds switch inside a window is flagged for review.
 
-class TestRebuildLeavesClosedHoldingsAlone(unittest.TestCase):
+        An import runs once and is then trusted, so a source that changes
+        quoting unit mid-window has to be visible in the report.
+        """
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "8.49", "GBX"),
+            Quote("2023-01-04", "849.00", "GBX"),
+        ]
+        holding = ClosedHolding(
+            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
+        )
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(any("quoting unit" in w for w in report.warnings))
+
+
+class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
     """Test a rebuild preserves imported history without promoting it."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _rows(self, name):
-        path = os.path.join(self.test_dir, name)
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows(name)
 
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.scrape_fund_quotes")
@@ -3983,12 +4002,10 @@ class TestRebuildLeavesClosedHoldingsAlone(unittest.TestCase):
         mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
         backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
         self.assertEqual([row[0] for row in self._rows("latest_prices.csv")], ["QQQ"])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.test_dir, "latest_BN4MYX3.price"))
-        )
+        self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
 
 
-class TestClosedImportMainMode(unittest.TestCase):
+class TestClosedImportMainMode(DataDirCase):
     """Test the CLI entry point for the one-off import."""
 
     def test_flag_is_parsed(self):
@@ -4024,21 +4041,43 @@ class TestClosedImportMainMode(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main(["--import-closed"])
 
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
+    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
+        """Test the reconciliation table reaches the Actions run page."""
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "BKCH",
+                "before": 0,
+                "deleted": 0,
+                "retained": 0,
+                "inserted": 285,
+                "first": "2023-01-03",
+                "last": "2024-02-16",
+                "currency": "USD",
+                "status": "imported",
+            }
+        )
+        mock_import.return_value = report
+        summary_path = self.path("step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            main(["--import-closed"])
+        written = self.read_text("step_summary.md")
+        self.assertIn("Closed-holding import", written)
+        self.assertIn("BKCH", written)
 
-class TestClosedHoldingWindowEnds(unittest.TestCase):
+
+class TestClosedHoldingWindowEnds(DataDirCase):
     """Test the last day of a window survives, whatever the source's convention.
 
     Yahoo's daily bars treat the end date as exclusive while FT and investing
     .com treat it as inclusive, so passing the configured end straight through
     silently dropped the final day from Yahoo holdings only: BKCH imported 284
-    rows ending 2024-02-15 for a window ending 2024-02-16.
+    rows ending 2024-02-15 for a window ending 2024-02-16. That the stored
+    rows are then clipped to the inclusive window is
+    TestClosedHoldingImport.test_quotes_outside_the_window_are_dropped.
     """
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_sources_are_asked_past_the_window_end(self, mock_quotes):
@@ -4050,38 +4089,8 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
         import_closed_holdings([holding], self.test_dir)
         self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
 
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_the_configured_end_date_is_imported(self, mock_quotes):
-        """Test a quote on the window's last day is stored, not clipped."""
-        mock_quotes.return_value = [
-            Quote("2024-02-15", "9.943", "USD"),
-            Quote("2024-02-16", "10.115", "USD"),
-        ]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
-        )
-        import_closed_holdings([holding], self.test_dir)
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            rows = [row for row in csv.reader(f)][1:]
-        self.assertEqual([row[1] for row in rows], ["2024-02-15", "2024-02-16"])
 
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_the_extra_day_is_still_clipped(self, mock_quotes):
-        """Test over-fetching does not leak a day past the window."""
-        mock_quotes.return_value = [
-            Quote("2024-02-16", "10.115", "USD"),
-            Quote("2024-02-19", "10.50", "USD"),
-        ]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
-        )
-        import_closed_holdings([holding], self.test_dir)
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            rows = [row for row in csv.reader(f)][1:]
-        self.assertEqual([row[1] for row in rows], ["2024-02-16"])
-
-
-class TestInvestingEmptyPayloads(unittest.TestCase):
+class TestInvestingEmptyPayloads(DataDirCase):
     """Test the IV handler survives the shapes a dead window returns.
 
     Asking investing.com for a window after a fund stopped publishing returns
@@ -4114,22 +4123,12 @@ class TestInvestingEmptyPayloads(unittest.TestCase):
     def test_the_import_records_it_as_a_failure(self, mock_quotes):
         """Test a holding whose window returns nothing is reported, not fatal."""
         mock_quotes.side_effect = ValueError("investing.com returned no rows")
-        test_dir = tempfile.mkdtemp()
-        try:
-            report = import_closed_holdings(
-                [
-                    ClosedHolding(
-                        "X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21"
-                    )
-                ],
-                test_dir,
-            )
-            self.assertTrue(report.failures)
-        finally:
-            shutil.rmtree(test_dir)
+        holding = ClosedHolding("X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21")
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(report.failures)
 
 
-class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
+class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
     """Test the 90-day window tracks latest_prices.csv, not raw history.
 
     A closed holding can have real prices inside the last 90 days: FBTC ran to
@@ -4139,17 +4138,11 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
     """
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.today = date.today()
-        self.recent = (self.today - timedelta(days=5)).isoformat()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        super().setUp()
+        self.recent = (date.today() - timedelta(days=5)).isoformat()
 
     def _rolling(self):
-        path = os.path.join(self.test_dir, "prices_history_90_days.csv")
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows("prices_history_90_days.csv")
 
     def test_closed_holdings_are_excluded_from_the_window(self):
         """Test a recent closed-holding row stays out of the rolling file."""
@@ -4171,8 +4164,7 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         write_history_files(
             rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
         )
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            stored = [row for row in csv.reader(f)][1:]
+        stored = self.read_rows("prices_history.csv")
         self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
 
     def test_derived_latest_still_covers_everything(self):
@@ -4187,85 +4179,6 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         ]
         write_history_files(rows, self.test_dir)
         self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
-
-
-class TestClosedHoldingCoverageGaps(unittest.TestCase):
-    """Test the closed-holding paths the first round of tests left unexercised.
-
-    The constitution asks for every line of a new feature to be tested; a
-    coverage review found four that were not.
-    """
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def test_default_filename_is_the_committed_config(self):
-        """Test calling with no argument reads closed_holdings.txt."""
-        self.assertEqual(
-            read_closed_holdings(),
-            read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE),
-        )
-
-    @patch("scrape_fund_price.requests.get")
-    def test_investing_row_without_a_date_is_skipped(self, mock_get):
-        """Test a row that cannot be dated is dropped, not stored under ''."""
-        response = MagicMock()
-        response.json.return_value = {
-            "data": [
-                {"last_closeRaw": "200.00"},
-                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
-            ]
-        }
-        mock_get.return_value = response
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
-        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
-        """Test a pence/pounds switch inside a window is flagged for review.
-
-        An import runs once and is then trusted, so a source that changes
-        quoting unit mid-window has to be visible in the report.
-        """
-        mock_quotes.return_value = [
-            Quote("2023-01-03", "8.49", "GBX"),
-            Quote("2023-01-04", "849.00", "GBX"),
-        ]
-        holding = ClosedHolding(
-            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
-        )
-        report = import_closed_holdings([holding], self.test_dir)
-        self.assertTrue(any("quoting unit" in w for w in report.warnings))
-
-    @patch("scrape_fund_price.import_closed_holdings")
-    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
-    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
-        """Test the reconciliation table reaches the Actions run page."""
-        report = BackfillReport()
-        report.entries.append(
-            {
-                "identifier": "BKCH",
-                "before": 0,
-                "deleted": 0,
-                "retained": 0,
-                "inserted": 285,
-                "first": "2023-01-03",
-                "last": "2024-02-16",
-                "currency": "USD",
-                "status": "imported",
-            }
-        )
-        mock_import.return_value = report
-        summary_path = os.path.join(self.test_dir, "step_summary.md")
-        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
-            main(["--import-closed"])
-        with open(summary_path, encoding="utf-8") as f:
-            written = f.read()
-        self.assertIn("Closed-holding import", written)
-        self.assertIn("BKCH", written)
 
 
 class TestSummaryRowMarkers(unittest.TestCase):
