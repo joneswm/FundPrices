@@ -512,22 +512,38 @@ class TestSourceCodeCanonicalisation(DataDirCase):
 
     def test_current_codes_pass_through_unchanged(self):
         """Test canonical codes are left alone."""
-        for code in ("YA", "FT", "YH", "MS"):
+        for code in ("YA", "FT", "IV"):
             self.assertEqual(canonical_source(code), code)
 
     def test_deprecated_gf_maps_to_ya(self):
         """Test GF still resolves, to the Yahoo API."""
         self.assertEqual(canonical_source("GF"), "YA")
 
-    def test_yh_is_not_swept_into_the_alias(self):
-        """Test the Yahoo scraping code keeps its own meaning.
+    def test_retired_scraping_codes_are_rejected_naming_the_line(self):
+        """Test a stale YH or MS line fails validation rather than fetching.
 
-        Reusing YH for the API would silently change which handler a stale
-        funds.txt line selects, which is why the rename chose YA.
+        The scraping sources were retired (#97). Neither code is swept into
+        the GF alias: reusing YH for the API would silently change which
+        handler a stale funds.txt line selects, which is why the rename chose
+        YA, so a line naming one is an error that names the line and the code.
         """
-        self.assertEqual(canonical_source("YH"), "YH")
-        url, selector = get_source_config("YH", "IDTG.L")
-        self.assertTrue(url and selector)
+        for code in ("YH", "MS", "yh"):
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(ValueError, f"funds file line 2.*{code}"):
+                    read_fund_specs(self._write(f"YA,QQQ\n{code},IDTG.L\n"))
+
+    def test_closed_holdings_reject_the_retired_codes_too(self):
+        """Test the one-off import shares the rejection with funds.txt."""
+        for code in ("YH", "MS"):
+            with self.subTest(code=code):
+                path = self.write_text(
+                    "closed_holdings.txt",
+                    f"X,{code},IDTG.L,GBP,2023-01-03,2024-02-16\n",
+                )
+                with self.assertRaisesRegex(
+                    ValueError, f"closed holdings line 1.*{code}"
+                ):
+                    read_closed_holdings(path)
 
     @patch("builtins.print")
     def test_deprecated_code_warns_naming_the_line(self, mock_print):
