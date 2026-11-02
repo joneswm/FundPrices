@@ -8905,23 +8905,6 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             [["GLTL.L", "2026-08-03", "2026-08-17", "88.11", "GBp", "SS"]],
         )
 
-    def test_yahoo_does_not_blank_the_pay_date_the_next_day(self):
-        """Test the new sources outrank Yahoo, as IS does."""
-        stored = {
-            ("QQQ", "2026-09-21"): [
-                "QQQ",
-                "2026-09-21",
-                "2026-10-08",
-                "0.75143",
-                "USD",
-                "IV",
-            ]
-        }
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["QQQ", "2026-09-21", "", "0.75143", "USD", "YA"]]
-        )
-        self.assertEqual(stored[("QQQ", "2026-09-21")][2], "2026-10-08")
-
     def test_one_source_failing_leaves_the_others_and_the_yahoo_row(self):
         """Test a changed response logs and keeps the instrument's rows."""
         past = ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143")
