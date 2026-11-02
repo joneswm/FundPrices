@@ -306,6 +306,1502 @@ def daily_run_stubs(test_dir=None, specs=(), pairs=(), **outcomes):
         yield stubs
 
 
+class BackfillCase(DataDirCase):
+    """A DataDirCase for the price rebuild, with the FX rebuild kept out.
+
+    backfill_history ends by rebuilding whatever fx_pairs.txt in the working
+    directory lists, and the repository's lists four pairs: left alone, every
+    test below would fetch years of Yahoo FX bars for them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        no_pairs = patch("scrape_fund_price.read_fx_pairs", return_value=[])
+        no_pairs.start()
+        self.addCleanup(no_pairs.stop)
+
+
+class DividendRunCase(DataDirCase):
+    """Shared scaffolding for the dividend tests (SPEC-010).
+
+    The run date, builders for the two files' rows, a distributions.txt
+    parser, and the dividend update run with Yahoo faked.
+    """
+
+    TODAY = date(2026, 10, 26)
+
+    # The IssuerRunCase classes (SPEC-011, SPEC-012) still call these; step
+    # 2.Z of #97 removes them once those callers use the DataDirCase methods.
+    def _file(self, name):
+        return self.path(name)
+
+    def _text(self, name):
+        return self.read_text(name)
+
+    def _read(self, name):
+        return self.read_rows(name)
+
+    def _write(self, name, text):
+        self.write_text(name, text)
+
+    @staticmethod
+    def row(fund, ex, pay, amount, currency, source):
+        """A dividends_history.csv row."""
+        return [fund, ex, pay, amount, currency, source]
+
+    @classmethod
+    def upcoming(cls, fund, ex, pay, amount, currency, status, as_of=None):
+        """A dividends_upcoming.csv row, as of the run date unless given."""
+        as_of = as_of or cls.TODAY.isoformat()
+        return [fund, ex, pay, amount, currency, status, as_of]
+
+    def write_history(self, *rows):
+        """Store dividends_history.csv rows, as an earlier run would have."""
+        header = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+        return self.write_csv("dividends_history.csv", header, rows)
+
+    def _dists(self, *lines):
+        """Parse distributions.txt lines, without the identifier check."""
+        path = self.write_text("distributions.txt", "\n".join(lines) + "\n")
+        return scrape_fund_price.read_distributions(path, None)
+
+    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
+        """Run update_dividends (or `runner`) with Yahoo faked."""
+        events = events or {}
+        declared = declared or {}
+        self.windows = []
+
+        def fake_events(symbol, window_start, end=None):
+            self.windows.append((symbol, window_start))
+            value = events.get(symbol, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def fake_declared(symbol, today=None):
+            return declared.get(symbol)
+
+        runner = runner or scrape_fund_price.update_dividends
+        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
+            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
+                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+
+
+class IssuerRunCase(DividendRunCase):
+    """Run the dividend update with Yahoo and the issuer's pages faked."""
+
+    IGLS = scrape_fund_price.DividendSource("IGLS.L", "IS", "251804")
+    FLOS = scrape_fund_price.DividendSource("FLOS.L", "IS", "290356")
+    EVENT = scrape_fund_price.DividendEvent
+
+    PAST = ("2026-07-16", "2026-07-17", "2026-07-29", "2.4146")
+    NEXT = ("2026-11-12", "2026-11-13", "2026-11-25", "2.5")
+
+    def _issuer_run(
+        self,
+        specs,
+        sources,
+        tables=None,
+        events=None,
+        declared=None,
+        runner=None,
+        distributions=(),
+    ):
+        """Run update_dividends (or `runner`), `tables` keyed by source id.
+
+        The pacing pauses are recorded on `self.sleeps` by DataDirCase.
+        """
+        tables = tables or {}
+        self.fetched = []
+
+        def fake_fetch(source):
+            self.fetched.append(source.source_id)
+            value = tables[source.source_id]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def update(specs, dists, data_dir, today):
+            return scrape_fund_price.update_dividends(
+                specs, dists, data_dir, today, sources=sources
+            )
+
+        with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
+            return self._run(
+                specs, events, declared, distributions, runner=runner or update
+            )
+
+
+# ===========================================================================
+# Configuration files
+# ===========================================================================
+
+
+class TestFundSpecParsing(DataDirCase):
+    """Test funds.txt parsing, including aliases and validation."""
+
+    def specs(self, text):
+        return read_fund_specs(self.write_text("funds.txt", text))
+
+    def assertRejectedAt(self, text, line):
+        """Assert the file is rejected with an error naming `line`."""
+        with self.assertRaises(ValueError) as error:
+            self.specs(text)
+        self.assertIn(f"line {line}", str(error.exception))
+
+    def test_two_field_line_has_no_aliases(self):
+        """Test existing config lines keep their meaning."""
+        specs = self.specs("YA,QQQ\n")
+        self.assertEqual(specs, [FundSpec("YA", "QQQ", ())])
+        self.assertEqual(specs[0].publish_ids, ("QQQ",))
+
+    def test_third_field_adds_an_alias(self):
+        """Test a fund can publish under a second identifier."""
+        specs = self.specs("YA,0P00000YAN,JFM0003373\n")
+        self.assertEqual(specs[0].lookup_id, "0P00000YAN")
+        self.assertEqual(specs[0].aliases, ("JFM0003373",))
+        self.assertEqual(specs[0].publish_ids, ("0P00000YAN", "JFM0003373"))
+
+    def test_multiple_aliases_are_semicolon_separated(self):
+        """Test more than one alias can be given."""
+        specs = self.specs("YA,ABC,ONE;TWO\n")
+        self.assertEqual(specs[0].publish_ids, ("ABC", "ONE", "TWO"))
+
+    def test_whitespace_and_blank_lines_are_ignored(self):
+        """Test untidy config files still parse."""
+        specs = self.specs("\n  YA , QQQ , ALIAS \n\n  \nFT,ISIN1\n")
+        self.assertEqual(
+            specs, [FundSpec("YA", "QQQ", ("ALIAS",)), FundSpec("FT", "ISIN1", ())]
+        )
+
+    def test_comments_are_stripped(self):
+        """Test the inline comments the docs have always shown actually work."""
+        specs = self.specs("# a heading\nFT,GB00B1FXTF86    # Financial Times\n")
+        self.assertEqual(specs, [FundSpec("FT", "GB00B1FXTF86", ())])
+
+    def test_read_fund_ids_still_returns_pairs(self):
+        """Test the existing helper keeps its shape for existing callers."""
+        path = self.write_text("funds.txt", "YA,0P00000YAN,JFM0003373\nFT,ISIN1\n")
+        self.assertEqual(read_fund_ids(path), [("YA", "0P00000YAN"), ("FT", "ISIN1")])
+
+    def test_line_with_one_field_is_rejected(self):
+        """Test an incomplete line names its line number."""
+        self.assertRejectedAt("YA,QQQ\nJUSTONE\n", 2)
+
+    def test_empty_source_or_identifier_is_rejected(self):
+        """Test blank fields are not silently accepted."""
+        self.assertRejectedAt("YA,QQQ\n,MISSING_SOURCE\n", 2)
+
+    def test_empty_alias_is_rejected(self):
+        """Test a stray separator is treated as a typo, not an empty alias."""
+        self.assertRejectedAt("YA,ABC,ONE;;TWO\n", 1)
+
+    def test_alias_matching_its_own_lookup_id_is_rejected(self):
+        """Test a self-referencing alias is rejected rather than double-writing."""
+        self.assertRejectedAt("YA,ABC,ABC\n", 1)
+
+    def test_duplicate_identifier_across_lines_is_rejected(self):
+        """Test a repeated fund cannot silently produce duplicate rows."""
+        self.assertRejectedAt("YA,QQQ\nFT,ISIN1\nYA,QQQ\n", 3)
+
+    def test_alias_colliding_with_another_funds_id_is_rejected(self):
+        """Test an alias cannot shadow a different instrument."""
+        self.assertRejectedAt("YA,QQQ\nYA,ABC,QQQ\n", 2)
+
+
+class TestSourceCodeCanonicalisation(DataDirCase):
+    """Test the GF -> YA rename and its deprecation alias."""
+
+    def _write(self, text):
+        return self.write_text("funds.txt", text)
+
+    def test_current_codes_pass_through_unchanged(self):
+        """Test canonical codes are left alone."""
+        for code in ("YA", "FT", "YH", "MS"):
+            self.assertEqual(canonical_source(code), code)
+
+    def test_deprecated_gf_maps_to_ya(self):
+        """Test GF still resolves, to the Yahoo API."""
+        self.assertEqual(canonical_source("GF"), "YA")
+
+    def test_yh_is_not_swept_into_the_alias(self):
+        """Test the Yahoo scraping code keeps its own meaning.
+
+        Reusing YH for the API would silently change which handler a stale
+        funds.txt line selects, which is why the rename chose YA.
+        """
+        self.assertEqual(canonical_source("YH"), "YH")
+        url, selector = get_source_config("YH", "IDTG.L")
+        self.assertTrue(url and selector)
+
+    @patch("builtins.print")
+    def test_deprecated_code_warns_naming_the_line(self, mock_print):
+        """Test the warning says where to fix the configuration."""
+        read_fund_specs(self._write("YA,QQQ\nGF,GRAB\n"))
+        warned = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("GF", warned)
+        self.assertIn("YA", warned)
+        self.assertIn("line 2", warned)
+
+    def test_parser_returns_canonical_sources(self):
+        """Test downstream code only ever sees one spelling."""
+        specs = read_fund_specs(self._write("GF,QQQ\nYA,GRAB\nFT,ISIN1\n"))
+        self.assertEqual([s.source for s in specs], ["YA", "YA", "FT"])
+
+    def test_ya_uses_the_api_and_needs_no_browser(self):
+        """Test the renamed code routes exactly as GF did."""
+        self.assertFalse(source_requires_browser("YA", "QQQ"))
+        with patch(
+            "scrape_fund_price.fetch_yahoo_quotes",
+            return_value=[Quote("2026-09-18", "721.45", "USD")],
+        ) as mock_quotes:
+            quotes = scrape_fund_quotes("YA", "QQQ", "2026-09-10")
+        self.assertEqual(quotes[0].price, "721.45")
+        mock_quotes.assert_called_once()
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_deprecated_code_still_scrapes_correctly(self, mock_quotes, mock_pw):
+        """Test an unmigrated funds.txt keeps producing prices."""
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+        results = scrape_funds(read_fund_specs(self._write("GF,QQQ\n")), self.test_dir)
+        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        mock_pw.assert_not_called()
+
+    def test_closed_holdings_share_the_alias(self):
+        """Test closed_holdings.txt uses funds.txt's source vocabulary."""
+        path = self.write_text(
+            "closed_holdings.txt", "BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        [holding] = read_closed_holdings(path)
+        self.assertEqual(holding.source, "YA")
+
+    def test_dividend_collection_shares_the_alias(self):
+        """Test a (source, identifier) pair spelt GF is still fetched from Yahoo."""
+        event = scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")
+        with patch.object(
+            scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: [event]
+        ):
+            with patch.object(
+                scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
+            ):
+                results = scrape_fund_price.collect_dividends(
+                    [("GF", "QQQ")], date(2026, 10, 26)
+                )
+        self.assertEqual(len(results), 1)
+
+    def test_committed_funds_file_uses_only_current_codes(self):
+        """Test the repository's own configuration has been migrated."""
+        specs = read_fund_specs("funds.txt")
+        self.assertEqual({s.source for s in specs}, {"YA", "FT"})
+        self.assertEqual(len(specs), 32)
+
+
+class TestFxPairConfiguration(DataDirCase):
+    """Test fx_pairs.txt parsing and validation."""
+
+    def pairs(self, text):
+        return read_fx_pairs(self.write_text("fx_pairs.txt", text))
+
+    def test_reads_one_pair_per_line(self):
+        """Test the configured pairs are read in order."""
+        pairs = self.pairs("NZDGBP\nSGDGBP\nUSDGBP\nHKDGBP\n")
+        self.assertEqual(pairs, ["NZDGBP", "SGDGBP", "USDGBP", "HKDGBP"])
+
+    def test_ignores_comments_and_blank_lines(self):
+        """Test the file can be annotated."""
+        pairs = self.pairs("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n")
+        self.assertEqual(pairs, ["USDGBP"])
+
+    def test_rejects_a_slash_separated_pair(self):
+        """Test the market-convention spelling is rejected, not misread.
+
+        'GBP/NZD' conventionally means NZD per GBP, the inverse of what is
+        wanted, so accepting it would store plausible but wrong values.
+        """
+        with self.assertRaises(ValueError) as error:
+            self.pairs("GBP/NZD\n")
+        self.assertIn("line 1", str(error.exception))
+
+    def test_rejects_lowercase_and_wrong_length(self):
+        """Test only six uppercase letters are accepted."""
+        for bad in ("usdgbp", "USDGB", "USDGBPX"):
+            with self.subTest(pair=bad):
+                with self.assertRaises(ValueError) as error:
+                    self.pairs(bad + "\n")
+                self.assertIn("line 1", str(error.exception))
+
+    def test_rejects_duplicate_pairs(self):
+        """Test a repeated pair cannot produce duplicate rows."""
+        with self.assertRaises(ValueError) as error:
+            self.pairs("USDGBP\nSGDGBP\nUSDGBP\n")
+        self.assertIn("line 3", str(error.exception))
+
+    def test_missing_file_means_no_fx(self):
+        """Test FX is optional, so an absent file is not an error."""
+        self.assertEqual(read_fx_pairs(self.path("absent.txt")), [])
+
+
+class TestClosedHoldingConfiguration(DataDirCase):
+    """Test the closed-holdings config, which is deliberately not funds.txt.
+
+    These instruments are no longer held. Keeping them out of funds.txt is
+    what stops the daily run fetching prices for a fund that stopped trading
+    years ago, so the two files must stay separate.
+    """
+
+    def _write(self, text):
+        return self.write_text("closed_holdings.txt", text)
+
+    def test_parses_a_holding_into_its_fields(self):
+        """Test every field a one-off import needs is carried."""
+        holdings = read_closed_holdings(
+            self._write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
+        )
+        self.assertEqual(
+            holdings,
+            [ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2024-02-16")],
+        )
+
+    def test_identifier_and_lookup_id_are_independent(self):
+        """Test a holding is published under the identifier, not the symbol.
+
+        BMV7ZZ3 is a SEDOL; the price comes from an FT symbol that names a
+        fund since renamed twice. Neither spelling belongs in the other's slot.
+        """
+        holding = read_closed_holdings(
+            self._write("BMV7ZZ3,FT,SEAL:LSE:GBX,GBX,2024-03-21,2024-10-25\n")
+        )[0]
+        self.assertEqual(holding.identifier, "BMV7ZZ3")
+        self.assertEqual(holding.lookup_id, "SEAL:LSE:GBX")
+
+    def test_blank_lines_and_comments_are_ignored(self):
+        """Test the file can be documented, including trailing comments."""
+        holdings = read_closed_holdings(
+            self._write(
+                "# closed holdings\n"
+                "\n"
+                "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16  # last held Feb 2024\n"
+            )
+        )
+        self.assertEqual(len(holdings), 1)
+        self.assertEqual(holdings[0].end, "2024-02-16")
+
+    def test_short_line_names_the_line_number(self):
+        """Test a malformed line fails before any network call."""
+        with self.assertRaises(ValueError) as caught:
+            read_closed_holdings(self._write("BKCH,YA,BKCH.L\n"))
+        self.assertIn("line 1", str(caught.exception))
+
+    def test_invalid_date_is_rejected(self):
+        """Test a date typo cannot silently import the wrong window."""
+        with self.assertRaises(ValueError) as caught:
+            read_closed_holdings(
+                self._write("BKCH,YA,BKCH.L,USD,2023-13-01,2024-02-16\n")
+            )
+        self.assertIn("line 1", str(caught.exception))
+
+    def test_end_before_start_is_rejected(self):
+        """Test a reversed window is caught rather than importing nothing."""
+        with self.assertRaises(ValueError) as caught:
+            read_closed_holdings(
+                self._write("BKCH,YA,BKCH.L,USD,2024-02-16,2023-01-03\n")
+            )
+        self.assertIn("line 1", str(caught.exception))
+
+    def test_duplicate_identifier_is_rejected(self):
+        """Test two windows for one identifier cannot fight over the same rows."""
+        with self.assertRaises(ValueError) as caught:
+            read_closed_holdings(
+                self._write(
+                    "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
+                    "BKCH,YA,BKCH.L,USD,2022-01-03,2022-02-16\n"
+                )
+            )
+        self.assertIn("line 2", str(caught.exception))
+
+    def test_committed_file_holds_the_closed_holdings(self):
+        """Test the repository's own configuration matches what was researched."""
+        holdings = read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE)
+        self.assertEqual(
+            {h.identifier: h.source for h in holdings},
+            {
+                "BKCH": "YA",
+                "BMV7ZZ3": "FT",
+                "BN4MYX3": "IV",
+                "SPOG": "YA",
+                "R2SC": "YA",
+                "CNDX": "YA",
+                "FBTC": "YA",
+                "JFM50541951": "IV",
+            },
+        )
+
+    def test_committed_windows_are_fully_present_in_history(self):
+        """Test the committed history actually covers every configured window.
+
+        The import is a one-off, so nothing re-runs to catch a window that
+        silently came back short: Yahoo treats the end date as exclusive and
+        BKCH first imported 284 rows for a 285-day window.
+        """
+        stored = read_history_rows(os.path.join("data", "prices_history.csv"))
+        for holding in read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE):
+            dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
+            self.assertTrue(dates, f"{holding.identifier} has no stored history")
+            self.assertEqual(dates[0], holding.start, holding.identifier)
+            self.assertEqual(dates[-1], holding.end, holding.identifier)
+
+    def test_closed_holdings_are_absent_from_the_daily_configuration(self):
+        """Test the daily run cannot pick up an instrument that stopped trading."""
+        daily = {
+            identifier
+            for spec in read_fund_specs("funds.txt")
+            for identifier in spec.publish_ids
+        }
+        closed = {h.identifier for h in read_closed_holdings("closed_holdings.txt")}
+        self.assertEqual(daily & closed, set())
+
+
+class TestDistributionConfiguration(DataDirCase):
+    """Test distributions.txt parsing and validation (SPEC-010, #85)."""
+
+    KNOWN = {"GB00B1FXTF86", "IE0008368742", "BMV7ZZ3"}
+
+    def _read(self, text, known="default"):
+        path = self.write_text("distributions.txt", text)
+        if known == "default":
+            known = self.KNOWN
+        return scrape_fund_price.read_distributions(path, known)
+
+    def test_reads_a_full_line(self):
+        """Test every field of the documented example is parsed."""
+        [dist] = self._read(
+            "GB00B1FXTF86,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01\n"
+        )
+        self.assertEqual(dist.identifier, "GB00B1FXTF86")
+        self.assertEqual(dist.frequency, "semiannual")
+        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
+        self.assertEqual(dist.pay_offset_days, 30)
+        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
+        self.assertEqual(dist.as_of, "2026-10-01")
+
+    def test_amounts_and_as_of_are_optional(self):
+        """Test the shortest legal line has four fields."""
+        [dist] = self._read("IE0008368742,annual,12-15,28\n")
+        self.assertEqual(dist.amounts, ("",))
+        self.assertEqual(dist.as_of, "")
+
+    def test_amounts_without_as_of_are_kept(self):
+        """Test five fields are legal: the amounts then feed estimates only."""
+        [dist] = self._read("IE0008368742,annual,12-15,28,0.31\n")
+        self.assertEqual(dist.amounts, ("0.31",))
+        self.assertEqual(dist.as_of, "")
+
+    def test_an_unknown_amount_may_be_left_empty(self):
+        """Test a slot with no known amount is an empty entry."""
+        [dist] = self._read("GB00B1FXTF86,semiannual,03-01;09-01,30,;0.0794\n")
+        self.assertEqual(dist.amounts, ("", "0.0794"))
+
+    def test_dates_are_sorted_and_amounts_follow_their_dates(self):
+        """Test the amount stays with the date it was written against."""
+        [dist] = self._read("GB00B1FXTF86,semiannual,09-01;03-01,30,0.0794;0.0821\n")
+        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
+        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
+
+    def test_frequency_is_case_insensitive(self):
+        """Test the frequency is normalised to lower case."""
+        [dist] = self._read("GB00B1FXTF86,Quarterly,01-05;04-05;07-05;10-05,20\n")
+        self.assertEqual(dist.frequency, "quarterly")
+
+    def test_every_frequency_needs_its_own_number_of_dates(self):
+        """Test the date count must match the payments a year."""
+        monthly = ";".join(f"{month:02d}-10" for month in range(1, 13))
+        [dist] = self._read(f"GB00B1FXTF86,monthly,{monthly},5\n")
+        self.assertEqual(len(dist.xd_dates), 12)
+        wrong = {
+            "quarterly": "2 ex-dates",
+            "annual": "1 ex-date",
+        }
+        for frequency, complaint in wrong.items():
+            with self.subTest(frequency=frequency):
+                with self.assertRaisesRegex(ValueError, f"line 1.*{complaint}"):
+                    self._read(f"GB00B1FXTF86,{frequency},03-01;09-01,30\n")
+
+    def test_leap_day_is_allowed(self):
+        """Test 02-29 is a real ex-date for the years that have one."""
+        [dist] = self._read("GB00B1FXTF86,annual,02-29,10\n")
+        self.assertEqual(dist.xd_dates, ((2, 29),))
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        """Test full-line and trailing comments, and blank lines."""
+        dists = self._read(
+            "# header\n\n"
+            "GB00B1FXTF86,annual,03-01,30   # factsheet p.2\n"
+            "   \n"
+            "IE0008368742,annual,06-01,30\n"
+        )
+        self.assertEqual(
+            [d.identifier for d in dists], ["GB00B1FXTF86", "IE0008368742"]
+        )
+
+    def test_a_header_only_file_has_no_entries(self):
+        """Test the shipped file, comments only, yields nothing."""
+        self.assertEqual(self._read("# nothing yet\n"), [])
+
+    def test_a_missing_file_has_no_entries(self):
+        """Test the file is optional."""
+        path = self.path("absent.txt")
+        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+    def test_the_configured_file_is_read_by_default(self):
+        """Test the production call names no file."""
+        path = self.write_text("distributions.txt", "X,annual,03-01,30\n")
+        with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
+            [dist] = scrape_fund_price.read_distributions()
+        self.assertEqual(dist.identifier, "X")
+
+    def test_identifier_must_be_configured(self):
+        """Test a line for an unknown instrument names the line."""
+        with self.assertRaisesRegex(ValueError, "line 2.*'NOPE'"):
+            self._read("GB00B1FXTF86,annual,03-01,30\nNOPE,annual,03-01,30\n")
+
+    def test_membership_is_not_checked_without_a_known_set(self):
+        """Test callers that only want the grammar can skip the lookup."""
+        [dist] = self._read("ANYTHING,annual,03-01,30\n", known=None)
+        self.assertEqual(dist.identifier, "ANYTHING")
+
+    def test_repeated_identifier_names_both_lines(self):
+        """Test an identifier may have one line."""
+        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
+            self._read("GB00B1FXTF86,annual,03-01,30\nGB00B1FXTF86,annual,04-01,30\n")
+
+    def test_malformed_lines_name_the_line_number(self):
+        """Test each way a line can be wrong fails with its line number."""
+        bad = {
+            "GB00B1FXTF86,annual": "expected",
+            "GB00B1FXTF86,annual,03-01": "expected",
+            ",annual,03-01,30": "expected",
+            "GB00B1FXTF86,annual,03-01,30,0.3,2026-10-01,extra": "expected",
+            "GB00B1FXTF86,weekly,03-01,30": "frequency",
+            "GB00B1FXTF86,annual,3-1,30": "ex-date",
+            "GB00B1FXTF86,annual,13-01,30": "ex-date",
+            "GB00B1FXTF86,annual,02-30,30": "ex-date",
+            "GB00B1FXTF86,annual,,30": "ex-date",
+            "GB00B1FXTF86,semiannual,03-01;03-01,30": "repeats",
+            "GB00B1FXTF86,annual,03-01,thirty": "pay offset",
+            "GB00B1FXTF86,annual,03-01,-5": "pay offset",
+            "GB00B1FXTF86,annual,03-01,366": "pay offset",
+            "GB00B1FXTF86,annual,03-01,30,abc": "amount",
+            "GB00B1FXTF86,annual,03-01,30,0": "amount",
+            "GB00B1FXTF86,annual,03-01,30,-0.5": "amount",
+            "GB00B1FXTF86,annual,03-01,30,NaN": "amount",
+            "GB00B1FXTF86,annual,03-01,30,1;2": "amounts",
+            "GB00B1FXTF86,annual,03-01,30,": "amounts field is empty",
+            "GB00B1FXTF86,annual,03-01,30,,2026-10-01": "amounts field is empty",
+            "GB00B1FXTF86,annual,03-01,30,0.3,yesterday": "as-of",
+            "GB00B1FXTF86,annual,03-01,30,0.3,2026-13-01": "as-of",
+            "GB00B1FXTF86,annual,03-01,30,0.3,": "as-of",
+        }
+        for line, fragment in bad.items():
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(ValueError, f"line 3.*{fragment}"):
+                    self._read(f"# one\n\n{line}\n")
+
+    def test_the_shipped_file_parses_and_has_no_entries(self):
+        """Test the committed distributions.txt is a valid, empty file."""
+        path = os.path.join(os.path.dirname(__file__), "distributions.txt")
+        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+
+class TestDividendSourceConfiguration(DataDirCase):
+    """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
+
+    SPECS = [
+        FundSpec("YA", "IGLS.L"),
+        FundSpec("FT", "IE00B0M63516", ("IDBZ",)),
+        FundSpec("YA", "QQQ"),
+    ]
+
+    def _read(self, text, specs="default"):
+        path = self.write_text("dividend_sources.txt", text)
+        if specs == "default":
+            specs = self.SPECS
+        return scrape_fund_price.read_dividend_sources(path, specs)
+
+    def test_reads_lines_comments_and_blank_lines(self):
+        """Test the documented grammar."""
+        sources = self._read(
+            "# the issuers\n"
+            "\n"
+            "IGLS.L,IS,251804   # 0-5yr gilts\n"
+            "IE00B0M63516 , is , 251853\n"
+        )
+        self.assertEqual(
+            sources,
+            [
+                scrape_fund_price.DividendSource("IGLS.L", "IS", "251804"),
+                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
+            ],
+        )
+
+    def test_an_alias_may_name_the_instrument(self):
+        """Test any published identifier is accepted."""
+        [source] = self._read("IDBZ,IS,251853\n")
+        self.assertEqual(source.identifier, "IDBZ")
+
+    def test_a_missing_file_means_no_sources(self):
+        """Test the file is optional."""
+        missing = self.path("none.txt")
+        self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
+
+    def test_the_default_file_is_the_configured_one(self):
+        """Test the production call names no file."""
+        path = self.write_text("dividend_sources.txt", "QQQ,IS,1\n")
+        with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
+            [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
+        self.assertEqual(source.identifier, "QQQ")
+
+    def test_without_specs_the_identifier_is_not_checked(self):
+        """Test the grammar can be read on its own."""
+        [source] = self._read("ANYTHING,IS,5\n", specs=None)
+        self.assertEqual(source.identifier, "ANYTHING")
+
+    def test_bad_lines_name_the_line(self):
+        """Test every malformed field fails before any network call."""
+        cases = {
+            "IGLS.L,IS": "line 1.*expected",
+            "IGLS.L,IS,251804,extra": "line 1.*expected",
+            ",IS,251804": "line 1.*expected",
+            "IGLS.L,XX,251804": "line 1.*source 'XX'",
+            "IGLS.L,IS,abc": "line 1.*source id 'abc'",
+            "IGLS.L,IS,": "line 1.*source id ''",
+            "IGLS.L,IS,1234567890": "line 1.*source id '1234567890'",
+            "IGLS.L,IS,0": "line 1.*source id '0'",
+            "NOPE,IS,251804": "line 1.*'NOPE'.*funds.txt",
+        }
+        for text, pattern in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self._read(text + "\n")
+
+    def test_the_error_names_the_right_line(self):
+        """Test line numbers count comments and blanks."""
+        with self.assertRaisesRegex(ValueError, "line 3"):
+            self._read("# c\n\nIGLS.L,IS,x\n")
+
+    def test_a_repeated_identifier_is_an_error(self):
+        """Test one line per identifier."""
+        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
+            self._read("IGLS.L,IS,1\nIGLS.L,IS,2\n")
+
+    def test_two_lines_for_one_instrument_are_an_error(self):
+        """Test a lookup id and its alias are the same instrument."""
+        with self.assertRaisesRegex(ValueError, "line 2.*same instrument.*line 1"):
+            self._read("IE00B0M63516,IS,1\nIDBZ,IS,1\n")
+
+    def test_the_committed_file_is_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        sources = scrape_fund_price.read_dividend_sources(
+            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
+        )
+        self.assertTrue(sources)
+        self.assertTrue(
+            all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
+        )
+
+
+class TestPayDateSourceConfiguration(DataDirCase):
+    """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
+
+    SPECS = [
+        FundSpec("YA", "QQQ"),
+        FundSpec("YA", "GLTL.L"),
+        FundSpec("YA", "KNSL"),
+        FundSpec("YA", "0639.HK"),
+    ]
+
+    def _read(self, text):
+        path = self.write_text("dividend_sources.txt", text)
+        return scrape_fund_price.read_dividend_sources(path, self.SPECS)
+
+    def test_the_four_codes_are_known(self):
+        """Test the code list and the authority of each."""
+        for code in ("IS", "IV", "SS", "Q4", "ET"):
+            self.assertIn(code, scrape_fund_price.DIVIDEND_SOURCE_CODES)
+            self.assertEqual(scrape_fund_price.SOURCE_AUTHORITY[code], 2)
+
+    def test_reads_one_line_per_source(self):
+        """Test the documented ids parse, codes case-insensitively."""
+        sources = self._read(
+            "QQQ,IV,46090E103\n"
+            "GLTL.L,ss,IE00B6YX5L24  # SPDR\n"
+            "KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS\n"
+            "0639.HK,ET,639\n"
+        )
+        self.assertEqual(
+            [(s.identifier, s.source, s.source_id) for s in sources],
+            [
+                ("QQQ", "IV", "46090E103"),
+                ("GLTL.L", "SS", "IE00B6YX5L24"),
+                ("KNSL", "Q4", "ir.kinsalecapitalgroup.com/XNYS"),
+                ("0639.HK", "ET", "639"),
+            ],
+        )
+
+    def test_a_malformed_source_id_names_the_line(self):
+        """Test each code checks its own id before any network call."""
+        cases = {
+            "QQQ,IV,46090E10": "line 1.*CUSIP",
+            "QQQ,IV,46090e103": "line 1.*CUSIP",
+            "QQQ,IV,": "line 1.*CUSIP",
+            "GLTL.L,SS,IE00B6YX5L2": "line 1.*ISIN",
+            "GLTL.L,SS,251804": "line 1.*ISIN",
+            "KNSL,Q4,ir.kinsalecapitalgroup.com": "line 1.*host/MIC",
+            "KNSL,Q4,ir.kinsale.com/xnys": "line 1.*host/MIC",
+            "KNSL,Q4,https://ir.kinsale.com/XNYS": "line 1.*host/MIC",
+            "KNSL,Q4,ir.kinsale.com/XNYS/x": "line 1.*host/MIC",
+            "0639.HK,ET,0639": "line 1.*HK code",
+            "0639.HK,ET,abc": "line 1.*HK code",
+            "0639.HK,ET,123456": "line 1.*HK code",
+        }
+        for text, pattern in cases.items():
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self._read(text + "\n")
+
+    def test_the_committed_file_names_the_four_instruments(self):
+        """Test the shipped rows validate against the committed funds.txt."""
+        sources = scrape_fund_price.read_dividend_sources(
+            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
+        )
+        by_code = {s.source: s for s in sources if s.source != "IS"}
+        self.assertEqual(
+            {code: (s.identifier, s.source_id) for code, s in by_code.items()},
+            {
+                "IV": ("QQQ", "46090E103"),
+                "SS": ("GLTL.L", "IE00B6YX5L24"),
+                "Q4": ("KNSL", "ir.kinsalecapitalgroup.com/XNYS"),
+                "ET": ("0639.HK", "639"),
+            },
+        )
+
+
+class TestConfiguredIdentifiers(DataDirCase):
+    """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
+
+    def test_funds_aliases_and_closed_holdings_are_all_known(self):
+        """Test the three sources of identifiers."""
+        closed = self.write_text(
+            "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        known = scrape_fund_price.configured_identifiers(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
+            closed,
+        )
+        self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
+
+    def test_a_missing_closed_holdings_file_adds_nothing(self):
+        """Test the file is optional here."""
+        known = scrape_fund_price.configured_identifiers(
+            [("FT", "GB00B1FXTF86")], self.path("no-such-file")
+        )
+        self.assertEqual(known, {"GB00B1FXTF86"})
+
+    def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        specs = read_fund_specs("funds.txt")
+        known = scrape_fund_price.configured_identifiers(specs)
+        scrape_fund_price.read_distributions("distributions.txt", known)
+
+
+# ===========================================================================
+# Yahoo prices
+# ===========================================================================
+
+
+class TestPriceFormatting(unittest.TestCase):
+    """Test precision-preserving formatting of Yahoo float32 bar values."""
+
+    def test_format_strips_float32_noise(self):
+        """Test float32 artefacts are not stored as extra decimal places."""
+        self.assertEqual(format_yahoo_price(124.87000274658203), "124.87")
+        self.assertEqual(format_yahoo_price(192.42999267578125), "192.43")
+        self.assertEqual(format_yahoo_price(595.0499877929688), "595.05")
+        self.assertEqual(format_yahoo_price(721.4500122070312), "721.45")
+
+    def test_format_preserves_genuine_decimals(self):
+        """Test real precision is kept, not rounded away."""
+        self.assertEqual(format_yahoo_price(2.7785000801086426), "2.7785")
+        self.assertEqual(format_yahoo_price(5.060999870300293), "5.061")
+        self.assertEqual(format_yahoo_price(21.395000457763672), "21.395")
+
+    def test_format_drops_trailing_point_zero(self):
+        """Test whole numbers are stored without a trailing .0."""
+        self.assertEqual(format_yahoo_price(6317.0), "6317")
+        self.assertEqual(format_yahoo_price(126530.0), "126530")
+        self.assertEqual(format_yahoo_price(13339.0), "13339")
+
+    def test_format_keeps_precision_on_large_values(self):
+        """Test large values keep their decimals (a .7g format would not)."""
+        import numpy as np
+
+        self.assertEqual(format_yahoo_price(np.float32(126530.25)), "126530.25")
+
+
+class TestYahooQuoteFetching(unittest.TestCase):
+    """Test dated quote retrieval from the Yahoo daily-bar route.
+
+    fetch_price_api, the legacy single-price wrapper over the same route, is
+    covered here too.
+    """
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_zero_volume_spike_quoted_in_wrong_currency(self, mock_ticker):
+        """Test an untraded bar far above both neighbours is not stored (#83).
+
+        Yahoo's SWDA.L bar for 2025-10-24 carried the USD listing's price
+        (128.64) in the GBp line, with zero volume.
+        """
+        fake_ticker(
+            mock_ticker,
+            [
+                ("2025-10-23", 9564.0),
+                ("2025-10-24", 12837.80957),
+                ("2025-10-27", 9720.0),
+            ],
+            currency="GBp",
+            volumes=[127553, 0, 62649],
+        )
+        quotes = fetch_yahoo_quotes("SWDA.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_zero_volume_dip_far_below_both_neighbours(self, mock_ticker):
+        """Test the guard is symmetric: a wrong price can be too low too."""
+        fake_ticker(
+            mock_ticker,
+            [("2025-10-23", 100.0), ("2025-10-24", 70.0), ("2025-10-27", 101.0)],
+            volumes=[500, 0, 500],
+        )
+        quotes = fetch_yahoo_quotes("XXXX.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_traded_bar_however_far_it_moves(self, mock_ticker):
+        """Test a bar with volume is trusted: real trades can spike."""
+        fake_ticker(
+            mock_ticker,
+            [("2022-09-26", 39.4), ("2022-09-27", 60.0), ("2022-09-28", 42.9)],
+            volumes=[43405, 71342, 123451],
+        )
+        quotes = fetch_yahoo_quotes("GLTL.L", "2022-09-20")
+        self.assertEqual(len(quotes), 3)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_zero_volume_step_that_the_next_bar_confirms(self, mock_ticker):
+        """Test a level change is not a spike: funds report no volume at all."""
+        fake_ticker(
+            mock_ticker,
+            [("2026-09-16", 100.0), ("2026-09-17", 130.0), ("2026-09-18", 131.0)],
+            volumes=[0, 0, 0],
+        )
+        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
+        self.assertEqual(len(quotes), 3)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_newest_bar_which_has_no_next_bar_to_judge_by(self, mock_ticker):
+        """Test the newest bar is kept: one neighbour cannot show a spike."""
+        fake_ticker(
+            mock_ticker,
+            [("2026-09-17", 100.0), ("2026-09-18", 140.0)],
+            volumes=[500, 0],
+        )
+        quotes = fetch_yahoo_quotes("XXXX.L", "2026-09-10")
+        self.assertEqual(len(quotes), 2)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_spike_neighbours_skip_bars_without_a_price(self, mock_ticker):
+        """Test a null-close bar does not hide a spike's neighbour."""
+        fake_ticker(
+            mock_ticker,
+            [
+                ("2025-10-22", 6.5655),
+                ("2025-10-23", float("nan")),
+                ("2025-10-24", 8.9258),
+                ("2025-10-27", 6.7285),
+            ],
+            volumes=[83899, 0, 0, 292481],
+        )
+        quotes = fetch_yahoo_quotes("WLDS.L", "2025-10-20")
+        self.assertEqual([q.date for q in quotes], ["2025-10-22", "2025-10-27"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_returns_dated_quotes(self, mock_ticker):
+        """Test each bar becomes a Quote carrying the bar's own date."""
+        fake_ticker(
+            mock_ticker, [("2026-09-17", 192.42999267578125), ("2026-09-18", 193.5)]
+        )
+        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
+        self.assertEqual(
+            quotes,
+            [Quote("2026-09-17", "192.43", "GBP"), Quote("2026-09-18", "193.5", "GBP")],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_requests_unadjusted_close(self, mock_ticker):
+        """Test history is requested unadjusted so prices match those snapped."""
+        inst = fake_ticker(mock_ticker, [("2026-09-18", 7.15)])
+        fetch_yahoo_quotes("IDTG.L", "2026-09-10", "2026-09-19")
+        kwargs = inst.history.call_args.kwargs
+        self.assertFalse(kwargs["auto_adjust"])
+        self.assertEqual(kwargs["start"], "2026-09-10")
+        self.assertEqual(kwargs["end"], "2026-09-19")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_preserves_pence_currency(self, mock_ticker):
+        """Test GBp is not silently normalised to GBP."""
+        fake_ticker(mock_ticker, [("2026-09-18", 6317.0)], currency="GBp")
+        self.assertEqual(fetch_yahoo_quotes("SGLN.L", "2026-09-10")[0].currency, "GBp")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_rows_without_a_price(self, mock_ticker):
+        """Test NaN closes are skipped rather than stored."""
+        fake_ticker(mock_ticker, [("2026-09-17", float("nan")), ("2026-09-18", 7.15)])
+        quotes = fetch_yahoo_quotes("IDTG.L", "2026-09-10")
+        self.assertEqual([q.date for q in quotes], ["2026-09-18"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_empty_history_returns_no_quotes(self, mock_ticker):
+        """Test an empty result is not an error."""
+        fake_ticker(mock_ticker, [])
+        self.assertEqual(fetch_yahoo_quotes("IDTG.L", "2026-09-10"), [])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_exception_propagates_to_retry_wrapper(self, mock_ticker):
+        """Test transport errors are raised so fetch_with_retries can retry."""
+        mock_ticker.side_effect = ConnectionError("Network error")
+        with self.assertRaises(ConnectionError):
+            fetch_yahoo_quotes("IDTG.L", "2026-09-10")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_fetch_price_api_uses_latest_quote(self, mock_quotes):
+        """Test the price API wrapper returns the newest quote, not .info."""
+        mock_quotes.return_value = [
+            Quote("2026-09-16", "192.23", "USD"),
+            Quote("2026-09-17", "192.43", "USD"),
+        ]
+        self.assertEqual(fetch_price_api("0P00000YAN"), "192.43")
+        self.assertEqual(mock_quotes.call_args.args[0], "0P00000YAN")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_fetch_price_api_reports_missing_price(self, mock_quotes):
+        """Test the error contract is kept when no quotes come back."""
+        mock_quotes.return_value = []
+        self.assertEqual(fetch_price_api("BADSYM"), "Error: Price not available")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_fetch_price_api_reports_exception(self, mock_ticker):
+        """Test an error below the wrapper keeps the "Error: <message>" contract."""
+        mock_ticker.side_effect = ConnectionError("Network error")
+        self.assertEqual(fetch_price_api("IDTG.L"), "Error: Network error")
+
+
+class TestYahooEmptyLatestBar(unittest.TestCase):
+    """Regression: Yahoo can return the newest daily bar with a null close.
+
+    On 2026-10-10 CNX1.L's 2026-10-09 bar existed with Close = NaN, while the
+    chart metadata still carried that day's closing price. Skipping the NaN
+    left Thursday as the newest quote.
+    """
+
+    ROWS = [("2026-10-08", 134720.0), ("2026-10-09", float("nan"))]
+
+    @staticmethod
+    def _meta(price=133800.0, traded="2026-10-09 16:35", end="2026-10-09 16:30"):
+        return history_metadata(price, traded, end)
+
+    def _fetch(self, mock_ticker, meta, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
+        return fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_closing_price_from_metadata_fills_the_empty_bar(self, mock_ticker):
+        """Test the finished session's price stands in for the null close."""
+        quotes = self._fetch(mock_ticker, self._meta())
+        self.assertEqual(
+            quotes,
+            [
+                Quote("2026-10-08", "134720", "GBp"),
+                Quote("2026-10-09", "133800", "GBp"),
+            ],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_session_still_open_is_not_filled(self, mock_ticker):
+        """Test an intraday price is never stored as a close."""
+        meta = self._meta(traded="2026-10-09 15:00", end="2026-10-09 16:30")
+        quotes = self._fetch(mock_ticker, meta)
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_metadata_from_another_day_is_not_used(self, mock_ticker):
+        """Test the price must belong to the empty bar's own date."""
+        meta = self._meta(traded="2026-10-08 16:35", end="2026-10-08 16:30")
+        quotes = self._fetch(mock_ticker, meta)
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_trading_period_that_moved_on_counts_as_closed(self, mock_ticker):
+        """Test a later session end shows the bar's day is over."""
+        quotes = self._fetch(mock_ticker, self._meta(end="2026-10-12 16:30"))
+        self.assertEqual(quotes[-1], Quote("2026-10-09", "133800", "GBp"))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_only_the_newest_bar_is_filled(self, mock_ticker):
+        """Test an empty bar in the middle of the window stays dropped."""
+        rows = [("2026-10-07", float("nan")), ("2026-10-08", 134720.0)]
+        quotes = self._fetch(mock_ticker, self._meta(), rows)
+        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_unusable_metadata_falls_back_to_dropping_the_bar(self, mock_ticker):
+        """Test bad metadata never raises or invents a price."""
+        shapes = {
+            "raises": RuntimeError("boom"),
+            "empty": {},
+            "no price": self._meta(price=float("nan")),
+        }
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta)
+                self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+
+
+class TestYahooUnfinishedSession(unittest.TestCase):
+    """Regression: the newest bar is stored before its session has closed (#84).
+
+    A rebuild run at 12:56 UTC on 2026-10-19 stored SWDA.L's 2026-10-19 bar,
+    a 13:46 London trade, while the session ran until 16:30.
+    """
+
+    ROWS = [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)]
+
+    @staticmethod
+    def _meta(traded, end):
+        return history_metadata(10970.0, traded, end)
+
+    @staticmethod
+    def _now(text):
+        """A London wall-clock time, as the run's `now`."""
+        london = scrape_fund_price.ZoneInfo("Europe/London")
+        return datetime.datetime.fromisoformat(text).replace(tzinfo=london)
+
+    def _fetch(self, mock_ticker, meta, now, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
+        return fetch_yahoo_quotes("SWDA.L", "2026-10-01", now=self._now(now))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_drops_newest_bar_while_its_session_is_open(self, mock_ticker):
+        """Test an intraday price is not stored as the day's close."""
+        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+        self.assertEqual([q.date for q in quotes], ["2026-10-16"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_newest_bar_once_its_session_has_ended(self, mock_ticker):
+        """Test the bar is stored once the session's end has passed."""
+        meta = self._meta(traded="2026-10-19 16:35", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 21:05")
+        self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_keeps_previous_session_while_today_is_open(self, mock_ticker):
+        """Test only a bar dated on the open session's day is held back."""
+        rows = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
+        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56", rows)
+        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_unusable_metadata_keeps_the_newest_bar(self, mock_ticker):
+        """Test a price is not lost because the session cannot be judged."""
+        shapes = {"raises": RuntimeError("boom"), "empty": {}}
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+                self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+
+
+# ===========================================================================
+# Financial Times
+# ===========================================================================
+
+
+FT_ROWS = """
+<tr>
+  <td><span class="mod-ui-hide-small-below">Friday, September 18, 2026</span>
+      <span class="mod-ui-hide-medium-above">Fri, Sep 18, 2026</span></td>
+  <td>7.10</td><td>7.20</td><td>7.05</td><td>7.15</td>
+  <td><span>0</span></td>
+</tr>
+<tr>
+  <td><span class="mod-ui-hide-small-below">Thursday, September 17, 2026</span>
+      <span class="mod-ui-hide-medium-above">Thu, Sep 17, 2026</span></td>
+  <td>1,230.00</td><td>1,240.00</td><td>1,225.00</td><td>1,234.5600</td>
+  <td><span>0</span></td>
+</tr>
+"""
+
+
+class TestFTQuoteFetching(unittest.TestCase):
+    """Test dated quote retrieval from the FT historical-prices endpoint.
+
+    The page and the rows are GB00B1FXTF86's, recorded 2026-11-02 (see
+    fixtures/): the tearsheet trimmed to the elements the parser reads, and
+    the ajax response for 2026-10-19 to 2026-10-30 unchanged. FT reports no
+    row for Tuesday 2026-10-20, the kind of omission the rebuild's retention
+    rule exists for. FT_ROWS stands in only for shapes the recording lacks.
+    """
+
+    ISIN = "GB00B1FXTF86"
+    NOW = utc(2026, 11, 2, 12)  # every recorded day has settled in New York
+    PAGE = fixture_text("ft_GB00B1FXTF86_tearsheet.html")
+    HISTORY = json.loads(fixture_text("ft_GB00B1FXTF86_history.json"))
+    RECORDED_DATES = [
+        "2026-10-19",
+        "2026-10-21",
+        "2026-10-22",
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-27",
+        "2026-10-28",
+        "2026-10-29",
+        "2026-10-30",
+    ]
+
+    @staticmethod
+    def _responses(page=None, rows=None):
+        """The page response then the ajax response, recorded unless given.
+
+        A staticmethod because TestFTUnfinishedDay borrows it by class.
+        """
+        page_resp = MagicMock()
+        page_resp.text = TestFTQuoteFetching.PAGE if page is None else page
+        ajax_resp = MagicMock()
+        ajax_resp.json.return_value = (
+            TestFTQuoteFetching.HISTORY if rows is None else {"html": rows}
+        )
+        return [page_resp, ajax_resp]
+
+    def fetch(self, start="2026-10-19", end="2026-10-30"):
+        return fetch_ft_quotes(self.ISIN, start, end, now=self.NOW)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_returns_dated_quotes_with_currency(self, mock_get):
+        """Test the recorded rows become Quotes carrying FT's date and currency."""
+        mock_get.side_effect = self._responses()
+        quotes = self.fetch()
+        self.assertEqual([q.date for q in quotes], self.RECORDED_DATES)
+        self.assertEqual(quotes[0], Quote("2026-10-19", "6.99", "GBP"))
+        self.assertEqual(quotes[-1], Quote("2026-10-30", "6.84", "GBP"))
+
+    @patch("scrape_fund_price.requests.get")
+    def test_uses_close_not_open(self, mock_get):
+        """Test the closing price is taken, not the opening price."""
+        mock_get.side_effect = self._responses(rows=FT_ROWS)
+        quotes = self.fetch("2026-09-01", "2026-09-20")
+        self.assertEqual([q.price for q in quotes], ["1234.5600", "7.15"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_strips_thousands_separators_without_float_conversion(self, mock_get):
+        """Test FT text prices keep their exact digits, commas removed."""
+        mock_get.side_effect = self._responses(rows=FT_ROWS)
+        quotes = self.fetch("2026-09-01", "2026-09-20")
+        self.assertEqual(quotes[0], Quote("2026-09-17", "1234.5600", "GBP"))
+
+    @patch("scrape_fund_price.requests.get")
+    def test_requests_the_page_then_the_endpoint_with_slash_dates(self, mock_get):
+        """Test the page gives the numeric xid and the ajax call YYYY/MM/DD dates.
+
+        The page carries the FT symbol GB00B1FXTF86:GBP in another module's
+        config; only the historical module's numeric id is the xid.
+        """
+        mock_get.side_effect = self._responses()
+        self.fetch()
+        page_url, ajax_url = (call.args[0] for call in mock_get.call_args_list)
+        self.assertEqual(
+            page_url, scrape_fund_price.FT_HISTORICAL_PAGE.format(isin=self.ISIN)
+        )
+        self.assertEqual(
+            ajax_url,
+            scrape_fund_price.FT_HISTORICAL_AJAX.format(
+                start="2026/10/19", end="2026/10/30", xid="28305998"
+            ),
+        )
+
+    @patch("scrape_fund_price.requests.get")
+    def test_missing_internal_id_raises(self, mock_get):
+        """Test a page without the internal id is an error, not empty data."""
+        mock_get.side_effect = self._responses(page="<html>no config here</html>")
+        with self.assertRaises(ValueError) as error:
+            self.fetch()
+        self.assertIn(self.ISIN, str(error.exception))
+
+    @patch("scrape_fund_price.requests.get")
+    def test_no_rows_raises(self, mock_get):
+        """Test an empty result set is an error so the fallback can run."""
+        mock_get.side_effect = self._responses(rows="")
+        with self.assertRaises(ValueError) as error:
+            self.fetch()
+        self.assertIn(self.ISIN, str(error.exception))
+
+    @patch("scrape_fund_price.requests.get")
+    def test_missing_currency_label_is_tolerated(self, mock_get):
+        """Test quotes are still returned when no currency label is present."""
+        page = self.PAGE.replace("Price (GBP)", "Price")
+        mock_get.side_effect = self._responses(page=page)
+        self.assertEqual(self.fetch()[0], Quote("2026-10-19", "6.99", ""))
+
+
+class TestFTUnfinishedDay(unittest.TestCase):
+    """Regression: FT rows dated today are stored before the day is over (#84).
+
+    The 09:17 UTC run on 2026-10-16, which committed at 13:57 UTC, stored
+    IE00B0M63516 at 33.45 for 2026-10-16; the evening run corrected it to
+    33.34. FT carries no session metadata, so a row is held back until the
+    US close (16:00 New York) on its own date has passed.
+    """
+
+    @staticmethod
+    def _row(day, close):
+        label = day.strftime("%A, %B %d, %Y").replace(" 0", " ")
+        return (
+            f'<tr><td><span class="mod-ui-hide-small-below">{label}</span></td>'
+            f"<td>{close}</td><td>{close}</td><td>{close}</td><td>{close}</td>"
+            "<td><span>0</span></td></tr>"
+        )
+
+    def _fetch(self, mock_get, days, now):
+        rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
+        mock_get.side_effect = TestFTQuoteFetching._responses(rows=rows)
+        now = datetime.datetime.fromisoformat(now)
+        return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_drops_a_row_dated_today_before_the_us_close(self, mock_get):
+        """Test a daytime run does not store today's provisional price."""
+        quotes = self._fetch(
+            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T13:57:00+00:00"
+        )
+        self.assertEqual([q.date for q in quotes], ["2026-10-15"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_keeps_a_row_dated_today_after_the_us_close(self, mock_get):
+        """Test the evening run stores the day's final price."""
+        quotes = self._fetch(
+            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T21:05:00+00:00"
+        )
+        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_the_cut_follows_new_york_daylight_saving(self, mock_get):
+        """Test the cut is 21:00 UTC in winter, not 20:00 UTC all year."""
+        days = ["2026-11-02", "2026-11-03"]
+        early = self._fetch(mock_get, days, "2026-11-03T20:30:00+00:00")
+        self.assertEqual([q.date for q in early], ["2026-11-02"])
+        late = self._fetch(mock_get, days, "2026-11-03T21:00:00+00:00")
+        self.assertEqual([q.date for q in late], days)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_only_held_back_rows_is_not_an_error(self, mock_get):
+        """Test a window holding only today's row returns nothing, not a failure.
+
+        Raising would send the fund to the undated scraping fallback, which
+        would store the same provisional price under today's date.
+        """
+        quotes = self._fetch(mock_get, ["2026-10-16"], "2026-10-16T13:57:00+00:00")
+        self.assertEqual(quotes, [])
+
+    @patch("scrape_fund_price.fetch_ft_quotes", return_value=[])
+    def test_held_back_rows_do_not_fall_back_to_scraping(self, mock_fetch):
+        """Test an empty dated result is returned rather than scraped."""
+        browser = MagicMock()
+        quotes = scrape_fund_quotes("FT", "IE00B0M63516", "2026-10-16", browser=browser)
+        self.assertEqual(quotes, [])
+        browser.page.assert_not_called()
+
+
+# ===========================================================================
+# investing.com
+# ===========================================================================
+
+
+class TestInvestingQuotes(unittest.TestCase):
+    """Test the IV handler, the only source that still carries a dead fund.
+
+    BN4MYX3 was liquidated in March 2024 and is absent from Yahoo and FT.
+    justETF retains it but serves a converted, rounded series measured at a
+    median 1.6% from the real closes, so it is not a substitute.
+    """
+
+    def _response(self, rows):
+        response = MagicMock()
+        response.json.return_value = {"data": rows}
+        response.raise_for_status.return_value = None
+        return response
+
+    @patch("scrape_fund_price.requests.get")
+    def test_returns_quotes_oldest_first(self, mock_get):
+        """Test the newest-first payload is reversed for storage."""
+        mock_get.return_value = self._response(
+            [
+                {
+                    "rowDateTimestamp": "2024-03-13T00:00:00Z",
+                    "last_closeRaw": "247.87500000000000",
+                },
+                {
+                    "rowDateTimestamp": "2024-01-04T00:00:00Z",
+                    "last_closeRaw": "218.94999694824219",
+                },
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04", "2024-03-13"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_float32_noise_is_removed_without_losing_the_half_penny(self, mock_get):
+        """Test precision is preserved, not rounded to the displayed 2 dp.
+
+        The endpoint stores float32, so 218.95 arrives as 218.94999694824219
+        while a genuine half-penny close stays exact. Rounding both to the
+        displayed value would throw away a real tick.
+        """
+        mock_get.return_value = self._response(
+            [
+                {
+                    "rowDateTimestamp": "2024-01-04T00:00:00Z",
+                    "last_closeRaw": "218.94999694824219",
+                },
+                {
+                    "rowDateTimestamp": "2024-03-13T00:00:00Z",
+                    "last_closeRaw": "247.87500000000000",
+                },
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
+        self.assertEqual([q.price for q in quotes], ["218.95", "247.875"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_window_is_passed_to_the_endpoint(self, mock_get):
+        """Test the request asks for the window rather than filtering later."""
+        mock_get.return_value = self._response(
+            [{"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"}]
+        )
+        fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
+        url = mock_get.call_args[0][0]
+        self.assertIn("1182866", url)
+        self.assertIn("2024-01-04", url)
+        self.assertIn("2024-03-13", url)
+
+    @patch("scrape_fund_price.requests.get")
+    def test_unusable_rows_are_skipped(self, mock_get):
+        """Test a malformed row does not abort an otherwise good window."""
+        mock_get.return_value = self._response(
+            [
+                {"rowDateTimestamp": "2024-01-05T00:00:00Z", "last_closeRaw": "-"},
+                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_a_row_without_a_date_is_skipped(self, mock_get):
+        """Test a row that cannot be dated is dropped, not stored under ''."""
+        mock_get.return_value = self._response(
+            [
+                {"last_closeRaw": "200.00"},
+                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
+
+    @patch("scrape_fund_price.requests.get")
+    def test_empty_payload_raises(self, mock_get):
+        """Test an empty response is an error, not an empty import."""
+        mock_get.return_value = self._response([])
+        with self.assertRaises(ValueError):
+            fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
+
+    def test_source_needs_no_browser(self):
+        """Test IV is a plain HTTP source like YA and FT."""
+        self.assertFalse(source_requires_browser("IV", "1182866"))
+
+    @patch("scrape_fund_price.fetch_investing_quotes")
+    def test_dispatch_routes_iv_to_the_handler(self, mock_fetch):
+        """Test the shared dispatch knows the source code."""
+        mock_fetch.return_value = [Quote("2024-01-04", "218.95", "")]
+        quotes = scrape_fund_quotes("IV", "1182866", "2024-01-04", "2024-03-13")
+        self.assertEqual(quotes[0].price, "218.95")
+        mock_fetch.assert_called_once_with("1182866", "2024-01-04", "2024-03-13")
+
+
+class TestInvestingEmptyPayloads(DataDirCase):
+    """Test the IV handler survives the shapes a dead window returns.
+
+    Asking investing.com for a window after a fund stopped publishing returns
+    a body whose `data` key is present but null, which raised TypeError
+    ("'NoneType' object is not iterable") instead of the ValueError callers
+    catch.
+    """
+
+    def _response(self, payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        return response
+
+    @patch("scrape_fund_price.requests.get")
+    def test_null_data_raises_value_error(self, mock_get):
+        """Test a null payload is reported as no rows, not a crash."""
+        mock_get.return_value = self._response({"data": None})
+        with self.assertRaises(ValueError):
+            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
+
+    @patch("scrape_fund_price.requests.get")
+    def test_missing_data_key_raises_value_error(self, mock_get):
+        """Test an unexpected body shape is handled the same way."""
+        mock_get.return_value = self._response({})
+        with self.assertRaises(ValueError):
+            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_import_records_it_as_a_failure(self, mock_quotes):
+        """Test a holding whose window returns nothing is reported, not fatal."""
+        mock_quotes.side_effect = ValueError("investing.com returned no rows")
+        holding = ClosedHolding("X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21")
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(report.failures)
+
+
+# ===========================================================================
+# Sources, retries and the scrape loop
+# ===========================================================================
+
+
 class TestFundPriceScraper(DataDirCase):
 
     TIMEOUT = (
@@ -675,631 +2171,153 @@ class TestFundPriceScraper(DataDirCase):
         )
 
 
-@unittest.skipUnless(
-    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
-)
-class TestFunctionalScraping(DataDirCase):
-    """Functional tests that can run against real websites (optional).
+class TestWindowedScraping(DataDirCase):
+    """Test scrape_funds over dated windows, and lazy browser startup."""
 
-    Every fetch is given the scratch directory: without one these write into
-    the repository's data/, leaving files such as latest_AAPL.price for a
-    symbol that is not in funds.txt.
-    """
-
-    def assertUsableQuotes(self, results, fund_id, expect_dated=True):
-        """Assert a live fetch produced at least one usable dated price.
-
-        Sources go down; that is a fact of life for this project rather than a
-        code defect, so an outage skips instead of failing. Anything that does
-        come back must still be well formed.
-        """
-        if results.failures:
-            self.skipTest(f"source unavailable: {results.failures[0]}")
-
-        self.assertGreaterEqual(len(results), 1)
-        today = date.today().isoformat()
-        for fund, price_date, price, currency in results:
-            self.assertEqual(fund, fund_id)
-            # A price date must be real, and never in the future.
-            parsed = date.fromisoformat(price_date)
-            self.assertLessEqual(parsed.isoformat(), today)
-            if expect_dated:
-                # Dated sources report the market's date, not the run date.
-                self.assertLess(parsed.weekday(), 5, f"{price_date} is a weekend")
-            self.assertNotEqual(price, "N/A")
-            self.assertNotEqual(price, "")
-            self.assertFalse(price.startswith("Error:"))
-            try:
-                float(price)
-            except ValueError:
-                self.fail(f"Price should be a valid number, got: {price}")
-
-    def test_functional_ft_scraping(self):
-        """Functional test for FT prices (requires internet connection)."""
-        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
-        self.assertUsableQuotes(results, "IE0008368742")
-        # FT reports the quoting currency alongside the price.
-        self.assertTrue(all(row[3] for row in results))
-
-    def test_functional_yahoo_scraping(self):
-        """Functional test for Yahoo scraping (requires internet connection)."""
-        results = scrape_funds([("YH", "IDTG.L")], self.test_dir)
-        # The scrape route reads a page showing only the current price, so its
-        # quote carries the run date and may fall on a weekend.
-        self.assertUsableQuotes(results, "IDTG.L", expect_dated=False)
-
-    def test_functional_morningstar_scraping(self):
-        """Functional test for Morningstar scraping (requires internet connection)."""
-        results = scrape_funds([("MS", "JFM0003373")], self.test_dir)
-        self.assertUsableQuotes(results, "JFM0003373", expect_dated=False)
-
-    def test_functional_yahoo_api(self):
-        """Functional test for the Yahoo Finance API (requires internet)."""
-        results = scrape_funds([("YA", "AAPL")], self.test_dir)
-        self.assertUsableQuotes(results, "AAPL")
-        self.assertTrue(all(row[3] == "USD" for row in results))
-
-    def test_functional_api_reports_the_sources_own_price_date(self):
-        """Functional test that stored dates come from the source, not the clock."""
-        quotes = fetch_yahoo_quotes(
-            "QQQ", (date.today() - timedelta(days=15)).isoformat()
-        )
-        if not quotes:
-            self.skipTest("Yahoo returned no bars")
-        self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
-        self.assertTrue(all(q.currency == "USD" for q in quotes))
-        # Consecutive trading days must be distinct, not a carried-forward run.
-        self.assertEqual(len({q.date for q in quotes}), len(quotes))
-
-    def test_fetch_price_api_valid_symbol(self):
-        """Functional test for fetch_price_api with a real symbol."""
-        price = fetch_price_api("AAPL")
-        self.assertIsNotNone(price)
-        self.assertNotEqual(price, "N/A")
-        try:
-            float(price)
-        except ValueError:
-            self.fail(f"Price should be a valid number, got: {price}")
-
-    def test_fetch_price_api_invalid_symbol(self):
-        """Functional test for fetch_price_api with a symbol Yahoo lacks."""
-        price = fetch_price_api("INVALID_SYMBOL_XYZ123")
-        self.assertTrue(price.startswith("Error:") or price == "N/A")
-
-
-class TestHistoricalData(DataDirCase):
-    """Test historical data retrieval functionality."""
-
-    def test_parse_arguments_history_with_dates(self):
-        """Test parsing command-line arguments for historical data with start and end dates."""
-        args = parse_arguments(
-            ["--history", "AAPL", "--start", "2024-01-01", "--end", "2024-12-31"]
-        )
-        self.assertEqual(args.history, "AAPL")
-        self.assertEqual(args.start, "2024-01-01")
-        self.assertEqual(args.end, "2024-12-31")
-
-    def test_parse_arguments_history_start_only(self):
-        """Test parsing command-line arguments with only start date."""
-        args = parse_arguments(["--history", "MSFT", "--start", "2024-11-01"])
-        self.assertEqual(args.history, "MSFT")
-        self.assertEqual(args.start, "2024-11-01")
-        self.assertIsNone(args.end)
-
-    def test_parse_arguments_no_history(self):
-        """Test parsing command-line arguments without history flag."""
-        args = parse_arguments([])
-        self.assertIsNone(args.history)
-        self.assertIsNone(args.start)
-        self.assertIsNone(args.end)
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_valid_symbol(self, mock_ticker):
-        """Test the bars are saved as history_<symbol>_<start>_<end>.csv."""
-        fake_ticker(mock_ticker, [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
-
-        result = fetch_historical_data(
-            "AAPL", "2024-01-01", "2024-12-31", self.test_dir
-        )
-
-        mock_ticker.assert_called_once_with("AAPL")
-        mock_ticker.return_value.history.assert_called_once_with(
-            start="2024-01-01", end="2024-12-31"
-        )
-        name = "history_AAPL_2024-01-01_2024-12-31.csv"
-        self.assertEqual(result, self.path(name))
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_emits_a_row_per_quote_with_currency(self, mock_quotes):
+        """Test every quote in the window becomes a dated result row."""
+        mock_quotes.return_value = [
+            Quote("2026-09-17", "1.50", "GBp"),
+            Quote("2026-09-18", "1.60", "GBp"),
+        ]
+        results = scrape_funds([("YA", "SGLN.L")], self.test_dir)
         self.assertEqual(
-            self.read_rows(name), [["2024-01-02", "185.64"], ["2024-01-03", "184.25"]]
-        )
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_invalid_symbol(self, mock_ticker):
-        """Test an error from Yahoo comes back as an error message."""
-        mock_ticker.return_value.history.side_effect = Exception("Invalid symbol")
-
-        result = fetch_historical_data(
-            "INVALID_XYZ", "2024-01-01", "2024-12-31", self.test_dir
-        )
-
-        self.assertEqual(result, "Error: Invalid symbol")
-
-    def test_fetch_historical_data_invalid_date_format(self):
-        """Test fetching historical data with invalid date format."""
-        result = fetch_historical_data(
-            "AAPL", "01-01-2024", "2024-12-31", self.test_dir
-        )
-        self.assertEqual(result, "Error: Invalid start date format. Use YYYY-MM-DD")
-
-    def test_fetch_historical_data_invalid_end_date_format(self):
-        """Test fetching historical data with a malformed end date."""
-        result = fetch_historical_data("AAPL", "2024-01-01", "31-12-2024")
-        self.assertEqual(result, "Error: Invalid end date format. Use YYYY-MM-DD")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_empty_range_returns_error(self, mock_ticker):
-        """Test a date range yielding no rows reports no data found."""
-        fake_ticker(mock_ticker, [])
-        result = fetch_historical_data("AAPL", "2024-01-01", "2024-01-02")
-        self.assertEqual(result, "Error: No data found for symbol AAPL")
-
-    def test_fetch_historical_data_start_after_end(self):
-        """Test fetching historical data with start date after end date."""
-        result = fetch_historical_data(
-            "AAPL", "2024-12-31", "2024-01-01", self.test_dir
-        )
-        self.assertEqual(result, "Error: Start date must be before end date")
-
-
-class TestPriceFallbackSources(DataDirCase):
-    """Test the last-known-price fallback chain used when fetches fail."""
-
-    HEADER = ["Fund", "Date", "Price"]
-
-    def test_read_latest_csv_price_returns_usable_price(self):
-        """Test latest_prices.csv supplies a fallback price for a known fund."""
-        self.write_csv(
-            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
-        )
-        self.assertEqual(read_latest_csv_price("AAPL", self.test_dir), "150.25")
-
-    def test_read_latest_csv_price_skips_unusable_values(self):
-        """Test error and N/A entries are not reused as prices."""
-        self.write_csv(
-            "latest_prices.csv",
-            self.HEADER,
+            list(results),
             [
-                ["AAPL", "2026-01-01", "Error: timeout"],
-                ["MSFT", "2026-01-01", "N/A"],
+                ["SGLN.L", "2026-09-17", "1.50", "GBp"],
+                ["SGLN.L", "2026-09-18", "1.60", "GBp"],
             ],
         )
-        self.assertIsNone(read_latest_csv_price("AAPL", self.test_dir))
-        self.assertIsNone(read_latest_csv_price("MSFT", self.test_dir))
 
-    def test_read_latest_csv_price_unknown_fund_returns_none(self):
-        """Test a fund absent from latest_prices.csv yields no fallback."""
-        self.write_csv(
-            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_ft_quotes")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_browser_not_started_for_api_only_config(self, mock_y, mock_ft, mock_pw):
+        """Test Playwright is not launched when no fund needs scraping."""
+        mock_y.return_value = [Quote("2026-09-18", "1.60", "USD")]
+        mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
+        scrape_funds([("YA", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
+        mock_pw.assert_not_called()
+
+    def test_ft_and_api_sources_do_not_require_a_browser(self):
+        """Test source_requires_browser reflects the HTTP-only routes."""
+        self.assertFalse(source_requires_browser("FT", "GB00B1FXTF86"))
+        self.assertFalse(source_requires_browser("YA", "QQQ"))
+        self.assertTrue(source_requires_browser("YH", "IDTG.L"))
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_total_failure_writes_no_history_row(self, mock_quotes):
+        """Test a fund that cannot be fetched contributes no dated row."""
+        mock_quotes.side_effect = Exception("Network error")
+        results = scrape_funds([("YA", "QQQ")], self.test_dir)
+        self.assertEqual(list(results), [])
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("QQQ", results.failures[0])
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes):
+        """Test the per-fund price file is not overwritten with an error."""
+        self.write_text("latest_QQQ.price", "700.00\n")
+        mock_quotes.side_effect = Exception("Network error")
+        scrape_funds([("YA", "QQQ")], self.test_dir)
+        self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.scrape_price_with_common_settings")
+    @patch("scrape_fund_price.fetch_ft_quotes")
+    def test_ft_failure_falls_back_to_scraping(self, mock_ft, mock_scrape, mock_pw):
+        """Test an FT endpoint failure still yields a price, dated as today."""
+        mock_ft.side_effect = ValueError("FT internal id not found")
+        mock_scrape.return_value = "7.15"
+        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir)
+        today = date.today().isoformat()
+        self.assertEqual(list(results), [["GB00B1FXTF86", today, "7.15", ""]])
+        mock_pw.assert_called()
+
+
+class TestAliasPublishing(DataDirCase):
+    """Test that one fetch publishes under every configured identifier."""
+
+    SPEC = FundSpec("YA", "0P00000YAN", ("JFM0003373",))
+    QUOTE = Quote("2026-09-17", "192.43", "USD")
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_is_fetched_once_for_all_identifiers(self, mock_quotes):
+        """Test aliases cost no extra network calls."""
+        mock_quotes.return_value = [self.QUOTE]
+        scrape_funds(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373", "EXTRA"))], self.test_dir
         )
-        self.assertIsNone(read_latest_csv_price("TSLA", self.test_dir))
+        self.assertEqual(mock_quotes.call_count, 1)
 
-    def test_read_history_price_returns_most_recent_usable(self):
-        """Test history fallback prefers the last usable row for the fund."""
-        self.write_csv(
-            "prices_history.csv",
-            self.HEADER,
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_each_identifier_gets_an_identical_row(self, mock_quotes):
+        """Test every identifier records the same date, price and currency."""
+        mock_quotes.return_value = [self.QUOTE]
+        results = scrape_funds([self.SPEC], self.test_dir)
+        self.assertEqual(
+            list(results),
             [
-                ["AAPL", "2026-01-01", "100.00"],
-                ["AAPL", "2026-01-02", "110.00"],
-                ["MSFT", "2026-01-02", "200.00"],
+                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+                ["JFM0003373", "2026-09-17", "192.43", "USD"],
             ],
         )
-        self.assertEqual(read_history_price("AAPL", self.test_dir), "110.00")
 
-    def test_read_history_price_all_unusable_returns_none(self):
-        """Test history with only error rows provides no fallback price."""
-        self.write_csv(
-            "prices_history.csv",
-            self.HEADER,
-            [
-                ["AAPL", "2026-01-01", "Error: timeout"],
-                ["AAPL", "2026-01-02", "N/A"],
-            ],
-        )
-        self.assertIsNone(read_history_price("AAPL", self.test_dir))
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_a_price_file_is_written_per_identifier(self, mock_quotes):
+        """Test per-fund price files exist for aliases too."""
+        mock_quotes.return_value = [self.QUOTE]
+        scrape_funds([self.SPEC], self.test_dir)
+        for fund_id in ("0P00000YAN", "JFM0003373"):
+            with self.subTest(fund=fund_id):
+                price_file = self.read_text(f"latest_{fund_id}.price")
+                self.assertEqual(price_file.strip(), "192.43")
 
-    def test_get_last_known_price_prefers_price_file_over_csv(self):
-        """Test the fallback chain checks the per-fund price file first."""
-        self.write_text("latest_AAPL.price", "999.99\n")
-        self.write_csv(
-            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
-        )
-        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "999.99")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_fallback_uses_an_alias_stored_price(self, mock_quotes):
+        """Test day-one failure can fall back to the alias's existing history.
 
-    def test_get_last_known_price_falls_through_to_history(self):
-        """Test the chain reaches prices_history.csv when earlier sources are unusable."""
-        self.write_csv(
-            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "Error: timeout"]]
-        )
-        self.write_csv(
-            "prices_history.csv", self.HEADER, [["AAPL", "2025-12-31", "123.45"]]
-        )
-        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "123.45")
-
-    def test_get_last_known_price_returns_none_when_nothing_stored(self):
-        """Test an unknown fund with no stored data has no fallback."""
-        self.assertIsNone(get_last_known_price("AAPL", self.test_dir))
-
-
-class TestMainEntryPoint(DataDirCase):
-    """Test the main() command-line entry point."""
-
-    @patch("builtins.print")
-    def test_main_history_without_start_date_errors(self, mock_print):
-        """Test --history without --start reports an error and stops.
-
-        main(argv) parses the list it is given, as parse_arguments(args)
-        does, so a test drives a mode with the real flags instead of patching
-        parse_arguments with a namespace whose unset attributes are truthy.
-        """
-        main(["--history", "AAPL"])
-        mock_print.assert_called_once_with(
-            "Error: --start date is required when using --history"
-        )
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.fetch_historical_data")
-    def test_main_history_success_prints_path(self, mock_fetch, mock_print):
-        """Test successful historical retrieval reports the saved file."""
-        mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
-        main(["--history", "AAPL", "--start", "2024-01-01"])
-        mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
-        mock_print.assert_called_once_with(
-            "Historical data saved to: data/history_AAPL_2024-01-01_2024-12-31.csv"
-        )
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.fetch_historical_data")
-    def test_main_history_error_is_reported(self, mock_fetch, mock_print):
-        """Test a failed historical retrieval surfaces the error message."""
-        mock_fetch.return_value = "Error: No data found for symbol BADSYM"
-        main(["--history", "BADSYM", "--start", "2024-01-01"])
-        mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
-
-    def test_the_summary_reads_the_history_in_the_data_directory(self):
-        """Test main() follows DATA_DIR rather than a path fixed at import.
-
-        The suite redirects DATA_DIR in setUpModule; a path bound at import
-        time to the literal data/prices_history.csv made every main() test
-        summarise the repository's committed history instead.
+        The lookup identifier is new and has nothing stored, while the alias
+        carries the fund's whole history.
         """
         self.write_csv(
             "prices_history.csv",
             ["Fund", "Date", "Price", "Currency"],
-            [
-                ["TESTFUND", "2026-10-29", "100.00", "GBP"],
-                ["TESTFUND", "2026-10-30", "101.00", "GBP"],
-            ],
+            [["JFM0003373", "2026-09-17", "192.43", "USD"]],
         )
-        with daily_run_stubs(self.test_dir, specs=[FundSpec("YA", "TESTFUND")]) as s:
-            main([])
-        [row] = s["write_summary"].call_args.args[0]
+
+        mock_quotes.side_effect = Exception("Network error")
+        results = scrape_funds([self.SPEC], self.test_dir)
+
+        self.assertEqual(list(results), [])
         self.assertEqual(
-            (row.name, row.new_date, row.new, row.old),
-            ("TESTFUND", "2026-10-30", "101.00", "100.00"),
-        )
-
-
-class TestPriceFormatting(unittest.TestCase):
-    """Test precision-preserving formatting of Yahoo float32 bar values."""
-
-    def test_format_strips_float32_noise(self):
-        """Test float32 artefacts are not stored as extra decimal places."""
-        self.assertEqual(format_yahoo_price(124.87000274658203), "124.87")
-        self.assertEqual(format_yahoo_price(192.42999267578125), "192.43")
-        self.assertEqual(format_yahoo_price(595.0499877929688), "595.05")
-        self.assertEqual(format_yahoo_price(721.4500122070312), "721.45")
-
-    def test_format_preserves_genuine_decimals(self):
-        """Test real precision is kept, not rounded away."""
-        self.assertEqual(format_yahoo_price(2.7785000801086426), "2.7785")
-        self.assertEqual(format_yahoo_price(5.060999870300293), "5.061")
-        self.assertEqual(format_yahoo_price(21.395000457763672), "21.395")
-
-    def test_format_drops_trailing_point_zero(self):
-        """Test whole numbers are stored without a trailing .0."""
-        self.assertEqual(format_yahoo_price(6317.0), "6317")
-        self.assertEqual(format_yahoo_price(126530.0), "126530")
-        self.assertEqual(format_yahoo_price(13339.0), "13339")
-
-    def test_format_keeps_precision_on_large_values(self):
-        """Test large values keep their decimals (a .7g format would not)."""
-        import numpy as np
-
-        self.assertEqual(format_yahoo_price(np.float32(126530.25)), "126530.25")
-
-
-class TestYahooQuoteFetching(unittest.TestCase):
-    """Test dated quote retrieval from the Yahoo daily-bar route.
-
-    fetch_price_api, the legacy single-price wrapper over the same route, is
-    covered here too.
-    """
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_drops_zero_volume_spike_quoted_in_wrong_currency(self, mock_ticker):
-        """Test an untraded bar far above both neighbours is not stored (#83).
-
-        Yahoo's SWDA.L bar for 2025-10-24 carried the USD listing's price
-        (128.64) in the GBp line, with zero volume.
-        """
-        fake_ticker(
-            mock_ticker,
+            results.carried,
             [
-                ("2025-10-23", 9564.0),
-                ("2025-10-24", 12837.80957),
-                ("2025-10-27", 9720.0),
+                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+                ["JFM0003373", "2026-09-17", "192.43", "USD"],
             ],
-            currency="GBp",
-            volumes=[127553, 0, 62649],
         )
-        quotes = fetch_yahoo_quotes("SWDA.L", "2025-10-20")
-        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_drops_zero_volume_dip_far_below_both_neighbours(self, mock_ticker):
-        """Test the guard is symmetric: a wrong price can be too low too."""
-        fake_ticker(
-            mock_ticker,
-            [("2025-10-23", 100.0), ("2025-10-24", 70.0), ("2025-10-27", 101.0)],
-            volumes=[500, 0, 500],
-        )
-        quotes = fetch_yahoo_quotes("XXXX.L", "2025-10-20")
-        self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_keeps_traded_bar_however_far_it_moves(self, mock_ticker):
-        """Test a bar with volume is trusted: real trades can spike."""
-        fake_ticker(
-            mock_ticker,
-            [("2022-09-26", 39.4), ("2022-09-27", 60.0), ("2022-09-28", 42.9)],
-            volumes=[43405, 71342, 123451],
-        )
-        quotes = fetch_yahoo_quotes("GLTL.L", "2022-09-20")
-        self.assertEqual(len(quotes), 3)
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_keeps_zero_volume_step_that_the_next_bar_confirms(self, mock_ticker):
-        """Test a level change is not a spike: funds report no volume at all."""
-        fake_ticker(
-            mock_ticker,
-            [("2026-09-16", 100.0), ("2026-09-17", 130.0), ("2026-09-18", 131.0)],
-            volumes=[0, 0, 0],
-        )
-        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
-        self.assertEqual(len(quotes), 3)
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_keeps_newest_bar_which_has_no_next_bar_to_judge_by(self, mock_ticker):
-        """Test the newest bar is kept: one neighbour cannot show a spike."""
-        fake_ticker(
-            mock_ticker,
-            [("2026-09-17", 100.0), ("2026-09-18", 140.0)],
-            volumes=[500, 0],
-        )
-        quotes = fetch_yahoo_quotes("XXXX.L", "2026-09-10")
-        self.assertEqual(len(quotes), 2)
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_spike_neighbours_skip_bars_without_a_price(self, mock_ticker):
-        """Test a null-close bar does not hide a spike's neighbour."""
-        fake_ticker(
-            mock_ticker,
-            [
-                ("2025-10-22", 6.5655),
-                ("2025-10-23", float("nan")),
-                ("2025-10-24", 8.9258),
-                ("2025-10-27", 6.7285),
-            ],
-            volumes=[83899, 0, 0, 292481],
-        )
-        quotes = fetch_yahoo_quotes("WLDS.L", "2025-10-20")
-        self.assertEqual([q.date for q in quotes], ["2025-10-22", "2025-10-27"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_returns_dated_quotes(self, mock_ticker):
-        """Test each bar becomes a Quote carrying the bar's own date."""
-        fake_ticker(
-            mock_ticker, [("2026-09-17", 192.42999267578125), ("2026-09-18", 193.5)]
-        )
-        quotes = fetch_yahoo_quotes("0P00000YAN", "2026-09-10")
-        self.assertEqual(
-            quotes,
-            [Quote("2026-09-17", "192.43", "GBP"), Quote("2026-09-18", "193.5", "GBP")],
-        )
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_requests_unadjusted_close(self, mock_ticker):
-        """Test history is requested unadjusted so prices match those snapped."""
-        inst = fake_ticker(mock_ticker, [("2026-09-18", 7.15)])
-        fetch_yahoo_quotes("IDTG.L", "2026-09-10", "2026-09-19")
-        kwargs = inst.history.call_args.kwargs
-        self.assertFalse(kwargs["auto_adjust"])
-        self.assertEqual(kwargs["start"], "2026-09-10")
-        self.assertEqual(kwargs["end"], "2026-09-19")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_preserves_pence_currency(self, mock_ticker):
-        """Test GBp is not silently normalised to GBP."""
-        fake_ticker(mock_ticker, [("2026-09-18", 6317.0)], currency="GBp")
-        self.assertEqual(fetch_yahoo_quotes("SGLN.L", "2026-09-10")[0].currency, "GBp")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_drops_rows_without_a_price(self, mock_ticker):
-        """Test NaN closes are skipped rather than stored."""
-        fake_ticker(mock_ticker, [("2026-09-17", float("nan")), ("2026-09-18", 7.15)])
-        quotes = fetch_yahoo_quotes("IDTG.L", "2026-09-10")
-        self.assertEqual([q.date for q in quotes], ["2026-09-18"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_empty_history_returns_no_quotes(self, mock_ticker):
-        """Test an empty result is not an error."""
-        fake_ticker(mock_ticker, [])
-        self.assertEqual(fetch_yahoo_quotes("IDTG.L", "2026-09-10"), [])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_exception_propagates_to_retry_wrapper(self, mock_ticker):
-        """Test transport errors are raised so fetch_with_retries can retry."""
-        mock_ticker.side_effect = ConnectionError("Network error")
-        with self.assertRaises(ConnectionError):
-            fetch_yahoo_quotes("IDTG.L", "2026-09-10")
 
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_fetch_price_api_uses_latest_quote(self, mock_quotes):
-        """Test the price API wrapper returns the newest quote, not .info."""
-        mock_quotes.return_value = [
-            Quote("2026-09-16", "192.23", "USD"),
-            Quote("2026-09-17", "192.43", "USD"),
-        ]
-        self.assertEqual(fetch_price_api("0P00000YAN"), "192.43")
-        self.assertEqual(mock_quotes.call_args.args[0], "0P00000YAN")
+    def test_failure_is_reported_once_per_fund(self, mock_quotes):
+        """Test an aliased fund is not reported twice for one failure."""
+        mock_quotes.side_effect = Exception("Network error")
+        results = scrape_funds([self.SPEC], self.test_dir)
+        self.assertEqual(len(results.failures), 1)
+        self.assertIn("0P00000YAN", results.failures[0])
 
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_fetch_price_api_reports_missing_price(self, mock_quotes):
-        """Test the error contract is kept when no quotes come back."""
-        mock_quotes.return_value = []
-        self.assertEqual(fetch_price_api("BADSYM"), "Error: Price not available")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_price_api_reports_exception(self, mock_ticker):
-        """Test an error below the wrapper keeps the "Error: <message>" contract."""
-        mock_ticker.side_effect = ConnectionError("Network error")
-        self.assertEqual(fetch_price_api("IDTG.L"), "Error: Network error")
+    def test_plain_tuples_are_still_accepted(self, mock_quotes):
+        """Test existing callers passing (source, id) pairs keep working."""
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+        results = scrape_funds([("YA", "QQQ")], self.test_dir)
+        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
 
-FT_ROWS = """
-<tr>
-  <td><span class="mod-ui-hide-small-below">Friday, September 18, 2026</span>
-      <span class="mod-ui-hide-medium-above">Fri, Sep 18, 2026</span></td>
-  <td>7.10</td><td>7.20</td><td>7.05</td><td>7.15</td>
-  <td><span>0</span></td>
-</tr>
-<tr>
-  <td><span class="mod-ui-hide-small-below">Thursday, September 17, 2026</span>
-      <span class="mod-ui-hide-medium-above">Thu, Sep 17, 2026</span></td>
-  <td>1,230.00</td><td>1,240.00</td><td>1,225.00</td><td>1,234.5600</td>
-  <td><span>0</span></td>
-</tr>
-"""
-
-
-class TestFTQuoteFetching(unittest.TestCase):
-    """Test dated quote retrieval from the FT historical-prices endpoint.
-
-    The page and the rows are GB00B1FXTF86's, recorded 2026-11-02 (see
-    fixtures/): the tearsheet trimmed to the elements the parser reads, and
-    the ajax response for 2026-10-19 to 2026-10-30 unchanged. FT reports no
-    row for Tuesday 2026-10-20, the kind of omission the rebuild's retention
-    rule exists for. FT_ROWS stands in only for shapes the recording lacks.
-    """
-
-    ISIN = "GB00B1FXTF86"
-    NOW = utc(2026, 11, 2, 12)  # every recorded day has settled in New York
-    PAGE = fixture_text("ft_GB00B1FXTF86_tearsheet.html")
-    HISTORY = json.loads(fixture_text("ft_GB00B1FXTF86_history.json"))
-    RECORDED_DATES = [
-        "2026-10-19",
-        "2026-10-21",
-        "2026-10-22",
-        "2026-10-23",
-        "2026-10-26",
-        "2026-10-27",
-        "2026-10-28",
-        "2026-10-29",
-        "2026-10-30",
-    ]
-
-    @staticmethod
-    def _responses(page=None, rows=None):
-        """The page response then the ajax response, recorded unless given.
-
-        A staticmethod because TestFTUnfinishedDay borrows it by class.
-        """
-        page_resp = MagicMock()
-        page_resp.text = TestFTQuoteFetching.PAGE if page is None else page
-        ajax_resp = MagicMock()
-        ajax_resp.json.return_value = (
-            TestFTQuoteFetching.HISTORY if rows is None else {"html": rows}
-        )
-        return [page_resp, ajax_resp]
-
-    def fetch(self, start="2026-10-19", end="2026-10-30"):
-        return fetch_ft_quotes(self.ISIN, start, end, now=self.NOW)
-
-    @patch("scrape_fund_price.requests.get")
-    def test_returns_dated_quotes_with_currency(self, mock_get):
-        """Test the recorded rows become Quotes carrying FT's date and currency."""
-        mock_get.side_effect = self._responses()
-        quotes = self.fetch()
-        self.assertEqual([q.date for q in quotes], self.RECORDED_DATES)
-        self.assertEqual(quotes[0], Quote("2026-10-19", "6.99", "GBP"))
-        self.assertEqual(quotes[-1], Quote("2026-10-30", "6.84", "GBP"))
-
-    @patch("scrape_fund_price.requests.get")
-    def test_uses_close_not_open(self, mock_get):
-        """Test the closing price is taken, not the opening price."""
-        mock_get.side_effect = self._responses(rows=FT_ROWS)
-        quotes = self.fetch("2026-09-01", "2026-09-20")
-        self.assertEqual([q.price for q in quotes], ["1234.5600", "7.15"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_strips_thousands_separators_without_float_conversion(self, mock_get):
-        """Test FT text prices keep their exact digits, commas removed."""
-        mock_get.side_effect = self._responses(rows=FT_ROWS)
-        quotes = self.fetch("2026-09-01", "2026-09-20")
-        self.assertEqual(quotes[0], Quote("2026-09-17", "1234.5600", "GBP"))
-
-    @patch("scrape_fund_price.requests.get")
-    def test_requests_the_page_then_the_endpoint_with_slash_dates(self, mock_get):
-        """Test the page gives the numeric xid and the ajax call YYYY/MM/DD dates.
-
-        The page carries the FT symbol GB00B1FXTF86:GBP in another module's
-        config; only the historical module's numeric id is the xid.
-        """
-        mock_get.side_effect = self._responses()
-        self.fetch()
-        page_url, ajax_url = (call.args[0] for call in mock_get.call_args_list)
-        self.assertEqual(
-            page_url, scrape_fund_price.FT_HISTORICAL_PAGE.format(isin=self.ISIN)
-        )
-        self.assertEqual(
-            ajax_url,
-            scrape_fund_price.FT_HISTORICAL_AJAX.format(
-                start="2026/10/19", end="2026/10/30", xid="28305998"
-            ),
-        )
-
-    @patch("scrape_fund_price.requests.get")
-    def test_missing_internal_id_raises(self, mock_get):
-        """Test a page without the internal id is an error, not empty data."""
-        mock_get.side_effect = self._responses(page="<html>no config here</html>")
-        with self.assertRaises(ValueError) as error:
-            self.fetch()
-        self.assertIn(self.ISIN, str(error.exception))
-
-    @patch("scrape_fund_price.requests.get")
-    def test_no_rows_raises(self, mock_get):
-        """Test an empty result set is an error so the fallback can run."""
-        mock_get.side_effect = self._responses(rows="")
-        with self.assertRaises(ValueError) as error:
-            self.fetch()
-        self.assertIn(self.ISIN, str(error.exception))
-
-    @patch("scrape_fund_price.requests.get")
-    def test_missing_currency_label_is_tolerated(self, mock_get):
-        """Test quotes are still returned when no currency label is present."""
-        page = self.PAGE.replace("Price (GBP)", "Price")
-        mock_get.side_effect = self._responses(page=page)
-        self.assertEqual(self.fetch()[0], Quote("2026-10-19", "6.99", ""))
+# ===========================================================================
+# Price storage
+# ===========================================================================
 
 
 class TestHistoryUpsert(DataDirCase):
@@ -1420,365 +2438,358 @@ class TestHistoryUpsert(DataDirCase):
         )
 
 
-class TestWindowedScraping(DataDirCase):
-    """Test scrape_funds over dated windows, and lazy browser startup."""
+class TestLatestNeverGoesBackwards(DataDirCase):
+    """Regression: a stale fetch replaced newer latest prices with older ones.
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_emits_a_row_per_quote_with_currency(self, mock_quotes):
-        """Test every quote in the window becomes a dated result row."""
-        mock_quotes.return_value = [
-            Quote("2026-09-17", "1.50", "GBp"),
-            Quote("2026-09-18", "1.60", "GBp"),
-        ]
-        results = scrape_funds([("YA", "SGLN.L")], self.test_dir)
-        self.assertEqual(
-            list(results),
-            [
-                ["SGLN.L", "2026-09-17", "1.50", "GBp"],
-                ["SGLN.L", "2026-09-18", "1.60", "GBp"],
-            ],
-        )
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_ft_quotes")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_browser_not_started_for_api_only_config(self, mock_y, mock_ft, mock_pw):
-        """Test Playwright is not launched when no fund needs scraping."""
-        mock_y.return_value = [Quote("2026-09-18", "1.60", "USD")]
-        mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
-        scrape_funds([("YA", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
-        mock_pw.assert_not_called()
-
-    def test_ft_and_api_sources_do_not_require_a_browser(self):
-        """Test source_requires_browser reflects the HTTP-only routes."""
-        self.assertFalse(source_requires_browser("FT", "GB00B1FXTF86"))
-        self.assertFalse(source_requires_browser("YA", "QQQ"))
-        self.assertTrue(source_requires_browser("YH", "IDTG.L"))
-
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_total_failure_writes_no_history_row(self, mock_quotes):
-        """Test a fund that cannot be fetched contributes no dated row."""
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir)
-        self.assertEqual(list(results), [])
-        self.assertEqual(len(results.failures), 1)
-        self.assertIn("QQQ", results.failures[0])
-
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes):
-        """Test the per-fund price file is not overwritten with an error."""
-        self.write_text("latest_QQQ.price", "700.00\n")
-        mock_quotes.side_effect = Exception("Network error")
-        scrape_funds([("YA", "QQQ")], self.test_dir)
-        self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.scrape_price_with_common_settings")
-    @patch("scrape_fund_price.fetch_ft_quotes")
-    def test_ft_failure_falls_back_to_scraping(self, mock_ft, mock_scrape, mock_pw):
-        """Test an FT endpoint failure still yields a price, dated as today."""
-        mock_ft.side_effect = ValueError("FT internal id not found")
-        mock_scrape.return_value = "7.15"
-        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir)
-        today = date.today().isoformat()
-        self.assertEqual(list(results), [["GB00B1FXTF86", today, "7.15", ""]])
-        mock_pw.assert_called()
-
-
-class TestFailureDoesNotSuppressOutput(unittest.TestCase):
-    """Test a partially failed run still publishes everything it obtained."""
-
-    SPECS = [FundSpec("YA", "QQQ"), FundSpec("YA", "GRAB")]
-
-    def test_results_are_written_before_failure_is_signalled(self):
-        """Test output is written even when some funds failed, then the job fails."""
-        results = ScrapeResults(
-            [["QQQ", "2026-09-18", "721.45", "USD"]],
-            failures=["GRAB: Error: Timeout"],
-        )
-        with daily_run_stubs(specs=self.SPECS, scrape_funds=results) as stubs:
-            with self.assertRaises(SystemExit) as error:
-                main([])
-
-        # The write must happen, otherwise a single failing fund would
-        # discard a whole day of good prices.
-        stubs["write_results"].assert_called_once_with(results)
-        self.assertEqual(error.exception.code, 1)
-
-    def test_clean_run_does_not_exit_non_zero(self):
-        """Test a run with no failures completes normally."""
-        results = ScrapeResults([["QQQ", "2026-09-18", "721.45", "USD"]])
-        with daily_run_stubs(specs=self.SPECS[:1], scrape_funds=results) as stubs:
-            main([])
-        stubs["write_results"].assert_called_once_with(results)
-
-    def _crashing_run(self, crash):
-        """Run the daily mode with every step stubbed and `crash` raising.
-
-        Returns the stubs by name together with the exit code and what was
-        printed, so a test can assert which steps still ran.
-        """
-        outcomes = {
-            "update_uk_cpi": scrape_fund_price.UkCpiResults(),
-            "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
-            crash: RuntimeError(f"{crash} exploded"),
-        }
-        with daily_run_stubs(
-            specs=[FundSpec("YA", "QQQ")], pairs=["USDGBP"], **outcomes
-        ) as stubs:
-            with self.assertRaises(SystemExit) as error:
-                main([])
-        stubs["exit_code"] = error.exception.code
-        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
-        return stubs
-
-    def test_a_crash_in_the_price_step_does_not_cost_the_other_files(self):
-        """Test an exception outside the per-fund retries is a price failure.
-
-        AGENTS.md promises the run writes everything it obtained and only
-        then exits non-zero; the dividend, CPI and Bank Rate steps keep that
-        promise, so the price step must too.
-        """
-        ran = self._crashing_run("scrape_funds")
-        ran["write_fx_results"].assert_called_once()
-        ran["update_dividends"].assert_called_once()
-        ran["update_uk_cpi"].assert_called_once()
-        ran["update_uk_bank_rate"].assert_called_once()
-        ran["write_summary"].assert_called_once()
-        self.assertEqual(ran["exit_code"], 1)
-        self.assertIn("Error: prices: scrape_funds exploded", ran["printed"])
-
-    def test_a_crash_writing_the_prices_is_a_price_failure_too(self):
-        """Test the whole step is covered, not only the fetch."""
-        ran = self._crashing_run("write_results")
-        ran["write_summary"].assert_called_once()
-        self.assertEqual(ran["exit_code"], 1)
-        self.assertIn("Error: prices: write_results exploded", ran["printed"])
-
-    def test_a_crash_in_the_fx_step_does_not_cost_the_other_files(self):
-        """Test the FX step is isolated the same way, as `fx: <error>`."""
-        ran = self._crashing_run("snap_fx_rates")
-        ran["write_results"].assert_called_once()
-        ran["update_dividends"].assert_called_once()
-        ran["update_uk_cpi"].assert_called_once()
-        ran["update_uk_bank_rate"].assert_called_once()
-        ran["write_summary"].assert_called_once()
-        self.assertEqual(ran["exit_code"], 1)
-        self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
-
-
-class TestFxInTheDailyRun(DataDirCase):
-    """Test main() snaps and writes the configured pairs beside the prices.
-
-    Every other main() test stubs the pairs to [], so the FX branch of the
-    daily run was never exercised.
+    On 2026-10-10 Yahoo served no Friday close for the London ETFs, so the run
+    fetched Thursday as its newest bar and latest_prices.csv (and the per-fund
+    .price files) were rewritten from 2026-10-09 back to 2026-10-08. History
+    kept the Friday rows; only the "latest" views regressed.
     """
 
-    PAIRS = ["USDGBP", "HKDGBP"]
+    FRIDAY = [
+        ["CNX1.L", "2026-10-09", "133800", "GBp"],
+        ["IWDG.L", "2026-10-09", "1270.5", "GBp"],
+        ["QQQ", "2026-10-09", "751.27", "USD"],
+        ["SGLN.L", "2026-10-09", "6141", "GBp"],
+    ]
+    THURSDAY = [
+        ["CNX1.L", "2026-10-08", "134720", "GBp"],
+        ["IWDG.L", "2026-10-08", "1263", "GBp"],
+        ["QQQ", "2026-10-08", "747.58", "USD"],
+        ["SGLN.L", "2026-10-08", "6039", "GBp"],
+    ]
+
+    def _read(self, name):
+        return self.read_rows(name)
+
+    def _price_file(self, fund):
+        return self.read_text(f"latest_{fund}.price").strip()
+
+    def _stale_run(self):
+        """Friday is stored, then a run whose newest bar is Thursday."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_results(list(self.THURSDAY), self.test_dir)
+
+    def test_latest_prices_keeps_the_newer_row(self):
+        """Test an older fetched date does not replace the stored newer row."""
+        self._stale_run()
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+
+    def test_stale_fetch_is_logged(self):
+        """Test the ignored stale row is reported, not silently dropped."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        with patch("builtins.print") as mock_print:
+            write_results([self.THURSDAY[0]], self.test_dir)
+        output = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("CNX1.L", output)
+        self.assertIn("2026-10-08", output)
+        self.assertIn("2026-10-09", output)
+
+    def test_history_keeps_the_newer_row(self):
+        """Test a stale fetch never costs history its newer rows."""
+        self._stale_run()
+        history = self._read("prices_history.csv")
+        for row in self.FRIDAY + self.THURSDAY:
+            self.assertIn(row, history)
+
+    def test_rolling_window_keeps_the_newer_row(self):
+        """Test the 90-day file also still holds the newer rows."""
+        self._stale_run()
+        rolling = self._read("prices_history_90_days.csv")
+        for row in self.FRIDAY:
+            self.assertIn(row, rolling)
+
+    def test_same_date_still_replaces_the_stored_row(self):
+        """Test a correction to the stored date is still applied."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_results([["CNX1.L", "2026-10-09", "133850", "GBp"]], self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"][2], "133850")
+
+    def test_newer_date_still_advances_the_row(self):
+        """Test the guard does not stop a genuinely newer price."""
+        write_results(list(self.THURSDAY), self.test_dir)
+        write_results(list(self.FRIDAY), self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+
+    def test_fund_with_nothing_stored_takes_what_it_is_given(self):
+        """Test the guard only applies against a stored row."""
+        write_results([self.THURSDAY[0]], self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), [self.THURSDAY[0]])
+
+    def test_stored_latest_row_newer_than_history_is_kept(self):
+        """Test latest_prices.csv itself is a floor, not only the history."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        os.remove(self.path("prices_history.csv"))
+        write_results([self.THURSDAY[0]], self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
+
+    def test_carried_row_does_not_regress_latest(self):
+        """Test a failed fund keeps its newest stored row."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        results = ScrapeResults(rows=[self.THURSDAY[1]])
+        results.carried.append(list(self.FRIDAY[0]))
+        write_results(results, self.test_dir)
+        latest = {r[0]: r for r in self._read("latest_prices.csv")}
+        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
+        self.assertEqual(latest["IWDG.L"], self.FRIDAY[1])
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_file_keeps_the_newer_price(self, mock_quotes, mock_pw):
+        """Test latest_<id>.price is not rewritten from an older bar."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        write_latest_price_file("CNX1.L", "133800", self.test_dir)
+        mock_quotes.return_value = [
+            Quote("2026-10-07", "135120", "GBp"),
+            Quote("2026-10-08", "134720", "GBp"),
+        ]
+        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_file_advances_on_a_newer_bar(self, mock_quotes, mock_pw):
+        """Test the price file still follows a newer bar."""
+        write_results(list(self.THURSDAY), self.test_dir)
+        write_latest_price_file("CNX1.L", "134720", self.test_dir)
+        mock_quotes.return_value = [Quote("2026-10-09", "133800", "GBp")]
+        scrape_funds([("YA", "CNX1.L")], self.test_dir)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_whole_daily_run_with_stale_bars(self, mock_quotes, mock_pw):
+        """Test the exact 2026-10-10 sequence end to end."""
+        write_results(list(self.FRIDAY), self.test_dir)
+        for row in self.FRIDAY:
+            write_latest_price_file(row[0], row[2], self.test_dir)
+        quotes = {row[0]: [Quote(row[1], row[2], row[3])] for row in self.THURSDAY}
+        mock_quotes.side_effect = lambda symbol, start, end=None: quotes[symbol]
+        results = scrape_funds([("YA", s) for s in quotes], self.test_dir)
+        write_results(results, self.test_dir)
+        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
+        self.assertEqual(self._price_file("CNX1.L"), "133800")
+        self.assertEqual(self._price_file("IWDG.L"), "1270.5")
+
+    def test_latest_fx_keeps_the_newer_rate(self):
+        """Test latest_fx.csv is derived from history and cannot regress.
+
+        TestFxStorage covers the newest date winning within one write; this
+        is the stale second run, an older date written after a newer one.
+        """
+        write_fx_results([["USDGBP", "2026-10-09", "0.75568"]], self.test_dir)
+        write_fx_results([["USDGBP", "2026-10-08", "0.75672"]], self.test_dir)
+        self.assertEqual(
+            self._read("latest_fx.csv"), [["USDGBP", "2026-10-09", "0.75568"]]
+        )
+
+
+class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
+    """Test the 90-day window tracks latest_prices.csv, not raw history.
+
+    A closed holding can have real prices inside the last 90 days: FBTC ran to
+    2026-08-17. Those rows belong in history, but the rolling window answers
+    "what is being priced now" alongside latest_prices.csv, and the daily run
+    would otherwise start emitting rows for an instrument it no longer fetches.
+    """
 
     def setUp(self):
         super().setUp()
-        # A stored rate for one pair only, so the FX summary can tell a pair
-        # that failed from one that simply has no history.
-        self.write_csv(
-            "fx_history.csv",
-            ["Pair", "Date", "Rate"],
-            [["USDGBP", "2026-10-29", "0.750000"]],
+        self.recent = (date.today() - timedelta(days=5)).isoformat()
+
+    def _rolling(self):
+        return self.read_rows("prices_history_90_days.csv")
+
+    def test_closed_holdings_are_excluded_from_the_window(self):
+        """Test a recent closed-holding row stays out of the rolling file."""
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["FBTC", self.recent, "55.94", "USD"],
+        ]
+        write_history_files(
+            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
         )
+        self.assertEqual([row[0] for row in self._rolling()], ["QQQ"])
 
-    def _run(self, fx_results):
-        """Run the daily mode with `fx_results` snapped.
+    def test_history_still_keeps_every_row(self):
+        """Test excluding them from the window does not drop them."""
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["FBTC", self.recent, "55.94", "USD"],
+        ]
+        write_history_files(
+            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
+        )
+        stored = self.read_rows("prices_history.csv")
+        self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
 
-        Returns the stubs by name together with the exit code (None for a
-        clean run) and what was printed.
+    def test_derived_latest_still_covers_everything(self):
+        """Test the default path is unchanged when no latest is supplied.
+
+        A caller that does not pass `latest` has no notion of a closed
+        holding, so the window must keep its old meaning for it.
         """
-        with daily_run_stubs(
-            self.test_dir,
-            specs=[FundSpec("YA", "QQQ")],
-            pairs=self.PAIRS,
-            snap_fx_rates=fx_results,
-        ) as stubs:
-            try:
-                main([])
-            except SystemExit as error:
-                stubs["exit_code"] = error.code
-            else:
-                stubs["exit_code"] = None
-        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
-        return stubs
-
-    def test_the_configured_pairs_are_snapped_and_written(self):
-        """Test the snap gets the pairs and the write gets its rows."""
-        rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
-        ran = self._run(rates)
-        ran["snap_fx_rates"].assert_called_once_with(self.PAIRS)
-        ran["write_fx_results"].assert_called_once_with(rates)
-        ran["write_summary"].assert_called_once()
-        self.assertIsNone(ran["exit_code"])
-
-    def test_a_pairs_failure_reaches_the_exit_code_after_the_summary(self):
-        """Test a dead pair fails the run, marked in the FX summary."""
-        rates = ScrapeResults(failures=["HKDGBP: Error: Timeout"])
-        ran = self._run(rates)
-        self.assertEqual(ran["exit_code"], 1)
-        ran["write_fx_results"].assert_called_once_with(rates)
-        fx_rows = ran["write_summary"].call_args.args[1]
-        self.assertEqual(
-            [(row.name, row.failed) for row in fx_rows],
-            [("USDGBP", False), ("HKDGBP", True)],
-        )
-        self.assertIn("Error: HKDGBP: Error: Timeout", ran["printed"])
+        rows = [
+            ["QQQ", self.recent, "266.28", "USD"],
+            ["AAA", self.recent, "1.50", "GBP"],
+        ]
+        write_history_files(rows, self.test_dir)
+        self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
 
 
-class TestFundSpecParsing(DataDirCase):
-    """Test funds.txt parsing, including aliases and validation."""
+class TestLineEndings(DataDirCase):
+    """Test every written file uses LF, independent of platform.
 
-    def specs(self, text):
-        return read_fund_specs(self.write_text("funds.txt", text))
+    csv.writer defaults to CRLF on every platform. Combined with git's
+    autocrlf on Windows normalising to LF while a Linux runner stores CRLF,
+    that made the data files flip on every handover between a local commit and
+    a scheduled run: one overnight commit showed 3,906 insertions for 4 rows
+    of real data.
+    """
 
-    def assertRejectedAt(self, text, line):
-        """Assert the file is rejected with an error naming `line`."""
-        with self.assertRaises(ValueError) as error:
-            self.specs(text)
-        self.assertIn(f"line {line}", str(error.exception))
+    def assertNoCarriageReturns(self, *names):
+        for name in names:
+            path = self.path(name)
+            self.assertTrue(os.path.exists(path), f"{name} was not written")
+            with open(path, "rb") as f:
+                raw = f.read()
+            self.assertNotIn(b"\r", raw, f"{name} contains carriage returns")
+            self.assertGreater(raw.count(b"\n"), 0, f"{name} has no line breaks")
 
-    def test_two_field_line_has_no_aliases(self):
-        """Test existing config lines keep their meaning."""
-        specs = self.specs("YA,QQQ\n")
-        self.assertEqual(specs, [FundSpec("YA", "QQQ", ())])
-        self.assertEqual(specs[0].publish_ids, ("QQQ",))
-
-    def test_third_field_adds_an_alias(self):
-        """Test a fund can publish under a second identifier."""
-        specs = self.specs("YA,0P00000YAN,JFM0003373\n")
-        self.assertEqual(specs[0].lookup_id, "0P00000YAN")
-        self.assertEqual(specs[0].aliases, ("JFM0003373",))
-        self.assertEqual(specs[0].publish_ids, ("0P00000YAN", "JFM0003373"))
-
-    def test_multiple_aliases_are_semicolon_separated(self):
-        """Test more than one alias can be given."""
-        specs = self.specs("YA,ABC,ONE;TWO\n")
-        self.assertEqual(specs[0].publish_ids, ("ABC", "ONE", "TWO"))
-
-    def test_whitespace_and_blank_lines_are_ignored(self):
-        """Test untidy config files still parse."""
-        specs = self.specs("\n  YA , QQQ , ALIAS \n\n  \nFT,ISIN1\n")
-        self.assertEqual(
-            specs, [FundSpec("YA", "QQQ", ("ALIAS",)), FundSpec("FT", "ISIN1", ())]
-        )
-
-    def test_comments_are_stripped(self):
-        """Test the inline comments the docs have always shown actually work."""
-        specs = self.specs("# a heading\nFT,GB00B1FXTF86    # Financial Times\n")
-        self.assertEqual(specs, [FundSpec("FT", "GB00B1FXTF86", ())])
-
-    def test_read_fund_ids_still_returns_pairs(self):
-        """Test the existing helper keeps its shape for existing callers."""
-        path = self.write_text("funds.txt", "YA,0P00000YAN,JFM0003373\nFT,ISIN1\n")
-        self.assertEqual(read_fund_ids(path), [("YA", "0P00000YAN"), ("FT", "ISIN1")])
-
-    def test_line_with_one_field_is_rejected(self):
-        """Test an incomplete line names its line number."""
-        self.assertRejectedAt("YA,QQQ\nJUSTONE\n", 2)
-
-    def test_empty_source_or_identifier_is_rejected(self):
-        """Test blank fields are not silently accepted."""
-        self.assertRejectedAt("YA,QQQ\n,MISSING_SOURCE\n", 2)
-
-    def test_empty_alias_is_rejected(self):
-        """Test a stray separator is treated as a typo, not an empty alias."""
-        self.assertRejectedAt("YA,ABC,ONE;;TWO\n", 1)
-
-    def test_alias_matching_its_own_lookup_id_is_rejected(self):
-        """Test a self-referencing alias is rejected rather than double-writing."""
-        self.assertRejectedAt("YA,ABC,ABC\n", 1)
-
-    def test_duplicate_identifier_across_lines_is_rejected(self):
-        """Test a repeated fund cannot silently produce duplicate rows."""
-        self.assertRejectedAt("YA,QQQ\nFT,ISIN1\nYA,QQQ\n", 3)
-
-    def test_alias_colliding_with_another_funds_id_is_rejected(self):
-        """Test an alias cannot shadow a different instrument."""
-        self.assertRejectedAt("YA,QQQ\nYA,ABC,QQQ\n", 2)
-
-
-class TestAliasPublishing(DataDirCase):
-    """Test that one fetch publishes under every configured identifier."""
-
-    SPEC = FundSpec("YA", "0P00000YAN", ("JFM0003373",))
-    QUOTE = Quote("2026-09-17", "192.43", "USD")
-
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_is_fetched_once_for_all_identifiers(self, mock_quotes):
-        """Test aliases cost no extra network calls."""
-        mock_quotes.return_value = [self.QUOTE]
-        scrape_funds(
-            [FundSpec("YA", "0P00000YAN", ("JFM0003373", "EXTRA"))], self.test_dir
-        )
-        self.assertEqual(mock_quotes.call_count, 1)
-
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_each_identifier_gets_an_identical_row(self, mock_quotes):
-        """Test every identifier records the same date, price and currency."""
-        mock_quotes.return_value = [self.QUOTE]
-        results = scrape_funds([self.SPEC], self.test_dir)
-        self.assertEqual(
-            list(results),
+    def test_price_files_use_lf(self):
+        """Test history, latest and rolling files are LF."""
+        write_history_files(
             [
-                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
-                ["JFM0003373", "2026-09-17", "192.43", "USD"],
+                ["AAA", "2026-09-18", "1.50", "GBP"],
+                ["BBB", "2026-09-18", "2.50", "USD"],
+            ],
+            self.test_dir,
+        )
+        self.assertNoCarriageReturns(
+            "prices_history.csv", "latest_prices.csv", "prices_history_90_days.csv"
+        )
+
+    def test_fx_files_use_lf(self):
+        """Test FX history and latest rates are LF."""
+        write_fx_files([["USDGBP", "2026-09-18", "0.748615"]], self.test_dir)
+        self.assertNoCarriageReturns("fx_history.csv", "latest_fx.csv")
+
+    def test_summary_files_use_lf(self):
+        """Test the summary CSV and Markdown are LF."""
+        rows = build_price_summary(
+            [
+                ["AAA", "2026-09-17", "1.00", "GBP"],
+                ["AAA", "2026-09-18", "1.50", "GBP"],
+            ],
+            [FundSpec("YA", "AAA", ())],
+            [],
+            "2026-09-18",
+        )
+        write_summary(rows, [], "2026-09-18", self.test_dir)
+        self.assertNoCarriageReturns("daily_summary.csv", "daily_summary.md")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_historical_mode_csv_uses_lf(self, mock_ticker):
+        """Test the --history export is LF too."""
+        fake_ticker(mock_ticker, bars=[("2026-09-18", 1.5)])
+        result = fetch_historical_data(
+            "AAPL", "2026-09-01", "2026-09-18", self.test_dir
+        )
+        self.assertFalse(result.startswith("Error:"), result)
+        self.assertNoCarriageReturns(os.path.basename(result))
+
+    def test_price_file_per_fund_uses_lf(self):
+        """Test the single-value .price files are LF."""
+        write_latest_price_file("AAA", "1.50", self.test_dir)
+        self.assertNoCarriageReturns("latest_AAA.price")
+
+
+class TestPriceFallbackSources(DataDirCase):
+    """Test the last-known-price fallback chain used when fetches fail."""
+
+    HEADER = ["Fund", "Date", "Price"]
+
+    def test_read_latest_csv_price_returns_usable_price(self):
+        """Test latest_prices.csv supplies a fallback price for a known fund."""
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
+        self.assertEqual(read_latest_csv_price("AAPL", self.test_dir), "150.25")
+
+    def test_read_latest_csv_price_skips_unusable_values(self):
+        """Test error and N/A entries are not reused as prices."""
+        self.write_csv(
+            "latest_prices.csv",
+            self.HEADER,
+            [
+                ["AAPL", "2026-01-01", "Error: timeout"],
+                ["MSFT", "2026-01-01", "N/A"],
             ],
         )
+        self.assertIsNone(read_latest_csv_price("AAPL", self.test_dir))
+        self.assertIsNone(read_latest_csv_price("MSFT", self.test_dir))
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_a_price_file_is_written_per_identifier(self, mock_quotes):
-        """Test per-fund price files exist for aliases too."""
-        mock_quotes.return_value = [self.QUOTE]
-        scrape_funds([self.SPEC], self.test_dir)
-        for fund_id in ("0P00000YAN", "JFM0003373"):
-            with self.subTest(fund=fund_id):
-                price_file = self.read_text(f"latest_{fund_id}.price")
-                self.assertEqual(price_file.strip(), "192.43")
+    def test_read_latest_csv_price_unknown_fund_returns_none(self):
+        """Test a fund absent from latest_prices.csv yields no fallback."""
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
+        self.assertIsNone(read_latest_csv_price("TSLA", self.test_dir))
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_fallback_uses_an_alias_stored_price(self, mock_quotes):
-        """Test day-one failure can fall back to the alias's existing history.
-
-        The lookup identifier is new and has nothing stored, while the alias
-        carries the fund's whole history.
-        """
+    def test_read_history_price_returns_most_recent_usable(self):
+        """Test history fallback prefers the last usable row for the fund."""
         self.write_csv(
             "prices_history.csv",
-            ["Fund", "Date", "Price", "Currency"],
-            [["JFM0003373", "2026-09-17", "192.43", "USD"]],
-        )
-
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([self.SPEC], self.test_dir)
-
-        self.assertEqual(list(results), [])
-        self.assertEqual(
-            results.carried,
+            self.HEADER,
             [
-                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
-                ["JFM0003373", "2026-09-17", "192.43", "USD"],
+                ["AAPL", "2026-01-01", "100.00"],
+                ["AAPL", "2026-01-02", "110.00"],
+                ["MSFT", "2026-01-02", "200.00"],
             ],
         )
+        self.assertEqual(read_history_price("AAPL", self.test_dir), "110.00")
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failure_is_reported_once_per_fund(self, mock_quotes):
-        """Test an aliased fund is not reported twice for one failure."""
-        mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([self.SPEC], self.test_dir)
-        self.assertEqual(len(results.failures), 1)
-        self.assertIn("0P00000YAN", results.failures[0])
+    def test_read_history_price_all_unusable_returns_none(self):
+        """Test history with only error rows provides no fallback price."""
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
+            [
+                ["AAPL", "2026-01-01", "Error: timeout"],
+                ["AAPL", "2026-01-02", "N/A"],
+            ],
+        )
+        self.assertIsNone(read_history_price("AAPL", self.test_dir))
 
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_plain_tuples_are_still_accepted(self, mock_quotes):
-        """Test existing callers passing (source, id) pairs keep working."""
-        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        results = scrape_funds([("YA", "QQQ")], self.test_dir)
-        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+    def test_get_last_known_price_prefers_price_file_over_csv(self):
+        """Test the fallback chain checks the per-fund price file first."""
+        self.write_text("latest_AAPL.price", "999.99\n")
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
+        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "999.99")
+
+    def test_get_last_known_price_falls_through_to_history(self):
+        """Test the chain reaches prices_history.csv when earlier sources are unusable."""
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "Error: timeout"]]
+        )
+        self.write_csv(
+            "prices_history.csv", self.HEADER, [["AAPL", "2025-12-31", "123.45"]]
+        )
+        self.assertEqual(get_last_known_price("AAPL", self.test_dir), "123.45")
+
+    def test_get_last_known_price_returns_none_when_nothing_stored(self):
+        """Test an unknown fund with no stored data has no fallback."""
+        self.assertIsNone(get_last_known_price("AAPL", self.test_dir))
+
+
+# ===========================================================================
+# Backfill and rebuild
+# ===========================================================================
 
 
 class TestBackfillArguments(unittest.TestCase):
@@ -1822,21 +2833,6 @@ class TestBackfillArguments(unittest.TestCase):
         """Test a valid invocation produces no error."""
         args = parse_arguments(["--backfill", "--from", "2023-01-01"])
         self.assertIsNone(validate_backfill_args(args))
-
-
-class BackfillCase(DataDirCase):
-    """A DataDirCase for the price rebuild, with the FX rebuild kept out.
-
-    backfill_history ends by rebuilding whatever fx_pairs.txt in the working
-    directory lists, and the repository's lists four pairs: left alone, every
-    test below would fetch years of Yahoo FX bars for them.
-    """
-
-    def setUp(self):
-        super().setUp()
-        no_pairs = patch("scrape_fund_price.read_fx_pairs", return_value=[])
-        no_pairs.start()
-        self.addCleanup(no_pairs.stop)
 
 
 class TestBackfillRebuild(BackfillCase):
@@ -2134,108 +3130,6 @@ class TestBackfillReporting(BackfillCase):
         self.assertEqual(report.warnings, [])
 
 
-class TestBackfillMainMode(DataDirCase):
-    """Test the --backfill entry point."""
-
-    QQQ_ROW = "| QQQ | 1 | 1 | 0 | 2 | 2023-01-03 | 2026-09-18 | USD | rebuilt |"
-
-    @staticmethod
-    def report_with_qqq():
-        report = BackfillReport()
-        report.entries.append(
-            {
-                "identifier": "QQQ",
-                "before": 1,
-                "deleted": 1,
-                "retained": 0,
-                "inserted": 2,
-                "first": "2023-01-03",
-                "last": "2026-09-18",
-                "currency": "USD",
-                "status": "rebuilt",
-            }
-        )
-        return report
-
-    @patch("builtins.print")
-    def test_invalid_invocation_exits_two_without_fetching(self, mock_print):
-        """Test a bad invocation is rejected before any network call."""
-        with self.assertRaises(SystemExit) as error:
-            main(["--backfill"])
-
-        self.assertEqual(error.exception.code, 2)
-        self.assertEqual(mock_print.call_args.args[0][:7], "Error: ")
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.backfill_history")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_successful_backfill_prints_the_report(
-        self, mock_specs, mock_backfill, mock_print
-    ):
-        """Test the reconciliation report reaches stdout."""
-        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
-        mock_backfill.return_value = self.report_with_qqq()
-
-        main(["--backfill", "--from", "2023-01-01"])
-
-        mock_backfill.assert_called_once_with(mock_specs.return_value, "2023-01-01")
-        printed = mock_print.call_args.args[0]
-        self.assertIn(self.QQQ_ROW, printed.splitlines())
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.backfill_history")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_failures_exit_non_zero_after_writing(
-        self, mock_specs, mock_backfill, mock_print
-    ):
-        """Test the job fails loudly, but only after the report is produced."""
-        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
-        report = BackfillReport()
-        report.failures.append("QQQ: Error: Timeout")
-        mock_backfill.return_value = report
-
-        with self.assertRaises(SystemExit) as error:
-            main(["--backfill", "--from", "2023-01-01"])
-
-        self.assertEqual(error.exception.code, 1)
-        printed = mock_print.call_args.args[0].splitlines()
-        self.assertIn("**Failures**", printed)
-        self.assertIn("- QQQ: Error: Timeout", printed)
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.backfill_history")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_report_is_added_to_the_actions_job_summary(
-        self, mock_specs, mock_backfill, mock_print
-    ):
-        """Test the report appears on the workflow run page when in Actions."""
-        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
-        mock_backfill.return_value = self.report_with_qqq()
-
-        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
-            main(["--backfill", "--from", "2023-01-01"])
-
-        written = self.read_text("summary.md").splitlines()
-        self.assertEqual(written[0], "## Backfill from 2023-01-01")
-        self.assertIn(self.QQQ_ROW, written)
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.backfill_history")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_no_summary_written_outside_actions(
-        self, mock_specs, mock_backfill, mock_print
-    ):
-        """Test a local run prints the report and needs no Actions environment."""
-        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
-        mock_backfill.return_value = BackfillReport()
-
-        env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
-        with patch.dict(os.environ, env, clear=True):
-            main(["--backfill", "--from", "2023-01-01"])
-
-        mock_print.assert_called_once_with(BackfillReport().to_markdown())
-
-
 class TestBackfillReportRendering(unittest.TestCase):
     """Test report rendering details."""
 
@@ -2380,49 +3274,385 @@ class TestBackfillProtectsSourceDerivedRows(BackfillCase):
         )
 
 
-class TestFxPairConfiguration(DataDirCase):
-    """Test fx_pairs.txt parsing and validation."""
+class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
+    """Test a rebuild preserves imported history without promoting it."""
 
-    def pairs(self, text):
-        return read_fx_pairs(self.write_text("fx_pairs.txt", text))
+    def _rows(self, name):
+        return self.read_rows(name)
 
-    def test_reads_one_pair_per_line(self):
-        """Test the configured pairs are read in order."""
-        pairs = self.pairs("NZDGBP\nSGDGBP\nUSDGBP\nHKDGBP\n")
-        self.assertEqual(pairs, ["NZDGBP", "SGDGBP", "USDGBP", "HKDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_imported_rows_survive_a_rebuild(self, mock_quotes, _pairs):
+        """Test rows for an unconfigured identifier are never deleted."""
+        write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
+        mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
+        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
+        self.assertIn(
+            ["BN4MYX3", "2024-01-04", "218.95", "GBX"], self._rows("prices_history.csv")
+        )
 
-    def test_ignores_comments_and_blank_lines(self):
-        """Test the file can be annotated."""
-        pairs = self.pairs("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n")
-        self.assertEqual(pairs, ["USDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_rebuild_does_not_promote_them_to_latest(self, mock_quotes, _pairs):
+        """Test latest_prices.csv covers configured funds only.
 
-    def test_rejects_a_slash_separated_pair(self):
-        """Test the market-convention spelling is rejected, not misread.
-
-        'GBP/NZD' conventionally means NZD per GBP, the inverse of what is
-        wanted, so accepting it would store plausible but wrong values.
+        The daily run builds latest from what it just fetched, so a rebuild
+        that added closed holdings would have them appear and then vanish on
+        the next run: churn in the committed data for no information.
         """
-        with self.assertRaises(ValueError) as error:
-            self.pairs("GBP/NZD\n")
-        self.assertIn("line 1", str(error.exception))
+        write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
+        mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
+        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
+        self.assertEqual([row[0] for row in self._rows("latest_prices.csv")], ["QQQ"])
+        self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
 
-    def test_rejects_lowercase_and_wrong_length(self):
-        """Test only six uppercase letters are accepted."""
-        for bad in ("usdgbp", "USDGB", "USDGBPX"):
-            with self.subTest(pair=bad):
-                with self.assertRaises(ValueError) as error:
-                    self.pairs(bad + "\n")
-                self.assertIn("line 1", str(error.exception))
 
-    def test_rejects_duplicate_pairs(self):
-        """Test a repeated pair cannot produce duplicate rows."""
-        with self.assertRaises(ValueError) as error:
-            self.pairs("USDGBP\nSGDGBP\nUSDGBP\n")
-        self.assertIn("line 3", str(error.exception))
+class TestBackfillMainMode(DataDirCase):
+    """Test the --backfill entry point."""
 
-    def test_missing_file_means_no_fx(self):
-        """Test FX is optional, so an absent file is not an error."""
-        self.assertEqual(read_fx_pairs(self.path("absent.txt")), [])
+    QQQ_ROW = "| QQQ | 1 | 1 | 0 | 2 | 2023-01-03 | 2026-09-18 | USD | rebuilt |"
+
+    @staticmethod
+    def report_with_qqq():
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "QQQ",
+                "before": 1,
+                "deleted": 1,
+                "retained": 0,
+                "inserted": 2,
+                "first": "2023-01-03",
+                "last": "2026-09-18",
+                "currency": "USD",
+                "status": "rebuilt",
+            }
+        )
+        return report
+
+    @patch("builtins.print")
+    def test_invalid_invocation_exits_two_without_fetching(self, mock_print):
+        """Test a bad invocation is rejected before any network call."""
+        with self.assertRaises(SystemExit) as error:
+            main(["--backfill"])
+
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(mock_print.call_args.args[0][:7], "Error: ")
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    def test_successful_backfill_prints_the_report(
+        self, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the reconciliation report reaches stdout."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        mock_backfill.return_value = self.report_with_qqq()
+
+        main(["--backfill", "--from", "2023-01-01"])
+
+        mock_backfill.assert_called_once_with(mock_specs.return_value, "2023-01-01")
+        printed = mock_print.call_args.args[0]
+        self.assertIn(self.QQQ_ROW, printed.splitlines())
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    def test_failures_exit_non_zero_after_writing(
+        self, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the job fails loudly, but only after the report is produced."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        report = BackfillReport()
+        report.failures.append("QQQ: Error: Timeout")
+        mock_backfill.return_value = report
+
+        with self.assertRaises(SystemExit) as error:
+            main(["--backfill", "--from", "2023-01-01"])
+
+        self.assertEqual(error.exception.code, 1)
+        printed = mock_print.call_args.args[0].splitlines()
+        self.assertIn("**Failures**", printed)
+        self.assertIn("- QQQ: Error: Timeout", printed)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    def test_report_is_added_to_the_actions_job_summary(
+        self, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the report appears on the workflow run page when in Actions."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        mock_backfill.return_value = self.report_with_qqq()
+
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
+            main(["--backfill", "--from", "2023-01-01"])
+
+        written = self.read_text("summary.md").splitlines()
+        self.assertEqual(written[0], "## Backfill from 2023-01-01")
+        self.assertIn(self.QQQ_ROW, written)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    def test_no_summary_written_outside_actions(
+        self, mock_specs, mock_backfill, mock_print
+    ):
+        """Test a local run prints the report and needs no Actions environment."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        mock_backfill.return_value = BackfillReport()
+
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+        with patch.dict(os.environ, env, clear=True):
+            main(["--backfill", "--from", "2023-01-01"])
+
+        mock_print.assert_called_once_with(BackfillReport().to_markdown())
+
+
+# ===========================================================================
+# Closed-holdings import
+# ===========================================================================
+
+
+class TestClosedHoldingImport(DataDirCase):
+    """Test the one-off import writes history and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        self.holding = ClosedHolding(
+            "BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2023-01-05"
+        )
+
+    def _history(self):
+        return self.read_rows("prices_history.csv")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_rows_are_stored_under_the_identifier(self, mock_quotes):
+        """Test the published identifier is the SEDOL, not the lookup symbol."""
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        holding = self.holding._replace(identifier="BMV7ZZ3")
+        import_closed_holdings([holding], self.test_dir)
+        self.assertEqual(self._history(), [["BMV7ZZ3", "2023-01-03", "2.4705", "USD"]])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_quotes_outside_the_window_are_dropped(self, mock_quotes):
+        """Test a source that over-returns cannot extend a closed holding.
+
+        The window is the period actually held; a source returning the fund's
+        whole life would otherwise import years of irrelevant prices. Both
+        ends are inclusive: a quote on the window's last day is stored.
+        """
+        mock_quotes.return_value = [
+            Quote("2022-12-30", "2.40", "USD"),
+            Quote("2023-01-03", "2.4705", "USD"),
+            Quote("2023-01-05", "2.50", "USD"),
+            Quote("2023-01-06", "2.60", "USD"),
+        ]
+        import_closed_holdings([self.holding], self.test_dir)
+        self.assertEqual(
+            [row[1] for row in self._history()], ["2023-01-03", "2023-01-05"]
+        )
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_configured_currency_is_stored(self, mock_quotes):
+        """Test rows carry a currency, so a rebuild treats them as real."""
+        mock_quotes.return_value = [Quote("2023-01-03", "849.00", "GBX")]
+        holding = self.holding._replace(currency="GBX")
+        import_closed_holdings([holding], self.test_dir)
+        self.assertEqual(self._history()[0][3], "GBX")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_currency_mismatch_skips_the_holding(self, mock_quotes):
+        """Test a source that resolves to the wrong listing imports nothing.
+
+        FT's ISIN lookup silently redirected BKCH's ISIN to the German EUR
+        line and returned 288 plausible EUR quotes for an LSE USD holding.
+        Asserting the currency is what turns that into a visible failure.
+        """
+        mock_quotes.return_value = [Quote("2023-01-03", "2.34", "EUR")]
+        report = import_closed_holdings([self.holding], self.test_dir)
+        self.assertEqual(self._history(), [])
+        self.assertTrue(any("EUR" in failure for failure in report.failures))
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_source_reporting_no_currency_is_accepted(self, mock_quotes):
+        """Test IV, which reports no currency, is stamped from config."""
+        mock_quotes.return_value = [Quote("2023-01-03", "218.95", "")]
+        holding = self.holding._replace(source="IV", currency="GBX")
+        import_closed_holdings([holding], self.test_dir)
+        self.assertEqual(self._history()[0][3], "GBX")
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_existing_rows_for_other_funds_are_untouched(self, mock_quotes):
+        """Test the import adds to history and never rewrites it."""
+        write_history_files([["QQQ", "2023-01-03", "266.28", "USD"]], self.test_dir)
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        import_closed_holdings([self.holding], self.test_dir)
+        self.assertIn(["QQQ", "2023-01-03", "266.28", "USD"], self._history())
+        self.assertIn(["BKCH", "2023-01-03", "2.4705", "USD"], self._history())
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_import_is_idempotent(self, mock_quotes):
+        """Test re-running corrects rather than duplicating."""
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        import_closed_holdings([self.holding], self.test_dir)
+        import_closed_holdings([self.holding], self.test_dir)
+        self.assertEqual(len(self._history()), 1)
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_latest_and_rolling_files_are_not_written(self, mock_quotes):
+        """Test a closed holding never reaches the files that describe today.
+
+        latest_prices.csv, the 90-day window and the .price files all answer
+        "what is this worth now". A fund that stopped trading in 2024 has no
+        answer, and writing one would churn against the next daily run.
+        """
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        import_closed_holdings([self.holding], self.test_dir)
+        for name in (
+            "latest_prices.csv",
+            "prices_history_90_days.csv",
+            "latest_BKCH.price",
+        ):
+            self.assertFalse(
+                os.path.exists(self.path(name)),
+                f"{name} should not be written by a closed-holding import",
+            )
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_failed_fetch_is_reported_and_isolated(self, mock_quotes):
+        """Test one dead source does not cost the other holdings their import."""
+        mock_quotes.side_effect = [
+            ValueError("no rows"),
+            [Quote("2023-01-03", "849.00", "GBX")],
+        ]
+        other = ClosedHolding(
+            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
+        )
+        report = import_closed_holdings([self.holding, other], self.test_dir)
+        self.assertEqual([row[0] for row in self._history()], ["BMV7ZZ3"])
+        self.assertTrue(report.failures)
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_report_counts_what_was_imported(self, mock_quotes):
+        """Test the report reconciles the import for review."""
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "2.4705", "USD"),
+            Quote("2023-01-04", "2.69325", "USD"),
+        ]
+        report = import_closed_holdings([self.holding], self.test_dir)
+        entry = report.entries[0]
+        self.assertEqual(entry["identifier"], "BKCH")
+        self.assertEqual(entry["inserted"], 2)
+        self.assertEqual(entry["deleted"], 0)
+        self.assertIn("BKCH", report.to_markdown())
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
+        """Test a pence/pounds switch inside a window is flagged for review.
+
+        An import runs once and is then trusted, so a source that changes
+        quoting unit mid-window has to be visible in the report.
+        """
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "8.49", "GBX"),
+            Quote("2023-01-04", "849.00", "GBX"),
+        ]
+        holding = ClosedHolding(
+            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
+        )
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(any("quoting unit" in w for w in report.warnings))
+
+
+class TestClosedHoldingWindowEnds(DataDirCase):
+    """Test the last day of a window survives, whatever the source's convention.
+
+    Yahoo's daily bars treat the end date as exclusive while FT and investing
+    .com treat it as inclusive, so passing the configured end straight through
+    silently dropped the final day from Yahoo holdings only: BKCH imported 284
+    rows ending 2024-02-15 for a window ending 2024-02-16. That the stored
+    rows are then clipped to the inclusive window is
+    TestClosedHoldingImport.test_quotes_outside_the_window_are_dropped.
+    """
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_sources_are_asked_past_the_window_end(self, mock_quotes):
+        """Test the fetch reaches beyond the end so nothing depends on it."""
+        mock_quotes.return_value = [Quote("2024-02-16", "10.115", "USD")]
+        holding = ClosedHolding(
+            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
+        )
+        import_closed_holdings([holding], self.test_dir)
+        self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
+
+
+class TestClosedImportMainMode(DataDirCase):
+    """Test the CLI entry point for the one-off import."""
+
+    def test_flag_is_parsed(self):
+        """Test --import-closed is available."""
+        args = parse_arguments(["--import-closed"])
+        self.assertTrue(args.import_closed)
+
+    def test_flag_defaults_off(self):
+        """Test a normal run is unaffected."""
+        self.assertFalse(parse_arguments([]).import_closed)
+
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings")
+    @patch("scrape_fund_price.scrape_funds")
+    def test_import_mode_skips_the_daily_run(self, mock_scrape, mock_read, mock_import):
+        """Test importing never triggers a scrape or an FX snap."""
+        mock_read.return_value = [
+            ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2024-02-16")
+        ]
+        mock_import.return_value = BackfillReport()
+        main(["--import-closed"])
+        mock_import.assert_called_once()
+        mock_scrape.assert_not_called()
+
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings")
+    def test_failures_exit_non_zero(self, mock_read, mock_import):
+        """Test a partial import is visible to CI."""
+        mock_read.return_value = []
+        report = BackfillReport()
+        report.failures.append("BN4MYX3: no rows")
+        mock_import.return_value = report
+        with self.assertRaises(SystemExit):
+            main(["--import-closed"])
+
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
+    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
+        """Test the reconciliation table reaches the Actions run page."""
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "BKCH",
+                "before": 0,
+                "deleted": 0,
+                "retained": 0,
+                "inserted": 285,
+                "first": "2023-01-03",
+                "last": "2024-02-16",
+                "currency": "USD",
+                "status": "imported",
+            }
+        )
+        mock_import.return_value = report
+        summary_path = self.path("step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            main(["--import-closed"])
+        written = self.read_text("step_summary.md")
+        self.assertIn("Closed-holding import", written)
+        self.assertIn("BKCH", written)
+
+
+# ===========================================================================
+# FX rates
+# ===========================================================================
 
 
 class TestNewYorkFxCloses(unittest.TestCase):
@@ -2761,6 +3991,74 @@ class TestFxBackfill(DataDirCase):
         self.assertIn("USDGBP", report.failures[0])
 
 
+class TestFxInTheDailyRun(DataDirCase):
+    """Test main() snaps and writes the configured pairs beside the prices.
+
+    Every other main() test stubs the pairs to [], so the FX branch of the
+    daily run was never exercised.
+    """
+
+    PAIRS = ["USDGBP", "HKDGBP"]
+
+    def setUp(self):
+        super().setUp()
+        # A stored rate for one pair only, so the FX summary can tell a pair
+        # that failed from one that simply has no history.
+        self.write_csv(
+            "fx_history.csv",
+            ["Pair", "Date", "Rate"],
+            [["USDGBP", "2026-10-29", "0.750000"]],
+        )
+
+    def _run(self, fx_results):
+        """Run the daily mode with `fx_results` snapped.
+
+        Returns the stubs by name together with the exit code (None for a
+        clean run) and what was printed.
+        """
+        with daily_run_stubs(
+            self.test_dir,
+            specs=[FundSpec("YA", "QQQ")],
+            pairs=self.PAIRS,
+            snap_fx_rates=fx_results,
+        ) as stubs:
+            try:
+                main([])
+            except SystemExit as error:
+                stubs["exit_code"] = error.code
+            else:
+                stubs["exit_code"] = None
+        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
+        return stubs
+
+    def test_the_configured_pairs_are_snapped_and_written(self):
+        """Test the snap gets the pairs and the write gets its rows."""
+        rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
+        ran = self._run(rates)
+        ran["snap_fx_rates"].assert_called_once_with(self.PAIRS)
+        ran["write_fx_results"].assert_called_once_with(rates)
+        ran["write_summary"].assert_called_once()
+        self.assertIsNone(ran["exit_code"])
+
+    def test_a_pairs_failure_reaches_the_exit_code_after_the_summary(self):
+        """Test a dead pair fails the run, marked in the FX summary."""
+        rates = ScrapeResults(failures=["HKDGBP: Error: Timeout"])
+        ran = self._run(rates)
+        self.assertEqual(ran["exit_code"], 1)
+        ran["write_fx_results"].assert_called_once_with(rates)
+        fx_rows = ran["write_summary"].call_args.args[1]
+        self.assertEqual(
+            [(row.name, row.failed) for row in fx_rows],
+            [("USDGBP", False), ("HKDGBP", True)],
+        )
+        self.assertIn("Error: HKDGBP: Error: Timeout", ran["printed"])
+
+
+# ===========================================================================
+# Daily summary
+# ===========================================================================
+
+
 class TestPriceSummary(unittest.TestCase):
     """Test day-on-day change calculation."""
 
@@ -3037,752 +4335,6 @@ class TestSummaryRendering(DataDirCase):
         self.assertTrue(os.path.exists(self.path("daily_summary.md")))
 
 
-class TestSourceCodeCanonicalisation(DataDirCase):
-    """Test the GF -> YA rename and its deprecation alias."""
-
-    def _write(self, text):
-        return self.write_text("funds.txt", text)
-
-    def test_current_codes_pass_through_unchanged(self):
-        """Test canonical codes are left alone."""
-        for code in ("YA", "FT", "YH", "MS"):
-            self.assertEqual(canonical_source(code), code)
-
-    def test_deprecated_gf_maps_to_ya(self):
-        """Test GF still resolves, to the Yahoo API."""
-        self.assertEqual(canonical_source("GF"), "YA")
-
-    def test_yh_is_not_swept_into_the_alias(self):
-        """Test the Yahoo scraping code keeps its own meaning.
-
-        Reusing YH for the API would silently change which handler a stale
-        funds.txt line selects, which is why the rename chose YA.
-        """
-        self.assertEqual(canonical_source("YH"), "YH")
-        url, selector = get_source_config("YH", "IDTG.L")
-        self.assertTrue(url and selector)
-
-    @patch("builtins.print")
-    def test_deprecated_code_warns_naming_the_line(self, mock_print):
-        """Test the warning says where to fix the configuration."""
-        read_fund_specs(self._write("YA,QQQ\nGF,GRAB\n"))
-        warned = " ".join(str(c) for c in mock_print.call_args_list)
-        self.assertIn("GF", warned)
-        self.assertIn("YA", warned)
-        self.assertIn("line 2", warned)
-
-    def test_parser_returns_canonical_sources(self):
-        """Test downstream code only ever sees one spelling."""
-        specs = read_fund_specs(self._write("GF,QQQ\nYA,GRAB\nFT,ISIN1\n"))
-        self.assertEqual([s.source for s in specs], ["YA", "YA", "FT"])
-
-    def test_ya_uses_the_api_and_needs_no_browser(self):
-        """Test the renamed code routes exactly as GF did."""
-        self.assertFalse(source_requires_browser("YA", "QQQ"))
-        with patch(
-            "scrape_fund_price.fetch_yahoo_quotes",
-            return_value=[Quote("2026-09-18", "721.45", "USD")],
-        ) as mock_quotes:
-            quotes = scrape_fund_quotes("YA", "QQQ", "2026-09-10")
-        self.assertEqual(quotes[0].price, "721.45")
-        mock_quotes.assert_called_once()
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_deprecated_code_still_scrapes_correctly(self, mock_quotes, mock_pw):
-        """Test an unmigrated funds.txt keeps producing prices."""
-        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        results = scrape_funds(read_fund_specs(self._write("GF,QQQ\n")), self.test_dir)
-        self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
-        mock_pw.assert_not_called()
-
-    def test_closed_holdings_share_the_alias(self):
-        """Test closed_holdings.txt uses funds.txt's source vocabulary."""
-        path = self.write_text(
-            "closed_holdings.txt", "BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n"
-        )
-        [holding] = read_closed_holdings(path)
-        self.assertEqual(holding.source, "YA")
-
-    def test_dividend_collection_shares_the_alias(self):
-        """Test a (source, identifier) pair spelt GF is still fetched from Yahoo."""
-        event = scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")
-        with patch.object(
-            scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: [event]
-        ):
-            with patch.object(
-                scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
-            ):
-                results = scrape_fund_price.collect_dividends(
-                    [("GF", "QQQ")], date(2026, 10, 26)
-                )
-        self.assertEqual(len(results), 1)
-
-    def test_committed_funds_file_uses_only_current_codes(self):
-        """Test the repository's own configuration has been migrated."""
-        specs = read_fund_specs("funds.txt")
-        self.assertEqual({s.source for s in specs}, {"YA", "FT"})
-        self.assertEqual(len(specs), 32)
-
-
-class TestLineEndings(DataDirCase):
-    """Test every written file uses LF, independent of platform.
-
-    csv.writer defaults to CRLF on every platform. Combined with git's
-    autocrlf on Windows normalising to LF while a Linux runner stores CRLF,
-    that made the data files flip on every handover between a local commit and
-    a scheduled run: one overnight commit showed 3,906 insertions for 4 rows
-    of real data.
-    """
-
-    def assertNoCarriageReturns(self, *names):
-        for name in names:
-            path = self.path(name)
-            self.assertTrue(os.path.exists(path), f"{name} was not written")
-            with open(path, "rb") as f:
-                raw = f.read()
-            self.assertNotIn(b"\r", raw, f"{name} contains carriage returns")
-            self.assertGreater(raw.count(b"\n"), 0, f"{name} has no line breaks")
-
-    def test_price_files_use_lf(self):
-        """Test history, latest and rolling files are LF."""
-        write_history_files(
-            [
-                ["AAA", "2026-09-18", "1.50", "GBP"],
-                ["BBB", "2026-09-18", "2.50", "USD"],
-            ],
-            self.test_dir,
-        )
-        self.assertNoCarriageReturns(
-            "prices_history.csv", "latest_prices.csv", "prices_history_90_days.csv"
-        )
-
-    def test_fx_files_use_lf(self):
-        """Test FX history and latest rates are LF."""
-        write_fx_files([["USDGBP", "2026-09-18", "0.748615"]], self.test_dir)
-        self.assertNoCarriageReturns("fx_history.csv", "latest_fx.csv")
-
-    def test_summary_files_use_lf(self):
-        """Test the summary CSV and Markdown are LF."""
-        rows = build_price_summary(
-            [
-                ["AAA", "2026-09-17", "1.00", "GBP"],
-                ["AAA", "2026-09-18", "1.50", "GBP"],
-            ],
-            [FundSpec("YA", "AAA", ())],
-            [],
-            "2026-09-18",
-        )
-        write_summary(rows, [], "2026-09-18", self.test_dir)
-        self.assertNoCarriageReturns("daily_summary.csv", "daily_summary.md")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_historical_mode_csv_uses_lf(self, mock_ticker):
-        """Test the --history export is LF too."""
-        fake_ticker(mock_ticker, bars=[("2026-09-18", 1.5)])
-        result = fetch_historical_data(
-            "AAPL", "2026-09-01", "2026-09-18", self.test_dir
-        )
-        self.assertFalse(result.startswith("Error:"), result)
-        self.assertNoCarriageReturns(os.path.basename(result))
-
-    def test_price_file_per_fund_uses_lf(self):
-        """Test the single-value .price files are LF."""
-        write_latest_price_file("AAA", "1.50", self.test_dir)
-        self.assertNoCarriageReturns("latest_AAA.price")
-
-
-class TestClosedHoldingConfiguration(DataDirCase):
-    """Test the closed-holdings config, which is deliberately not funds.txt.
-
-    These instruments are no longer held. Keeping them out of funds.txt is
-    what stops the daily run fetching prices for a fund that stopped trading
-    years ago, so the two files must stay separate.
-    """
-
-    def _write(self, text):
-        return self.write_text("closed_holdings.txt", text)
-
-    def test_parses_a_holding_into_its_fields(self):
-        """Test every field a one-off import needs is carried."""
-        holdings = read_closed_holdings(
-            self._write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
-        )
-        self.assertEqual(
-            holdings,
-            [ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2024-02-16")],
-        )
-
-    def test_identifier_and_lookup_id_are_independent(self):
-        """Test a holding is published under the identifier, not the symbol.
-
-        BMV7ZZ3 is a SEDOL; the price comes from an FT symbol that names a
-        fund since renamed twice. Neither spelling belongs in the other's slot.
-        """
-        holding = read_closed_holdings(
-            self._write("BMV7ZZ3,FT,SEAL:LSE:GBX,GBX,2024-03-21,2024-10-25\n")
-        )[0]
-        self.assertEqual(holding.identifier, "BMV7ZZ3")
-        self.assertEqual(holding.lookup_id, "SEAL:LSE:GBX")
-
-    def test_blank_lines_and_comments_are_ignored(self):
-        """Test the file can be documented, including trailing comments."""
-        holdings = read_closed_holdings(
-            self._write(
-                "# closed holdings\n"
-                "\n"
-                "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16  # last held Feb 2024\n"
-            )
-        )
-        self.assertEqual(len(holdings), 1)
-        self.assertEqual(holdings[0].end, "2024-02-16")
-
-    def test_short_line_names_the_line_number(self):
-        """Test a malformed line fails before any network call."""
-        with self.assertRaises(ValueError) as caught:
-            read_closed_holdings(self._write("BKCH,YA,BKCH.L\n"))
-        self.assertIn("line 1", str(caught.exception))
-
-    def test_invalid_date_is_rejected(self):
-        """Test a date typo cannot silently import the wrong window."""
-        with self.assertRaises(ValueError) as caught:
-            read_closed_holdings(
-                self._write("BKCH,YA,BKCH.L,USD,2023-13-01,2024-02-16\n")
-            )
-        self.assertIn("line 1", str(caught.exception))
-
-    def test_end_before_start_is_rejected(self):
-        """Test a reversed window is caught rather than importing nothing."""
-        with self.assertRaises(ValueError) as caught:
-            read_closed_holdings(
-                self._write("BKCH,YA,BKCH.L,USD,2024-02-16,2023-01-03\n")
-            )
-        self.assertIn("line 1", str(caught.exception))
-
-    def test_duplicate_identifier_is_rejected(self):
-        """Test two windows for one identifier cannot fight over the same rows."""
-        with self.assertRaises(ValueError) as caught:
-            read_closed_holdings(
-                self._write(
-                    "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
-                    "BKCH,YA,BKCH.L,USD,2022-01-03,2022-02-16\n"
-                )
-            )
-        self.assertIn("line 2", str(caught.exception))
-
-    def test_committed_file_holds_the_closed_holdings(self):
-        """Test the repository's own configuration matches what was researched."""
-        holdings = read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE)
-        self.assertEqual(
-            {h.identifier: h.source for h in holdings},
-            {
-                "BKCH": "YA",
-                "BMV7ZZ3": "FT",
-                "BN4MYX3": "IV",
-                "SPOG": "YA",
-                "R2SC": "YA",
-                "CNDX": "YA",
-                "FBTC": "YA",
-                "JFM50541951": "IV",
-            },
-        )
-
-    def test_committed_windows_are_fully_present_in_history(self):
-        """Test the committed history actually covers every configured window.
-
-        The import is a one-off, so nothing re-runs to catch a window that
-        silently came back short: Yahoo treats the end date as exclusive and
-        BKCH first imported 284 rows for a 285-day window.
-        """
-        stored = read_history_rows(os.path.join("data", "prices_history.csv"))
-        for holding in read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE):
-            dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
-            self.assertTrue(dates, f"{holding.identifier} has no stored history")
-            self.assertEqual(dates[0], holding.start, holding.identifier)
-            self.assertEqual(dates[-1], holding.end, holding.identifier)
-
-    def test_closed_holdings_are_absent_from_the_daily_configuration(self):
-        """Test the daily run cannot pick up an instrument that stopped trading."""
-        daily = {
-            identifier
-            for spec in read_fund_specs("funds.txt")
-            for identifier in spec.publish_ids
-        }
-        closed = {h.identifier for h in read_closed_holdings("closed_holdings.txt")}
-        self.assertEqual(daily & closed, set())
-
-
-class TestInvestingQuotes(unittest.TestCase):
-    """Test the IV handler, the only source that still carries a dead fund.
-
-    BN4MYX3 was liquidated in March 2024 and is absent from Yahoo and FT.
-    justETF retains it but serves a converted, rounded series measured at a
-    median 1.6% from the real closes, so it is not a substitute.
-    """
-
-    def _response(self, rows):
-        response = MagicMock()
-        response.json.return_value = {"data": rows}
-        response.raise_for_status.return_value = None
-        return response
-
-    @patch("scrape_fund_price.requests.get")
-    def test_returns_quotes_oldest_first(self, mock_get):
-        """Test the newest-first payload is reversed for storage."""
-        mock_get.return_value = self._response(
-            [
-                {
-                    "rowDateTimestamp": "2024-03-13T00:00:00Z",
-                    "last_closeRaw": "247.87500000000000",
-                },
-                {
-                    "rowDateTimestamp": "2024-01-04T00:00:00Z",
-                    "last_closeRaw": "218.94999694824219",
-                },
-            ]
-        )
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
-        self.assertEqual([q.date for q in quotes], ["2024-01-04", "2024-03-13"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_float32_noise_is_removed_without_losing_the_half_penny(self, mock_get):
-        """Test precision is preserved, not rounded to the displayed 2 dp.
-
-        The endpoint stores float32, so 218.95 arrives as 218.94999694824219
-        while a genuine half-penny close stays exact. Rounding both to the
-        displayed value would throw away a real tick.
-        """
-        mock_get.return_value = self._response(
-            [
-                {
-                    "rowDateTimestamp": "2024-01-04T00:00:00Z",
-                    "last_closeRaw": "218.94999694824219",
-                },
-                {
-                    "rowDateTimestamp": "2024-03-13T00:00:00Z",
-                    "last_closeRaw": "247.87500000000000",
-                },
-            ]
-        )
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
-        self.assertEqual([q.price for q in quotes], ["218.95", "247.875"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_window_is_passed_to_the_endpoint(self, mock_get):
-        """Test the request asks for the window rather than filtering later."""
-        mock_get.return_value = self._response(
-            [{"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"}]
-        )
-        fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
-        url = mock_get.call_args[0][0]
-        self.assertIn("1182866", url)
-        self.assertIn("2024-01-04", url)
-        self.assertIn("2024-03-13", url)
-
-    @patch("scrape_fund_price.requests.get")
-    def test_unusable_rows_are_skipped(self, mock_get):
-        """Test a malformed row does not abort an otherwise good window."""
-        mock_get.return_value = self._response(
-            [
-                {"rowDateTimestamp": "2024-01-05T00:00:00Z", "last_closeRaw": "-"},
-                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
-            ]
-        )
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
-        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_a_row_without_a_date_is_skipped(self, mock_get):
-        """Test a row that cannot be dated is dropped, not stored under ''."""
-        mock_get.return_value = self._response(
-            [
-                {"last_closeRaw": "200.00"},
-                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
-            ]
-        )
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
-        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_empty_payload_raises(self, mock_get):
-        """Test an empty response is an error, not an empty import."""
-        mock_get.return_value = self._response([])
-        with self.assertRaises(ValueError):
-            fetch_investing_quotes("1182866", "2024-01-04", "2024-03-13")
-
-    def test_source_needs_no_browser(self):
-        """Test IV is a plain HTTP source like YA and FT."""
-        self.assertFalse(source_requires_browser("IV", "1182866"))
-
-    @patch("scrape_fund_price.fetch_investing_quotes")
-    def test_dispatch_routes_iv_to_the_handler(self, mock_fetch):
-        """Test the shared dispatch knows the source code."""
-        mock_fetch.return_value = [Quote("2024-01-04", "218.95", "")]
-        quotes = scrape_fund_quotes("IV", "1182866", "2024-01-04", "2024-03-13")
-        self.assertEqual(quotes[0].price, "218.95")
-        mock_fetch.assert_called_once_with("1182866", "2024-01-04", "2024-03-13")
-
-
-class TestClosedHoldingImport(DataDirCase):
-    """Test the one-off import writes history and nothing else."""
-
-    def setUp(self):
-        super().setUp()
-        self.holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2023-01-05"
-        )
-
-    def _history(self):
-        return self.read_rows("prices_history.csv")
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_rows_are_stored_under_the_identifier(self, mock_quotes):
-        """Test the published identifier is the SEDOL, not the lookup symbol."""
-        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
-        holding = self.holding._replace(identifier="BMV7ZZ3")
-        import_closed_holdings([holding], self.test_dir)
-        self.assertEqual(self._history(), [["BMV7ZZ3", "2023-01-03", "2.4705", "USD"]])
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_quotes_outside_the_window_are_dropped(self, mock_quotes):
-        """Test a source that over-returns cannot extend a closed holding.
-
-        The window is the period actually held; a source returning the fund's
-        whole life would otherwise import years of irrelevant prices. Both
-        ends are inclusive: a quote on the window's last day is stored.
-        """
-        mock_quotes.return_value = [
-            Quote("2022-12-30", "2.40", "USD"),
-            Quote("2023-01-03", "2.4705", "USD"),
-            Quote("2023-01-05", "2.50", "USD"),
-            Quote("2023-01-06", "2.60", "USD"),
-        ]
-        import_closed_holdings([self.holding], self.test_dir)
-        self.assertEqual(
-            [row[1] for row in self._history()], ["2023-01-03", "2023-01-05"]
-        )
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_configured_currency_is_stored(self, mock_quotes):
-        """Test rows carry a currency, so a rebuild treats them as real."""
-        mock_quotes.return_value = [Quote("2023-01-03", "849.00", "GBX")]
-        holding = self.holding._replace(currency="GBX")
-        import_closed_holdings([holding], self.test_dir)
-        self.assertEqual(self._history()[0][3], "GBX")
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_currency_mismatch_skips_the_holding(self, mock_quotes):
-        """Test a source that resolves to the wrong listing imports nothing.
-
-        FT's ISIN lookup silently redirected BKCH's ISIN to the German EUR
-        line and returned 288 plausible EUR quotes for an LSE USD holding.
-        Asserting the currency is what turns that into a visible failure.
-        """
-        mock_quotes.return_value = [Quote("2023-01-03", "2.34", "EUR")]
-        report = import_closed_holdings([self.holding], self.test_dir)
-        self.assertEqual(self._history(), [])
-        self.assertTrue(any("EUR" in failure for failure in report.failures))
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_a_source_reporting_no_currency_is_accepted(self, mock_quotes):
-        """Test IV, which reports no currency, is stamped from config."""
-        mock_quotes.return_value = [Quote("2023-01-03", "218.95", "")]
-        holding = self.holding._replace(source="IV", currency="GBX")
-        import_closed_holdings([holding], self.test_dir)
-        self.assertEqual(self._history()[0][3], "GBX")
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_existing_rows_for_other_funds_are_untouched(self, mock_quotes):
-        """Test the import adds to history and never rewrites it."""
-        write_history_files([["QQQ", "2023-01-03", "266.28", "USD"]], self.test_dir)
-        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
-        import_closed_holdings([self.holding], self.test_dir)
-        self.assertIn(["QQQ", "2023-01-03", "266.28", "USD"], self._history())
-        self.assertIn(["BKCH", "2023-01-03", "2.4705", "USD"], self._history())
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_import_is_idempotent(self, mock_quotes):
-        """Test re-running corrects rather than duplicating."""
-        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
-        import_closed_holdings([self.holding], self.test_dir)
-        import_closed_holdings([self.holding], self.test_dir)
-        self.assertEqual(len(self._history()), 1)
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_latest_and_rolling_files_are_not_written(self, mock_quotes):
-        """Test a closed holding never reaches the files that describe today.
-
-        latest_prices.csv, the 90-day window and the .price files all answer
-        "what is this worth now". A fund that stopped trading in 2024 has no
-        answer, and writing one would churn against the next daily run.
-        """
-        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
-        import_closed_holdings([self.holding], self.test_dir)
-        for name in (
-            "latest_prices.csv",
-            "prices_history_90_days.csv",
-            "latest_BKCH.price",
-        ):
-            self.assertFalse(
-                os.path.exists(self.path(name)),
-                f"{name} should not be written by a closed-holding import",
-            )
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_a_failed_fetch_is_reported_and_isolated(self, mock_quotes):
-        """Test one dead source does not cost the other holdings their import."""
-        mock_quotes.side_effect = [
-            ValueError("no rows"),
-            [Quote("2023-01-03", "849.00", "GBX")],
-        ]
-        other = ClosedHolding(
-            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
-        )
-        report = import_closed_holdings([self.holding, other], self.test_dir)
-        self.assertEqual([row[0] for row in self._history()], ["BMV7ZZ3"])
-        self.assertTrue(report.failures)
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_report_counts_what_was_imported(self, mock_quotes):
-        """Test the report reconciles the import for review."""
-        mock_quotes.return_value = [
-            Quote("2023-01-03", "2.4705", "USD"),
-            Quote("2023-01-04", "2.69325", "USD"),
-        ]
-        report = import_closed_holdings([self.holding], self.test_dir)
-        entry = report.entries[0]
-        self.assertEqual(entry["identifier"], "BKCH")
-        self.assertEqual(entry["inserted"], 2)
-        self.assertEqual(entry["deleted"], 0)
-        self.assertIn("BKCH", report.to_markdown())
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
-        """Test a pence/pounds switch inside a window is flagged for review.
-
-        An import runs once and is then trusted, so a source that changes
-        quoting unit mid-window has to be visible in the report.
-        """
-        mock_quotes.return_value = [
-            Quote("2023-01-03", "8.49", "GBX"),
-            Quote("2023-01-04", "849.00", "GBX"),
-        ]
-        holding = ClosedHolding(
-            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
-        )
-        report = import_closed_holdings([holding], self.test_dir)
-        self.assertTrue(any("quoting unit" in w for w in report.warnings))
-
-
-class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
-    """Test a rebuild preserves imported history without promoting it."""
-
-    def _rows(self, name):
-        return self.read_rows(name)
-
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_imported_rows_survive_a_rebuild(self, mock_quotes, _pairs):
-        """Test rows for an unconfigured identifier are never deleted."""
-        write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
-        mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
-        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
-        self.assertIn(
-            ["BN4MYX3", "2024-01-04", "218.95", "GBX"], self._rows("prices_history.csv")
-        )
-
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_rebuild_does_not_promote_them_to_latest(self, mock_quotes, _pairs):
-        """Test latest_prices.csv covers configured funds only.
-
-        The daily run builds latest from what it just fetched, so a rebuild
-        that added closed holdings would have them appear and then vanish on
-        the next run: churn in the committed data for no information.
-        """
-        write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
-        mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
-        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
-        self.assertEqual([row[0] for row in self._rows("latest_prices.csv")], ["QQQ"])
-        self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
-
-
-class TestClosedImportMainMode(DataDirCase):
-    """Test the CLI entry point for the one-off import."""
-
-    def test_flag_is_parsed(self):
-        """Test --import-closed is available."""
-        args = parse_arguments(["--import-closed"])
-        self.assertTrue(args.import_closed)
-
-    def test_flag_defaults_off(self):
-        """Test a normal run is unaffected."""
-        self.assertFalse(parse_arguments([]).import_closed)
-
-    @patch("scrape_fund_price.import_closed_holdings")
-    @patch("scrape_fund_price.read_closed_holdings")
-    @patch("scrape_fund_price.scrape_funds")
-    def test_import_mode_skips_the_daily_run(self, mock_scrape, mock_read, mock_import):
-        """Test importing never triggers a scrape or an FX snap."""
-        mock_read.return_value = [
-            ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2024-02-16")
-        ]
-        mock_import.return_value = BackfillReport()
-        main(["--import-closed"])
-        mock_import.assert_called_once()
-        mock_scrape.assert_not_called()
-
-    @patch("scrape_fund_price.import_closed_holdings")
-    @patch("scrape_fund_price.read_closed_holdings")
-    def test_failures_exit_non_zero(self, mock_read, mock_import):
-        """Test a partial import is visible to CI."""
-        mock_read.return_value = []
-        report = BackfillReport()
-        report.failures.append("BN4MYX3: no rows")
-        mock_import.return_value = report
-        with self.assertRaises(SystemExit):
-            main(["--import-closed"])
-
-    @patch("scrape_fund_price.import_closed_holdings")
-    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
-    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
-        """Test the reconciliation table reaches the Actions run page."""
-        report = BackfillReport()
-        report.entries.append(
-            {
-                "identifier": "BKCH",
-                "before": 0,
-                "deleted": 0,
-                "retained": 0,
-                "inserted": 285,
-                "first": "2023-01-03",
-                "last": "2024-02-16",
-                "currency": "USD",
-                "status": "imported",
-            }
-        )
-        mock_import.return_value = report
-        summary_path = self.path("step_summary.md")
-        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
-            main(["--import-closed"])
-        written = self.read_text("step_summary.md")
-        self.assertIn("Closed-holding import", written)
-        self.assertIn("BKCH", written)
-
-
-class TestClosedHoldingWindowEnds(DataDirCase):
-    """Test the last day of a window survives, whatever the source's convention.
-
-    Yahoo's daily bars treat the end date as exclusive while FT and investing
-    .com treat it as inclusive, so passing the configured end straight through
-    silently dropped the final day from Yahoo holdings only: BKCH imported 284
-    rows ending 2024-02-15 for a window ending 2024-02-16. That the stored
-    rows are then clipped to the inclusive window is
-    TestClosedHoldingImport.test_quotes_outside_the_window_are_dropped.
-    """
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_sources_are_asked_past_the_window_end(self, mock_quotes):
-        """Test the fetch reaches beyond the end so nothing depends on it."""
-        mock_quotes.return_value = [Quote("2024-02-16", "10.115", "USD")]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
-        )
-        import_closed_holdings([holding], self.test_dir)
-        self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
-
-
-class TestInvestingEmptyPayloads(DataDirCase):
-    """Test the IV handler survives the shapes a dead window returns.
-
-    Asking investing.com for a window after a fund stopped publishing returns
-    a body whose `data` key is present but null, which raised TypeError
-    ("'NoneType' object is not iterable") instead of the ValueError callers
-    catch.
-    """
-
-    def _response(self, payload):
-        response = MagicMock()
-        response.json.return_value = payload
-        response.raise_for_status.return_value = None
-        return response
-
-    @patch("scrape_fund_price.requests.get")
-    def test_null_data_raises_value_error(self, mock_get):
-        """Test a null payload is reported as no rows, not a crash."""
-        mock_get.return_value = self._response({"data": None})
-        with self.assertRaises(ValueError):
-            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
-
-    @patch("scrape_fund_price.requests.get")
-    def test_missing_data_key_raises_value_error(self, mock_get):
-        """Test an unexpected body shape is handled the same way."""
-        mock_get.return_value = self._response({})
-        with self.assertRaises(ValueError):
-            fetch_investing_quotes("1190399", "2026-09-01", "2026-09-21")
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_the_import_records_it_as_a_failure(self, mock_quotes):
-        """Test a holding whose window returns nothing is reported, not fatal."""
-        mock_quotes.side_effect = ValueError("investing.com returned no rows")
-        holding = ClosedHolding("X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21")
-        report = import_closed_holdings([holding], self.test_dir)
-        self.assertTrue(report.failures)
-
-
-class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
-    """Test the 90-day window tracks latest_prices.csv, not raw history.
-
-    A closed holding can have real prices inside the last 90 days: FBTC ran to
-    2026-08-17. Those rows belong in history, but the rolling window answers
-    "what is being priced now" alongside latest_prices.csv, and the daily run
-    would otherwise start emitting rows for an instrument it no longer fetches.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.recent = (date.today() - timedelta(days=5)).isoformat()
-
-    def _rolling(self):
-        return self.read_rows("prices_history_90_days.csv")
-
-    def test_closed_holdings_are_excluded_from_the_window(self):
-        """Test a recent closed-holding row stays out of the rolling file."""
-        rows = [
-            ["QQQ", self.recent, "266.28", "USD"],
-            ["FBTC", self.recent, "55.94", "USD"],
-        ]
-        write_history_files(
-            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
-        )
-        self.assertEqual([row[0] for row in self._rolling()], ["QQQ"])
-
-    def test_history_still_keeps_every_row(self):
-        """Test excluding them from the window does not drop them."""
-        rows = [
-            ["QQQ", self.recent, "266.28", "USD"],
-            ["FBTC", self.recent, "55.94", "USD"],
-        ]
-        write_history_files(
-            rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
-        )
-        stored = self.read_rows("prices_history.csv")
-        self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
-
-    def test_derived_latest_still_covers_everything(self):
-        """Test the default path is unchanged when no latest is supplied.
-
-        A caller that does not pass `latest` has no notion of a closed
-        holding, so the window must keep its old meaning for it.
-        """
-        rows = [
-            ["QQQ", self.recent, "266.28", "USD"],
-            ["AAA", self.recent, "1.50", "GBP"],
-        ]
-        write_history_files(rows, self.test_dir)
-        self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
-
-
 class TestSummaryRowMarkers(unittest.TestCase):
     """Test the name column carries aliases and the failure marker.
 
@@ -3829,530 +4381,9 @@ class TestSummaryRowMarkers(unittest.TestCase):
         self.assertNotIn("0P00000YAN ~", markdown)
 
 
-@unittest.skipUnless(
-    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
-)
-class TestFunctionalClosedHoldingSources(unittest.TestCase):
-    """Functional test for the source only closed holdings use (optional)."""
-
-    def test_functional_investing_history(self):
-        """Functional test for investing.com (requires internet connection).
-
-        Uses a liquidated fund, so the window is fixed and the values cannot
-        change; an outage or a block skips rather than fails.
-        """
-        try:
-            quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-10")
-        except Exception as error:
-            self.skipTest(f"source unavailable: {error}")
-        self.assertEqual(quotes[0], Quote("2024-01-04", "218.95", ""))
-        self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
-
-
-class TestLatestNeverGoesBackwards(DataDirCase):
-    """Regression: a stale fetch replaced newer latest prices with older ones.
-
-    On 2026-10-10 Yahoo served no Friday close for the London ETFs, so the run
-    fetched Thursday as its newest bar and latest_prices.csv (and the per-fund
-    .price files) were rewritten from 2026-10-09 back to 2026-10-08. History
-    kept the Friday rows; only the "latest" views regressed.
-    """
-
-    FRIDAY = [
-        ["CNX1.L", "2026-10-09", "133800", "GBp"],
-        ["IWDG.L", "2026-10-09", "1270.5", "GBp"],
-        ["QQQ", "2026-10-09", "751.27", "USD"],
-        ["SGLN.L", "2026-10-09", "6141", "GBp"],
-    ]
-    THURSDAY = [
-        ["CNX1.L", "2026-10-08", "134720", "GBp"],
-        ["IWDG.L", "2026-10-08", "1263", "GBp"],
-        ["QQQ", "2026-10-08", "747.58", "USD"],
-        ["SGLN.L", "2026-10-08", "6039", "GBp"],
-    ]
-
-    def _read(self, name):
-        return self.read_rows(name)
-
-    def _price_file(self, fund):
-        return self.read_text(f"latest_{fund}.price").strip()
-
-    def _stale_run(self):
-        """Friday is stored, then a run whose newest bar is Thursday."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        write_results(list(self.THURSDAY), self.test_dir)
-
-    def test_latest_prices_keeps_the_newer_row(self):
-        """Test an older fetched date does not replace the stored newer row."""
-        self._stale_run()
-        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
-
-    def test_stale_fetch_is_logged(self):
-        """Test the ignored stale row is reported, not silently dropped."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        with patch("builtins.print") as mock_print:
-            write_results([self.THURSDAY[0]], self.test_dir)
-        output = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
-        self.assertIn("CNX1.L", output)
-        self.assertIn("2026-10-08", output)
-        self.assertIn("2026-10-09", output)
-
-    def test_history_keeps_the_newer_row(self):
-        """Test a stale fetch never costs history its newer rows."""
-        self._stale_run()
-        history = self._read("prices_history.csv")
-        for row in self.FRIDAY + self.THURSDAY:
-            self.assertIn(row, history)
-
-    def test_rolling_window_keeps_the_newer_row(self):
-        """Test the 90-day file also still holds the newer rows."""
-        self._stale_run()
-        rolling = self._read("prices_history_90_days.csv")
-        for row in self.FRIDAY:
-            self.assertIn(row, rolling)
-
-    def test_same_date_still_replaces_the_stored_row(self):
-        """Test a correction to the stored date is still applied."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        write_results([["CNX1.L", "2026-10-09", "133850", "GBp"]], self.test_dir)
-        latest = {r[0]: r for r in self._read("latest_prices.csv")}
-        self.assertEqual(latest["CNX1.L"][2], "133850")
-
-    def test_newer_date_still_advances_the_row(self):
-        """Test the guard does not stop a genuinely newer price."""
-        write_results(list(self.THURSDAY), self.test_dir)
-        write_results(list(self.FRIDAY), self.test_dir)
-        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
-
-    def test_fund_with_nothing_stored_takes_what_it_is_given(self):
-        """Test the guard only applies against a stored row."""
-        write_results([self.THURSDAY[0]], self.test_dir)
-        self.assertEqual(self._read("latest_prices.csv"), [self.THURSDAY[0]])
-
-    def test_stored_latest_row_newer_than_history_is_kept(self):
-        """Test latest_prices.csv itself is a floor, not only the history."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        os.remove(self.path("prices_history.csv"))
-        write_results([self.THURSDAY[0]], self.test_dir)
-        latest = {r[0]: r for r in self._read("latest_prices.csv")}
-        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
-
-    def test_carried_row_does_not_regress_latest(self):
-        """Test a failed fund keeps its newest stored row."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        results = ScrapeResults(rows=[self.THURSDAY[1]])
-        results.carried.append(list(self.FRIDAY[0]))
-        write_results(results, self.test_dir)
-        latest = {r[0]: r for r in self._read("latest_prices.csv")}
-        self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
-        self.assertEqual(latest["IWDG.L"], self.FRIDAY[1])
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_file_keeps_the_newer_price(self, mock_quotes, mock_pw):
-        """Test latest_<id>.price is not rewritten from an older bar."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        write_latest_price_file("CNX1.L", "133800", self.test_dir)
-        mock_quotes.return_value = [
-            Quote("2026-10-07", "135120", "GBp"),
-            Quote("2026-10-08", "134720", "GBp"),
-        ]
-        scrape_funds([("YA", "CNX1.L")], self.test_dir)
-        self.assertEqual(self._price_file("CNX1.L"), "133800")
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_file_advances_on_a_newer_bar(self, mock_quotes, mock_pw):
-        """Test the price file still follows a newer bar."""
-        write_results(list(self.THURSDAY), self.test_dir)
-        write_latest_price_file("CNX1.L", "134720", self.test_dir)
-        mock_quotes.return_value = [Quote("2026-10-09", "133800", "GBp")]
-        scrape_funds([("YA", "CNX1.L")], self.test_dir)
-        self.assertEqual(self._price_file("CNX1.L"), "133800")
-
-    @patch("scrape_fund_price.sync_playwright")
-    @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_whole_daily_run_with_stale_bars(self, mock_quotes, mock_pw):
-        """Test the exact 2026-10-10 sequence end to end."""
-        write_results(list(self.FRIDAY), self.test_dir)
-        for row in self.FRIDAY:
-            write_latest_price_file(row[0], row[2], self.test_dir)
-        quotes = {row[0]: [Quote(row[1], row[2], row[3])] for row in self.THURSDAY}
-        mock_quotes.side_effect = lambda symbol, start, end=None: quotes[symbol]
-        results = scrape_funds([("YA", s) for s in quotes], self.test_dir)
-        write_results(results, self.test_dir)
-        self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
-        self.assertEqual(self._price_file("CNX1.L"), "133800")
-        self.assertEqual(self._price_file("IWDG.L"), "1270.5")
-
-    def test_latest_fx_keeps_the_newer_rate(self):
-        """Test latest_fx.csv is derived from history and cannot regress.
-
-        TestFxStorage covers the newest date winning within one write; this
-        is the stale second run, an older date written after a newer one.
-        """
-        write_fx_results([["USDGBP", "2026-10-09", "0.75568"]], self.test_dir)
-        write_fx_results([["USDGBP", "2026-10-08", "0.75672"]], self.test_dir)
-        self.assertEqual(
-            self._read("latest_fx.csv"), [["USDGBP", "2026-10-09", "0.75568"]]
-        )
-
-
-class TestYahooEmptyLatestBar(unittest.TestCase):
-    """Regression: Yahoo can return the newest daily bar with a null close.
-
-    On 2026-10-10 CNX1.L's 2026-10-09 bar existed with Close = NaN, while the
-    chart metadata still carried that day's closing price. Skipping the NaN
-    left Thursday as the newest quote.
-    """
-
-    ROWS = [("2026-10-08", 134720.0), ("2026-10-09", float("nan"))]
-
-    @staticmethod
-    def _meta(price=133800.0, traded="2026-10-09 16:35", end="2026-10-09 16:30"):
-        return history_metadata(price, traded, end)
-
-    def _fetch(self, mock_ticker, meta, rows=None):
-        fake_ticker(
-            mock_ticker,
-            bars=self.ROWS if rows is None else rows,
-            currency="GBp",
-            tz="Europe/London",
-            meta=meta,
-        )
-        return fetch_yahoo_quotes("CNX1.L", "2026-09-30")
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_closing_price_from_metadata_fills_the_empty_bar(self, mock_ticker):
-        """Test the finished session's price stands in for the null close."""
-        quotes = self._fetch(mock_ticker, self._meta())
-        self.assertEqual(
-            quotes,
-            [
-                Quote("2026-10-08", "134720", "GBp"),
-                Quote("2026-10-09", "133800", "GBp"),
-            ],
-        )
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_a_session_still_open_is_not_filled(self, mock_ticker):
-        """Test an intraday price is never stored as a close."""
-        meta = self._meta(traded="2026-10-09 15:00", end="2026-10-09 16:30")
-        quotes = self._fetch(mock_ticker, meta)
-        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_metadata_from_another_day_is_not_used(self, mock_ticker):
-        """Test the price must belong to the empty bar's own date."""
-        meta = self._meta(traded="2026-10-08 16:35", end="2026-10-08 16:30")
-        quotes = self._fetch(mock_ticker, meta)
-        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_trading_period_that_moved_on_counts_as_closed(self, mock_ticker):
-        """Test a later session end shows the bar's day is over."""
-        quotes = self._fetch(mock_ticker, self._meta(end="2026-10-12 16:30"))
-        self.assertEqual(quotes[-1], Quote("2026-10-09", "133800", "GBp"))
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_only_the_newest_bar_is_filled(self, mock_ticker):
-        """Test an empty bar in the middle of the window stays dropped."""
-        rows = [("2026-10-07", float("nan")), ("2026-10-08", 134720.0)]
-        quotes = self._fetch(mock_ticker, self._meta(), rows)
-        self.assertEqual([q.date for q in quotes], ["2026-10-08"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_unusable_metadata_falls_back_to_dropping_the_bar(self, mock_ticker):
-        """Test bad metadata never raises or invents a price."""
-        shapes = {
-            "raises": RuntimeError("boom"),
-            "empty": {},
-            "no price": self._meta(price=float("nan")),
-        }
-        for shape, meta in shapes.items():
-            with self.subTest(metadata=shape):
-                quotes = self._fetch(mock_ticker, meta)
-                self.assertEqual([q.date for q in quotes], ["2026-10-08"])
-
-
-class TestYahooUnfinishedSession(unittest.TestCase):
-    """Regression: the newest bar is stored before its session has closed (#84).
-
-    A rebuild run at 12:56 UTC on 2026-10-19 stored SWDA.L's 2026-10-19 bar,
-    a 13:46 London trade, while the session ran until 16:30.
-    """
-
-    ROWS = [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)]
-
-    @staticmethod
-    def _meta(traded, end):
-        return history_metadata(10970.0, traded, end)
-
-    @staticmethod
-    def _now(text):
-        """A London wall-clock time, as the run's `now`."""
-        london = scrape_fund_price.ZoneInfo("Europe/London")
-        return datetime.datetime.fromisoformat(text).replace(tzinfo=london)
-
-    def _fetch(self, mock_ticker, meta, now, rows=None):
-        fake_ticker(
-            mock_ticker,
-            bars=self.ROWS if rows is None else rows,
-            currency="GBp",
-            tz="Europe/London",
-            meta=meta,
-        )
-        return fetch_yahoo_quotes("SWDA.L", "2026-10-01", now=self._now(now))
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_drops_newest_bar_while_its_session_is_open(self, mock_ticker):
-        """Test an intraday price is not stored as the day's close."""
-        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
-        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
-        self.assertEqual([q.date for q in quotes], ["2026-10-16"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_keeps_newest_bar_once_its_session_has_ended(self, mock_ticker):
-        """Test the bar is stored once the session's end has passed."""
-        meta = self._meta(traded="2026-10-19 16:35", end="2026-10-19 16:30")
-        quotes = self._fetch(mock_ticker, meta, "2026-10-19 21:05")
-        self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_keeps_previous_session_while_today_is_open(self, mock_ticker):
-        """Test only a bar dated on the open session's day is held back."""
-        rows = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
-        meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
-        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56", rows)
-        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
-
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_unusable_metadata_keeps_the_newest_bar(self, mock_ticker):
-        """Test a price is not lost because the session cannot be judged."""
-        shapes = {"raises": RuntimeError("boom"), "empty": {}}
-        for shape, meta in shapes.items():
-            with self.subTest(metadata=shape):
-                quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
-                self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
-
-
-class TestFTUnfinishedDay(unittest.TestCase):
-    """Regression: FT rows dated today are stored before the day is over (#84).
-
-    The 09:17 UTC run on 2026-10-16, which committed at 13:57 UTC, stored
-    IE00B0M63516 at 33.45 for 2026-10-16; the evening run corrected it to
-    33.34. FT carries no session metadata, so a row is held back until the
-    US close (16:00 New York) on its own date has passed.
-    """
-
-    @staticmethod
-    def _row(day, close):
-        label = day.strftime("%A, %B %d, %Y").replace(" 0", " ")
-        return (
-            f'<tr><td><span class="mod-ui-hide-small-below">{label}</span></td>'
-            f"<td>{close}</td><td>{close}</td><td>{close}</td><td>{close}</td>"
-            "<td><span>0</span></td></tr>"
-        )
-
-    def _fetch(self, mock_get, days, now):
-        rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
-        mock_get.side_effect = TestFTQuoteFetching._responses(rows=rows)
-        now = datetime.datetime.fromisoformat(now)
-        return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
-
-    @patch("scrape_fund_price.requests.get")
-    def test_drops_a_row_dated_today_before_the_us_close(self, mock_get):
-        """Test a daytime run does not store today's provisional price."""
-        quotes = self._fetch(
-            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T13:57:00+00:00"
-        )
-        self.assertEqual([q.date for q in quotes], ["2026-10-15"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_keeps_a_row_dated_today_after_the_us_close(self, mock_get):
-        """Test the evening run stores the day's final price."""
-        quotes = self._fetch(
-            mock_get, ["2026-10-15", "2026-10-16"], "2026-10-16T21:05:00+00:00"
-        )
-        self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
-
-    @patch("scrape_fund_price.requests.get")
-    def test_the_cut_follows_new_york_daylight_saving(self, mock_get):
-        """Test the cut is 21:00 UTC in winter, not 20:00 UTC all year."""
-        days = ["2026-11-02", "2026-11-03"]
-        early = self._fetch(mock_get, days, "2026-11-03T20:30:00+00:00")
-        self.assertEqual([q.date for q in early], ["2026-11-02"])
-        late = self._fetch(mock_get, days, "2026-11-03T21:00:00+00:00")
-        self.assertEqual([q.date for q in late], days)
-
-    @patch("scrape_fund_price.requests.get")
-    def test_only_held_back_rows_is_not_an_error(self, mock_get):
-        """Test a window holding only today's row returns nothing, not a failure.
-
-        Raising would send the fund to the undated scraping fallback, which
-        would store the same provisional price under today's date.
-        """
-        quotes = self._fetch(mock_get, ["2026-10-16"], "2026-10-16T13:57:00+00:00")
-        self.assertEqual(quotes, [])
-
-    @patch("scrape_fund_price.fetch_ft_quotes", return_value=[])
-    def test_held_back_rows_do_not_fall_back_to_scraping(self, mock_fetch):
-        """Test an empty dated result is returned rather than scraped."""
-        browser = MagicMock()
-        quotes = scrape_fund_quotes("FT", "IE00B0M63516", "2026-10-16", browser=browser)
-        self.assertEqual(quotes, [])
-        browser.page.assert_not_called()
-
-
-class TestDistributionConfiguration(DataDirCase):
-    """Test distributions.txt parsing and validation (SPEC-010, #85)."""
-
-    KNOWN = {"GB00B1FXTF86", "IE0008368742", "BMV7ZZ3"}
-
-    def _read(self, text, known="default"):
-        path = self.write_text("distributions.txt", text)
-        if known == "default":
-            known = self.KNOWN
-        return scrape_fund_price.read_distributions(path, known)
-
-    def test_reads_a_full_line(self):
-        """Test every field of the documented example is parsed."""
-        [dist] = self._read(
-            "GB00B1FXTF86,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01\n"
-        )
-        self.assertEqual(dist.identifier, "GB00B1FXTF86")
-        self.assertEqual(dist.frequency, "semiannual")
-        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
-        self.assertEqual(dist.pay_offset_days, 30)
-        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
-        self.assertEqual(dist.as_of, "2026-10-01")
-
-    def test_amounts_and_as_of_are_optional(self):
-        """Test the shortest legal line has four fields."""
-        [dist] = self._read("IE0008368742,annual,12-15,28\n")
-        self.assertEqual(dist.amounts, ("",))
-        self.assertEqual(dist.as_of, "")
-
-    def test_amounts_without_as_of_are_kept(self):
-        """Test five fields are legal: the amounts then feed estimates only."""
-        [dist] = self._read("IE0008368742,annual,12-15,28,0.31\n")
-        self.assertEqual(dist.amounts, ("0.31",))
-        self.assertEqual(dist.as_of, "")
-
-    def test_an_unknown_amount_may_be_left_empty(self):
-        """Test a slot with no known amount is an empty entry."""
-        [dist] = self._read("GB00B1FXTF86,semiannual,03-01;09-01,30,;0.0794\n")
-        self.assertEqual(dist.amounts, ("", "0.0794"))
-
-    def test_dates_are_sorted_and_amounts_follow_their_dates(self):
-        """Test the amount stays with the date it was written against."""
-        [dist] = self._read("GB00B1FXTF86,semiannual,09-01;03-01,30,0.0794;0.0821\n")
-        self.assertEqual(dist.xd_dates, ((3, 1), (9, 1)))
-        self.assertEqual(dist.amounts, ("0.0821", "0.0794"))
-
-    def test_frequency_is_case_insensitive(self):
-        """Test the frequency is normalised to lower case."""
-        [dist] = self._read("GB00B1FXTF86,Quarterly,01-05;04-05;07-05;10-05,20\n")
-        self.assertEqual(dist.frequency, "quarterly")
-
-    def test_every_frequency_needs_its_own_number_of_dates(self):
-        """Test the date count must match the payments a year."""
-        monthly = ";".join(f"{month:02d}-10" for month in range(1, 13))
-        [dist] = self._read(f"GB00B1FXTF86,monthly,{monthly},5\n")
-        self.assertEqual(len(dist.xd_dates), 12)
-        wrong = {
-            "quarterly": "2 ex-dates",
-            "annual": "1 ex-date",
-        }
-        for frequency, complaint in wrong.items():
-            with self.subTest(frequency=frequency):
-                with self.assertRaisesRegex(ValueError, f"line 1.*{complaint}"):
-                    self._read(f"GB00B1FXTF86,{frequency},03-01;09-01,30\n")
-
-    def test_leap_day_is_allowed(self):
-        """Test 02-29 is a real ex-date for the years that have one."""
-        [dist] = self._read("GB00B1FXTF86,annual,02-29,10\n")
-        self.assertEqual(dist.xd_dates, ((2, 29),))
-
-    def test_comments_and_blank_lines_are_ignored(self):
-        """Test full-line and trailing comments, and blank lines."""
-        dists = self._read(
-            "# header\n\n"
-            "GB00B1FXTF86,annual,03-01,30   # factsheet p.2\n"
-            "   \n"
-            "IE0008368742,annual,06-01,30\n"
-        )
-        self.assertEqual(
-            [d.identifier for d in dists], ["GB00B1FXTF86", "IE0008368742"]
-        )
-
-    def test_a_header_only_file_has_no_entries(self):
-        """Test the shipped file, comments only, yields nothing."""
-        self.assertEqual(self._read("# nothing yet\n"), [])
-
-    def test_a_missing_file_has_no_entries(self):
-        """Test the file is optional."""
-        path = self.path("absent.txt")
-        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
-
-    def test_the_configured_file_is_read_by_default(self):
-        """Test the production call names no file."""
-        path = self.write_text("distributions.txt", "X,annual,03-01,30\n")
-        with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
-            [dist] = scrape_fund_price.read_distributions()
-        self.assertEqual(dist.identifier, "X")
-
-    def test_identifier_must_be_configured(self):
-        """Test a line for an unknown instrument names the line."""
-        with self.assertRaisesRegex(ValueError, "line 2.*'NOPE'"):
-            self._read("GB00B1FXTF86,annual,03-01,30\nNOPE,annual,03-01,30\n")
-
-    def test_membership_is_not_checked_without_a_known_set(self):
-        """Test callers that only want the grammar can skip the lookup."""
-        [dist] = self._read("ANYTHING,annual,03-01,30\n", known=None)
-        self.assertEqual(dist.identifier, "ANYTHING")
-
-    def test_repeated_identifier_names_both_lines(self):
-        """Test an identifier may have one line."""
-        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
-            self._read("GB00B1FXTF86,annual,03-01,30\nGB00B1FXTF86,annual,04-01,30\n")
-
-    def test_malformed_lines_name_the_line_number(self):
-        """Test each way a line can be wrong fails with its line number."""
-        bad = {
-            "GB00B1FXTF86,annual": "expected",
-            "GB00B1FXTF86,annual,03-01": "expected",
-            ",annual,03-01,30": "expected",
-            "GB00B1FXTF86,annual,03-01,30,0.3,2026-10-01,extra": "expected",
-            "GB00B1FXTF86,weekly,03-01,30": "frequency",
-            "GB00B1FXTF86,annual,3-1,30": "ex-date",
-            "GB00B1FXTF86,annual,13-01,30": "ex-date",
-            "GB00B1FXTF86,annual,02-30,30": "ex-date",
-            "GB00B1FXTF86,annual,,30": "ex-date",
-            "GB00B1FXTF86,semiannual,03-01;03-01,30": "repeats",
-            "GB00B1FXTF86,annual,03-01,thirty": "pay offset",
-            "GB00B1FXTF86,annual,03-01,-5": "pay offset",
-            "GB00B1FXTF86,annual,03-01,366": "pay offset",
-            "GB00B1FXTF86,annual,03-01,30,abc": "amount",
-            "GB00B1FXTF86,annual,03-01,30,0": "amount",
-            "GB00B1FXTF86,annual,03-01,30,-0.5": "amount",
-            "GB00B1FXTF86,annual,03-01,30,NaN": "amount",
-            "GB00B1FXTF86,annual,03-01,30,1;2": "amounts",
-            "GB00B1FXTF86,annual,03-01,30,": "amounts field is empty",
-            "GB00B1FXTF86,annual,03-01,30,,2026-10-01": "amounts field is empty",
-            "GB00B1FXTF86,annual,03-01,30,0.3,yesterday": "as-of",
-            "GB00B1FXTF86,annual,03-01,30,0.3,2026-13-01": "as-of",
-            "GB00B1FXTF86,annual,03-01,30,0.3,": "as-of",
-        }
-        for line, fragment in bad.items():
-            with self.subTest(line=line):
-                with self.assertRaisesRegex(ValueError, f"line 3.*{fragment}"):
-                    self._read(f"# one\n\n{line}\n")
-
-    def test_the_shipped_file_parses_and_has_no_entries(self):
-        """Test the committed distributions.txt is a valid, empty file."""
-        path = os.path.join(os.path.dirname(__file__), "distributions.txt")
-        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+# ===========================================================================
+# Dividends
+# ===========================================================================
 
 
 class TestYahooDividendEvents(unittest.TestCase):
@@ -4669,6 +4700,41 @@ class TestDividendHistoryMerge(unittest.TestCase):
             stored, [["X", "2026-03-01", "2026-03-31", "0.2", "GBP", "config"]]
         )
         self.assertEqual(stored[("X", "2026-03-01")][3], "0.2")
+
+
+class TestSourceAuthority(unittest.TestCase):
+    """Test IS beats YA beats config in the history merge (SPEC-011, #87)."""
+
+    def test_yahoo_does_not_replace_an_issuer_row(self):
+        """Test the daily upsert cannot blank a pay date."""
+        stored = {
+            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
+        }
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "", "9", "GBP", "YA"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-29", "2"])
+
+    def test_config_does_not_replace_an_issuer_row(self):
+        """Test the owner's schedule is below the issuer."""
+        stored = {
+            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
+        }
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "", "9", "GBP", "config"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][5], "IS")
+
+    def test_an_issuer_row_replaces_yahoo_and_itself(self):
+        """Test the order the other way, and a correction."""
+        stored = {("Q", "2026-07-16"): ["Q", "2026-07-16", "", "9", "GBP", "YA"]}
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]]
+        )
+        scrape_fund_price.merge_dividend_rows(
+            stored, [["Q", "2026-07-16", "2026-07-30", "3", "GBP", "IS"]]
+        )
+        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-30", "3"])
 
 
 class TestDividendCollection(unittest.TestCase):
@@ -5012,72 +5078,6 @@ class TestEstimateNextDividend(unittest.TestCase):
         self.assertEqual(self._estimate(rows).amount, "1")
 
 
-class DividendRunCase(DataDirCase):
-    """Shared scaffolding for the dividend tests (SPEC-010).
-
-    The run date, builders for the two files' rows, a distributions.txt
-    parser, and the dividend update run with Yahoo faked.
-    """
-
-    TODAY = date(2026, 10, 26)
-
-    # The IssuerRunCase classes (SPEC-011, SPEC-012) still call these; step
-    # 2.Z of #97 removes them once those callers use the DataDirCase methods.
-    def _file(self, name):
-        return self.path(name)
-
-    def _text(self, name):
-        return self.read_text(name)
-
-    def _read(self, name):
-        return self.read_rows(name)
-
-    def _write(self, name, text):
-        self.write_text(name, text)
-
-    @staticmethod
-    def row(fund, ex, pay, amount, currency, source):
-        """A dividends_history.csv row."""
-        return [fund, ex, pay, amount, currency, source]
-
-    @classmethod
-    def upcoming(cls, fund, ex, pay, amount, currency, status, as_of=None):
-        """A dividends_upcoming.csv row, as of the run date unless given."""
-        as_of = as_of or cls.TODAY.isoformat()
-        return [fund, ex, pay, amount, currency, status, as_of]
-
-    def write_history(self, *rows):
-        """Store dividends_history.csv rows, as an earlier run would have."""
-        header = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
-        return self.write_csv("dividends_history.csv", header, rows)
-
-    def _dists(self, *lines):
-        """Parse distributions.txt lines, without the identifier check."""
-        path = self.write_text("distributions.txt", "\n".join(lines) + "\n")
-        return scrape_fund_price.read_distributions(path, None)
-
-    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
-        """Run update_dividends (or `runner`) with Yahoo faked."""
-        events = events or {}
-        declared = declared or {}
-        self.windows = []
-
-        def fake_events(symbol, window_start, end=None):
-            self.windows.append((symbol, window_start))
-            value = events.get(symbol, [])
-            if isinstance(value, Exception):
-                raise value
-            return value
-
-        def fake_declared(symbol, today=None):
-            return declared.get(symbol)
-
-        runner = runner or scrape_fund_price.update_dividends
-        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
-            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
-                return runner(specs, list(distributions), self.test_dir, self.TODAY)
-
-
 class TestDistributionSchedules(DividendRunCase):
     """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
 
@@ -5358,6 +5358,64 @@ class TestUpcomingRowsForOneInstrument(DividendRunCase):
         stored = [self._stored("2026-10-22")]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual([r[1] for r in rows], ["2026-10-22", "2026-12-17"])
+
+
+class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
+    """Test the upcoming row of a declaration with an amount (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _rows(self, declared, estimate=None, stored=()):
+        return scrape_fund_price.upcoming_rows_for(
+            "IGLS.L",
+            [list(row) for row in stored],
+            set(),
+            ("0.33", "GBP"),
+            declared,
+            estimate,
+            self.TODAY,
+        )
+
+    def test_the_stated_amount_replaces_the_last_paid(self):
+        """Test the declared amount is the issuer's, not an echo."""
+        declared = scrape_fund_price.DeclaredDividend(
+            "2026-11-12", "2026-11-25", "2.5", "GBp"
+        )
+        self.assertEqual(
+            self._rows(declared),
+            [
+                [
+                    "IGLS.L",
+                    "2026-11-12",
+                    "2026-11-25",
+                    "2.5",
+                    "GBp",
+                    "declared",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_a_declaration_without_an_amount_still_carries_the_last_paid(self):
+        """Test Yahoo's declaration, as in SPEC-010."""
+        declared = scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-25")
+        [row] = self._rows(declared)
+        self.assertEqual(row[3:5], ["0.33", "GBP"])
+
+    def test_it_replaces_the_estimate_and_an_earlier_declaration(self):
+        """Test the issuer's date wins over a Yahoo date stored yesterday."""
+        stored = [
+            ["IGLS.L", "2026-11-19", "", "0.33", "GBP", "declared", "2026-10-25"],
+            ["IGLS.L", "2026-11-21", "", "0.33", "GBP", "estimated", "2026-10-25"],
+        ]
+        estimate = scrape_fund_price.EstimatedDividend("2026-11-21", "", "0.33", "GBP")
+        declared = scrape_fund_price.DeclaredDividend(
+            "2026-11-12", "2026-11-25", "2.5", "GBP"
+        )
+        rows = self._rows(declared, estimate, stored)
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
+        )
 
 
 class TestBuildDividendUpcoming(DividendRunCase):
@@ -6034,34 +6092,6 @@ class TestDividendBackfillArguments(unittest.TestCase):
         self.assertIsNone(validate(self._args(backfill_dividends=False, backfill=True)))
 
 
-class TestConfiguredIdentifiers(DataDirCase):
-    """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
-
-    def test_funds_aliases_and_closed_holdings_are_all_known(self):
-        """Test the three sources of identifiers."""
-        closed = self.write_text(
-            "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
-        )
-        known = scrape_fund_price.configured_identifiers(
-            [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
-            closed,
-        )
-        self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
-
-    def test_a_missing_closed_holdings_file_adds_nothing(self):
-        """Test the file is optional here."""
-        known = scrape_fund_price.configured_identifiers(
-            [("FT", "GB00B1FXTF86")], self.path("no-such-file")
-        )
-        self.assertEqual(known, {"GB00B1FXTF86"})
-
-    def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
-        """Test a typo in the owner's file fails the suite, not the nightly run."""
-        specs = read_fund_specs("funds.txt")
-        known = scrape_fund_price.configured_identifiers(specs)
-        scrape_fund_price.read_distributions("distributions.txt", known)
-
-
 class TestDividendsInTheDailyRun(DataDirCase):
     """Test main() runs the dividend update beside the prices (SPEC-010, #85)."""
 
@@ -6222,101 +6252,9 @@ class TestDividendBackfillMainMode(DataDirCase):
         mock_backfill.assert_not_called()
 
 
-class TestDividendSourceConfiguration(DataDirCase):
-    """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
-
-    SPECS = [
-        FundSpec("YA", "IGLS.L"),
-        FundSpec("FT", "IE00B0M63516", ("IDBZ",)),
-        FundSpec("YA", "QQQ"),
-    ]
-
-    def _read(self, text, specs="default"):
-        path = self.write_text("dividend_sources.txt", text)
-        if specs == "default":
-            specs = self.SPECS
-        return scrape_fund_price.read_dividend_sources(path, specs)
-
-    def test_reads_lines_comments_and_blank_lines(self):
-        """Test the documented grammar."""
-        sources = self._read(
-            "# the issuers\n"
-            "\n"
-            "IGLS.L,IS,251804   # 0-5yr gilts\n"
-            "IE00B0M63516 , is , 251853\n"
-        )
-        self.assertEqual(
-            sources,
-            [
-                scrape_fund_price.DividendSource("IGLS.L", "IS", "251804"),
-                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
-            ],
-        )
-
-    def test_an_alias_may_name_the_instrument(self):
-        """Test any published identifier is accepted."""
-        [source] = self._read("IDBZ,IS,251853\n")
-        self.assertEqual(source.identifier, "IDBZ")
-
-    def test_a_missing_file_means_no_sources(self):
-        """Test the file is optional."""
-        missing = self.path("none.txt")
-        self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
-
-    def test_the_default_file_is_the_configured_one(self):
-        """Test the production call names no file."""
-        path = self.write_text("dividend_sources.txt", "QQQ,IS,1\n")
-        with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
-            [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
-        self.assertEqual(source.identifier, "QQQ")
-
-    def test_without_specs_the_identifier_is_not_checked(self):
-        """Test the grammar can be read on its own."""
-        [source] = self._read("ANYTHING,IS,5\n", specs=None)
-        self.assertEqual(source.identifier, "ANYTHING")
-
-    def test_bad_lines_name_the_line(self):
-        """Test every malformed field fails before any network call."""
-        cases = {
-            "IGLS.L,IS": "line 1.*expected",
-            "IGLS.L,IS,251804,extra": "line 1.*expected",
-            ",IS,251804": "line 1.*expected",
-            "IGLS.L,XX,251804": "line 1.*source 'XX'",
-            "IGLS.L,IS,abc": "line 1.*source id 'abc'",
-            "IGLS.L,IS,": "line 1.*source id ''",
-            "IGLS.L,IS,1234567890": "line 1.*source id '1234567890'",
-            "IGLS.L,IS,0": "line 1.*source id '0'",
-            "NOPE,IS,251804": "line 1.*'NOPE'.*funds.txt",
-        }
-        for text, pattern in cases.items():
-            with self.subTest(text=text):
-                with self.assertRaisesRegex(ValueError, pattern):
-                    self._read(text + "\n")
-
-    def test_the_error_names_the_right_line(self):
-        """Test line numbers count comments and blanks."""
-        with self.assertRaisesRegex(ValueError, "line 3"):
-            self._read("# c\n\nIGLS.L,IS,x\n")
-
-    def test_a_repeated_identifier_is_an_error(self):
-        """Test one line per identifier."""
-        with self.assertRaisesRegex(ValueError, "line 2.*already used on line 1"):
-            self._read("IGLS.L,IS,1\nIGLS.L,IS,2\n")
-
-    def test_two_lines_for_one_instrument_are_an_error(self):
-        """Test a lookup id and its alias are the same instrument."""
-        with self.assertRaisesRegex(ValueError, "line 2.*same instrument.*line 1"):
-            self._read("IE00B0M63516,IS,1\nIDBZ,IS,1\n")
-
-    def test_the_committed_file_is_valid_for_the_committed_funds(self):
-        """Test a typo in the owner's file fails the suite, not the nightly run."""
-        sources = scrape_fund_price.read_dividend_sources(
-            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
-        )
-        self.assertTrue(sources)
-        self.assertTrue(
-            all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
-        )
+# ===========================================================================
+# Issuer pay-date sources
+# ===========================================================================
 
 
 def embedded(value):
@@ -6352,6 +6290,63 @@ def ishares_page(rows, currency="GBP", product_id=1):
         f'<div data-selector="{embedded([selector])}"></div>'
         "</body></html>"
     )
+
+
+def issuer_table(*rows, currency="GBP"):
+    """Build an IssuerTable from (ex, record, pay, amount) rows, oldest first."""
+    return scrape_fund_price.IssuerTable(
+        currency,
+        tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
+    )
+
+
+def make_xlsx(rows, sheet_name="Open Fund", inline=False):
+    """Build a minimal workbook of one sheet from rows of strings and numbers."""
+    import io
+    import zipfile
+
+    def cell(row, column, value):
+        ref = f"{'ABCDEFGHIJKL'[column]}{row}"
+        if isinstance(value, (int, float)):
+            return f'<c r="{ref}" t="n"><v>{value}</v></c>'
+        if inline:
+            return f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>'
+        strings.append(value)
+        return f'<c r="{ref}" t="s"><v>{len(strings) - 1}</v></c>'
+
+    strings = []
+    body = "".join(
+        f'<row r="{n}">'
+        + "".join(cell(n, c, v) for c, v in enumerate(row) if v is not None)
+        + "</row>"
+        for n, row in enumerate(rows, start=1)
+    )
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    parts = {
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{ns}" xmlns:r="{rel}"><sheets>'
+            f'<sheet name="{sheet_name}" sheetId="2" r:id="rId1"/></sheets></workbook>'
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+            'relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" '
+            f'Type="{rel}/worksheet"/></Relationships>'
+        ),
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{ns}"><sheetData>{body}</sheetData></worksheet>'
+        ),
+        "xl/sharedStrings.xml": (
+            f'<sst xmlns="{ns}">'
+            + "".join(f"<si><t>{s}</t></si>" for s in strings)
+            + "</sst>"
+        ),
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, text in parts.items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
 
 
 class TestIsharesPageParsing(unittest.TestCase):
@@ -6501,1066 +6496,6 @@ class TestIsharesPageFetch(unittest.TestCase):
         ) as fetch:
             self.assertEqual(scrape_fund_price.fetch_issuer_table(source), "table")
         fetch.assert_called_once_with("251804")
-
-
-def issuer_table(*rows, currency="GBP"):
-    """Build an IssuerTable from (ex, record, pay, amount) rows, oldest first."""
-    return scrape_fund_price.IssuerTable(
-        currency,
-        tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
-    )
-
-
-class TestIssuerAmounts(unittest.TestCase):
-    """Test the issuer's amount in the stored row's currency (SPEC-011, #87)."""
-
-    def _convert(self, text, class_currency, target):
-        return scrape_fund_price.issuer_amount(text, class_currency, target)
-
-    def test_an_equal_currency_is_unchanged(self):
-        """Test GBP for a GBP row."""
-        amount = self._convert("2.4146", "GBP", "GBP")
-        self.assertEqual((amount.text, amount.currency), ("2.4146", "GBP"))
-
-    def test_pounds_become_pence_for_a_pence_row(self):
-        """Test the factor of 100 and the rounding it brings."""
-        amount = self._convert("0.0991", "GBP", "GBp")
-        self.assertEqual((amount.text, amount.currency), ("9.91", "GBp"))
-        self.assertEqual(amount.tolerance, decimal.Decimal("0.005"))
-        self.assertEqual(self._convert("0.1", "GBP", "GBp").text, "10")
-
-    def test_a_page_that_names_no_currency_is_taken_in_the_row_currency(self):
-        """Test the shipped pages without a share-class entry."""
-        self.assertEqual(self._convert("1.5", "", "USD").currency, "USD")
-        self.assertEqual(self._convert("0.015", "", "GBp").text, "1.5")
-
-    def test_no_target_currency_takes_the_issuers(self):
-        """Test an instrument with no stored currency."""
-        amount = self._convert("1.5", "USD", "")
-        self.assertEqual((amount.text, amount.currency), ("1.5", "USD"))
-
-    def test_different_currencies_cannot_be_compared(self):
-        """Test USD against GBP is no amount."""
-        self.assertIsNone(self._convert("1.5", "USD", "GBP"))
-        self.assertIsNone(self._convert("1.5", "USD", "GBp"))
-
-    def test_zero_is_no_amount(self):
-        """Test the 0.0 rows the issuer lists for a fund's first, empty period."""
-        self.assertIsNone(self._convert("0.0", "GBP", "GBP"))
-
-    def test_the_tolerance_is_half_the_last_decimal_place(self):
-        """Test agreement means equal within the issuer's rounding."""
-        amount = self._convert("0.0128", "GBP", "GBp")
-        self.assertTrue(scrape_fund_price.amounts_agree("1.2841", amount))
-        self.assertTrue(scrape_fund_price.amounts_agree("1.28", amount))
-        self.assertFalse(scrape_fund_price.amounts_agree("1.29", amount))
-        self.assertFalse(scrape_fund_price.amounts_agree("x", amount))
-
-
-class TestApplyIssuerTable(unittest.TestCase):
-    """Test merging an issuer's table into the history (SPEC-011, #87)."""
-
-    TODAY = date(2026, 10, 26)
-
-    def _apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
-        return scrape_fund_price.apply_issuer_table(
-            history, identifier, table, currency, self.TODAY, start
-        )
-
-    @staticmethod
-    def _keyed(*rows):
-        return {(row[0], row[1]): list(row) for row in rows}
-
-    def test_a_yahoo_row_gains_its_pay_date(self):
-        """Test the point of the spec."""
-        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
-        written = self._apply(
-            history, issuer_table(("2026-07-16", "2026-07-17", "2026-07-29", "2.4146"))
-        )
-        self.assertEqual(written, 1)
-        self.assertEqual(
-            history[("IGLS.L", "2026-07-16")],
-            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
-        )
-
-    def test_yahoos_amount_is_kept_when_they_agree(self):
-        """Test the more precise figure stays."""
-        history = self._keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
-        self._apply(
-            history,
-            issuer_table(("2017-07-13", "", "2017-07-27", "0.0128")),
-            identifier="IWDG.L",
-        )
-        self.assertEqual(
-            history[("IWDG.L", "2017-07-13")],
-            ["IWDG.L", "2017-07-13", "2017-07-27", "1.2841", "GBp", "IS"],
-        )
-
-    def test_the_issuers_amount_wins_when_they_differ(self):
-        """Test IWDG.L 2020-01-16: Yahoo 1.77p, the issuer 1.75p."""
-        history = self._keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
-        self._apply(
-            history,
-            issuer_table(("2020-01-16", "", "2020-01-30", "0.0175")),
-            identifier="IWDG.L",
-        )
-        self.assertEqual(history[("IWDG.L", "2020-01-16")][3], "1.75")
-        self.assertEqual(history[("IWDG.L", "2020-01-16")][4], "GBp")
-
-    def test_an_amount_in_another_currency_is_left_alone(self):
-        """Test the dates are taken and the figure that cannot be compared stays."""
-        history = self._keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
-        self._apply(
-            history,
-            issuer_table(("2026-07-16", "", "2026-07-29", "1.9")),
-            identifier="X",
-        )
-        self.assertEqual(
-            history[("X", "2026-07-16")],
-            ["X", "2026-07-16", "2026-07-29", "2.4", "USD", "IS"],
-        )
-
-    def test_a_zero_issuer_amount_leaves_the_stored_amount(self):
-        """Test IDTG.L 2019-12-12: Yahoo 0.0037, the issuer 0.0."""
-        history = self._keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
-        self._apply(
-            history,
-            issuer_table(("2019-12-12", "", "2019-12-30", "0.0")),
-            identifier="IDTG.L",
-        )
-        self.assertEqual(history[("IDTG.L", "2019-12-12")][3], "0.0037")
-
-    def test_a_blank_pay_date_keeps_the_stored_one(self):
-        """Test the issuer cannot take a date away."""
-        history = self._keyed(
-            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4146", "GBP", "YA"]
-        )
-        self._apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
-        self.assertEqual(history[("IGLS.L", "2026-07-16")][2], "2026-07-30")
-
-    def test_a_row_yahoo_lacks_is_inserted_in_the_price_currency(self):
-        """Test the gaps in Yahoo's history (INXG.L lacks 18)."""
-        history = {}
-        self._apply(
-            history,
-            issuer_table(("2026-05-21", "2026-05-22", "2026-05-29", "0.0991")),
-            currency="GBp",
-            identifier="FLOS.L",
-        )
-        self.assertEqual(
-            history[("FLOS.L", "2026-05-21")],
-            ["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"],
-        )
-
-    def test_an_inserted_row_without_a_price_currency_takes_the_issuers(self):
-        """Test an instrument with no stored price."""
-        history = {}
-        self._apply(
-            history,
-            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
-            currency="",
-        )
-        self.assertEqual(history[("IGLS.L", "2026-05-21")][3:5], ["0.5", "USD"])
-
-    def test_nothing_is_inserted_without_a_usable_amount(self):
-        """Test a zero, or an amount that cannot be put in the currency."""
-        history = {}
-        self._apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
-        self._apply(
-            history,
-            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
-        )
-        self.assertEqual(history, {})
-
-    def test_a_blank_stored_currency_is_filled(self):
-        """Test Yahoo gave none."""
-        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
-        self.assertEqual(history[("IGLS.L", "2026-07-16")][4], "GBP")
-
-    def test_a_date_a_day_out_is_one_dividend(self):
-        """Test FLOS.L and IUAG.L 2021: Yahoo 11-12, the issuer 11-11."""
-        history = self._keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
-        written = self._apply(
-            history,
-            issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
-            identifier="FLOS.L",
-        )
-        self.assertEqual(written, 2)  # the new row, and the twin removed
-        self.assertEqual(
-            history,
-            self._keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
-        )
-
-    def test_a_twin_is_removed_beside_an_exact_match(self):
-        """Test the YA twin Yahoo's window would re-insert every day."""
-        history = self._keyed(
-            ["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"],
-            ["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"],
-        )
-        self._apply(
-            history,
-            issuer_table(("2021-11-11", "", "2021-11-25", "0.071")),
-            identifier="FLOS.L",
-        )
-        self.assertEqual(list(history), [("FLOS.L", "2021-11-11")])
-
-    def test_a_near_row_with_another_amount_is_a_different_dividend(self):
-        """Test a special dividend two days away stays."""
-        history = self._keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
-        self.assertIn(("IGLS.L", "2026-07-18"), history)
-        self.assertIn(("IGLS.L", "2026-07-16"), history)
-
-    def test_a_near_row_that_is_itself_an_issuer_date_stays(self):
-        """Test a monthly payer's neighbours are not twins."""
-        history = self._keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
-        self._apply(
-            history,
-            issuer_table(
-                ("2026-06-02", "", "2026-06-20", "1.0"),
-                ("2026-06-04", "", "2026-06-22", "1.0"),
-            ),
-            identifier="X",
-        )
-        self.assertEqual(sorted(ex for _, ex in history), ["2026-06-02", "2026-06-04"])
-
-    def test_another_funds_and_other_sources_rows_are_not_twins(self):
-        """Test only this fund's Yahoo rows are candidates."""
-        history = self._keyed(
-            ["OTHER", "2026-07-17", "", "2.4146", "GBP", "YA"],
-            ["IGLS.L", "2026-07-17", "2026-07-30", "2.4146", "GBP", "config"],
-        )
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
-        self.assertIn(("OTHER", "2026-07-17"), history)
-        self.assertIn(("IGLS.L", "2026-07-17"), history)
-
-    def test_a_config_row_on_the_same_date_gives_way(self):
-        """Test the issuer beats the owner's schedule."""
-        history = self._keyed(
-            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4", "GBP", "config"]
-        )
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
-        self.assertEqual(
-            history[("IGLS.L", "2026-07-16")],
-            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
-        )
-
-    def test_future_rows_are_not_history(self):
-        """Test a declared dividend belongs to the upcoming file."""
-        history = {}
-        written = self._apply(
-            history, issuer_table(("2026-10-27", "", "2026-11-10", "2.4146"))
-        )
-        self.assertEqual((written, history), (0, {}))
-
-    def test_today_is_history(self):
-        """Test the boundary matches Yahoo's."""
-        history = {}
-        self._apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
-        self.assertIn(("IGLS.L", "2026-10-26"), history)
-
-    def test_rows_before_the_start_date_are_not_touched(self):
-        """Test a rebuild from a date."""
-        history = {}
-        self._apply(
-            history,
-            issuer_table(
-                ("2025-07-17", "", "2025-07-30", "2.4917"),
-                ("2026-01-15", "", "2026-01-28", "2.5662"),
-            ),
-            start="2026-01-01",
-        )
-        self.assertEqual(list(history), [("IGLS.L", "2026-01-15")])
-
-    def test_a_second_apply_changes_nothing(self):
-        """Test idempotence."""
-        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
-        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
-        self._apply(history, table)
-        before = {key: list(row) for key, row in history.items()}
-        self.assertEqual(self._apply(history, table), 0)
-        self.assertEqual(history, before)
-
-    def test_a_damaged_history_row_is_skipped_not_fatal(self):
-        """Test an unreadable ex-date among the neighbours."""
-        history = self._keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
-        self.assertIn(("IGLS.L", "soon"), history)
-        self.assertIn(("IGLS.L", "2026-07-16"), history)
-
-    def test_the_recorded_igls_page_agrees_with_yahoos_rows(self):
-        """Test the real table over the rows the committed history holds."""
-        history = self._keyed(
-            ["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"],
-            ["IGLS.L", "2026-01-15", "", "2.5662", "GBP", "YA"],
-        )
-        table = scrape_fund_price.parse_ishares_distributions(
-            fixture_text("ishares_251804_igls.html"), "251804"
-        )
-        self._apply(history, table)
-        self.assertEqual(len(history), 36)
-        self.assertEqual(
-            history[("IGLS.L", "2026-01-15")],
-            ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
-        )
-        self.assertEqual({row[5] for row in history.values()}, {"IS"})
-
-
-class TestSourceAuthority(unittest.TestCase):
-    """Test IS beats YA beats config in the history merge (SPEC-011, #87)."""
-
-    def test_yahoo_does_not_replace_an_issuer_row(self):
-        """Test the daily upsert cannot blank a pay date."""
-        stored = {
-            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
-        }
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["Q", "2026-07-16", "", "9", "GBP", "YA"]]
-        )
-        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-29", "2"])
-
-    def test_config_does_not_replace_an_issuer_row(self):
-        """Test the owner's schedule is below the issuer."""
-        stored = {
-            ("Q", "2026-07-16"): ["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]
-        }
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["Q", "2026-07-16", "", "9", "GBP", "config"]]
-        )
-        self.assertEqual(stored[("Q", "2026-07-16")][5], "IS")
-
-    def test_an_issuer_row_replaces_yahoo_and_itself(self):
-        """Test the order the other way, and a correction."""
-        stored = {("Q", "2026-07-16"): ["Q", "2026-07-16", "", "9", "GBP", "YA"]}
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["Q", "2026-07-16", "2026-07-29", "2", "GBP", "IS"]]
-        )
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["Q", "2026-07-16", "2026-07-30", "3", "GBP", "IS"]]
-        )
-        self.assertEqual(stored[("Q", "2026-07-16")][2:4], ["2026-07-30", "3"])
-
-
-class TestIssuerDeclaredDividend(unittest.TestCase):
-    """Test a future issuer row as the declared dividend (SPEC-011, #87)."""
-
-    TODAY = date(2026, 10, 26)
-
-    def _declared(self, table, currency="GBP"):
-        return scrape_fund_price.issuer_declared(table, currency, self.TODAY)
-
-    def test_the_earliest_future_row_is_declared(self):
-        """Test ex-dates after today, oldest of them."""
-        table = issuer_table(
-            ("2026-07-16", "", "2026-07-29", "2.4146"),
-            ("2026-11-12", "2026-11-13", "2026-11-25", "2.5"),
-            ("2027-01-14", "", "2027-01-27", "2.6"),
-        )
-        self.assertEqual(
-            self._declared(table),
-            scrape_fund_price.DeclaredDividend(
-                "2026-11-12", "2026-11-25", "2.5", "GBP"
-            ),
-        )
-
-    def test_today_is_history_not_declared(self):
-        """Test the boundary matches apply_issuer_table."""
-        table = issuer_table(("2026-10-26", "", "2026-11-09", "2.5"))
-        self.assertIsNone(self._declared(table))
-
-    def test_no_future_row_is_none(self):
-        """Test nothing is declared until the issuer says so."""
-        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
-        self.assertIsNone(self._declared(table))
-
-    def test_the_amount_is_in_the_price_currency(self):
-        """Test pounds become pence for a pence line."""
-        table = issuer_table(("2026-11-12", "", "2026-11-25", "0.0991"))
-        declared = self._declared(table, "GBp")
-        self.assertEqual((declared.amount, declared.currency), ("9.91", "GBp"))
-
-    def test_an_amount_that_cannot_be_stated_is_empty(self):
-        """Test zero, or another currency, leaves the amount to the last paid."""
-        for text, currency in (("0.0", "GBP"), ("1.5", "USD")):
-            with self.subTest(text=text, currency=currency):
-                table = issuer_table(
-                    ("2026-11-12", "", "2026-11-25", text), currency=currency
-                )
-                declared = self._declared(table, "GBP")
-                self.assertEqual((declared.amount, declared.currency), ("", ""))
-                self.assertEqual(declared.ex_date, "2026-11-12")
-
-    def test_a_row_without_a_pay_date_is_declared_without_one(self):
-        """Test the ex-date alone is a declaration."""
-        table = issuer_table(("2026-11-12", "", "", "2.5"))
-        self.assertEqual(self._declared(table).pay_date, "")
-
-
-class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
-    """Test the upcoming row of a declaration with an amount (SPEC-011, #87)."""
-
-    TODAY = date(2026, 10, 26)
-
-    def _rows(self, declared, estimate=None, stored=()):
-        return scrape_fund_price.upcoming_rows_for(
-            "IGLS.L",
-            [list(row) for row in stored],
-            set(),
-            ("0.33", "GBP"),
-            declared,
-            estimate,
-            self.TODAY,
-        )
-
-    def test_the_stated_amount_replaces_the_last_paid(self):
-        """Test the declared amount is the issuer's, not an echo."""
-        declared = scrape_fund_price.DeclaredDividend(
-            "2026-11-12", "2026-11-25", "2.5", "GBp"
-        )
-        self.assertEqual(
-            self._rows(declared),
-            [
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-25",
-                    "2.5",
-                    "GBp",
-                    "declared",
-                    "2026-10-26",
-                ]
-            ],
-        )
-
-    def test_a_declaration_without_an_amount_still_carries_the_last_paid(self):
-        """Test Yahoo's declaration, as in SPEC-010."""
-        declared = scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-25")
-        [row] = self._rows(declared)
-        self.assertEqual(row[3:5], ["0.33", "GBP"])
-
-    def test_it_replaces_the_estimate_and_an_earlier_declaration(self):
-        """Test the issuer's date wins over a Yahoo date stored yesterday."""
-        stored = [
-            ["IGLS.L", "2026-11-19", "", "0.33", "GBP", "declared", "2026-10-25"],
-            ["IGLS.L", "2026-11-21", "", "0.33", "GBP", "estimated", "2026-10-25"],
-        ]
-        estimate = scrape_fund_price.EstimatedDividend("2026-11-21", "", "0.33", "GBP")
-        declared = scrape_fund_price.DeclaredDividend(
-            "2026-11-12", "2026-11-25", "2.5", "GBP"
-        )
-        rows = self._rows(declared, estimate, stored)
-        self.assertEqual(
-            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
-        )
-
-
-class IssuerRunCase(DividendRunCase):
-    """Run the dividend update with Yahoo and the issuer's pages faked."""
-
-    IGLS = scrape_fund_price.DividendSource("IGLS.L", "IS", "251804")
-    FLOS = scrape_fund_price.DividendSource("FLOS.L", "IS", "290356")
-    EVENT = scrape_fund_price.DividendEvent
-
-    PAST = ("2026-07-16", "2026-07-17", "2026-07-29", "2.4146")
-    NEXT = ("2026-11-12", "2026-11-13", "2026-11-25", "2.5")
-
-    def _issuer_run(
-        self,
-        specs,
-        sources,
-        tables=None,
-        events=None,
-        declared=None,
-        runner=None,
-        distributions=(),
-    ):
-        """Run update_dividends (or `runner`), `tables` keyed by source id.
-
-        The pacing pauses are recorded on `self.sleeps` by DataDirCase.
-        """
-        tables = tables or {}
-        self.fetched = []
-
-        def fake_fetch(source):
-            self.fetched.append(source.source_id)
-            value = tables[source.source_id]
-            if isinstance(value, Exception):
-                raise value
-            return value
-
-        def update(specs, dists, data_dir, today):
-            return scrape_fund_price.update_dividends(
-                specs, dists, data_dir, today, sources=sources
-            )
-
-        with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
-            return self._run(
-                specs, events, declared, distributions, runner=runner or update
-            )
-
-
-class TestDailyIssuerDates(IssuerRunCase):
-    """Test the daily run with an issuer source (SPEC-011, #87)."""
-
-    def test_the_pay_date_and_the_declared_row_reach_both_files(self):
-        """Test the point of the spec, end to end."""
-        results = self._issuer_run(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": issuer_table(self.PAST, self.NEXT)},
-            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
-        )
-        self.assertEqual(results.failures, [])
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
-        )
-        self.assertEqual(
-            self._read("dividends_upcoming.csv"),
-            [
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-25",
-                    "2.5",
-                    "GBP",
-                    "declared",
-                    "2026-10-26",
-                ]
-            ],
-        )
-
-    def test_the_issuer_declaration_replaces_yahoos_and_the_estimate(self):
-        """Test one declared row, the issuer's."""
-        self._issuer_run(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": issuer_table(self.PAST, self.NEXT)},
-            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
-            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
-        )
-        rows = self._read("dividends_upcoming.csv")
-        self.assertEqual(
-            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
-        )
-
-    def test_yahoos_declaration_stands_when_the_issuer_has_none(self):
-        """Test the issuer adds, it does not retract."""
-        self._issuer_run(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": issuer_table(self.PAST)},
-            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
-            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
-        )
-        rows = self._read("dividends_upcoming.csv")
-        self.assertEqual(
-            [(row[1], row[5]) for row in rows], [("2026-11-19", "declared")]
-        )
-
-    def test_rows_are_published_under_every_alias(self):
-        """Test a source line may name an alias; every identifier gets the rows."""
-        source = scrape_fund_price.DividendSource("JFM0003373", "IS", "251804")
-        self._issuer_run(
-            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
-            [source],
-            {"251804": issuer_table(self.PAST, self.NEXT)},
-        )
-        self.assertEqual(
-            [(row[0], row[1], row[5]) for row in self._read("dividends_history.csv")],
-            [
-                ("0P00000YAN", "2026-07-16", "IS"),
-                ("JFM0003373", "2026-07-16", "IS"),
-            ],
-        )
-        self.assertEqual(
-            [(row[0], row[1]) for row in self._read("dividends_upcoming.csv")],
-            [("0P00000YAN", "2026-11-12"), ("JFM0003373", "2026-11-12")],
-        )
-
-    def test_an_instrument_with_no_yahoo_route_is_filled_from_the_issuer(self):
-        """Test the FT-priced iShares fund, in its stored price currency."""
-        self._write(
-            "latest_prices.csv",
-            "Fund,Date,Price,Currency\nIE00B0M63516,2026-10-23,40.5,USD\n",
-        )
-        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
-        self._issuer_run(
-            [FundSpec("FT", "IE00B0M63516", ("IDBZ",))],
-            [source],
-            {
-                "251853": issuer_table(
-                    ("2026-03-19", "2026-03-20", "2026-03-27", "0.26"),
-                    ("2026-09-17", "2026-09-18", "2026-09-30", "0.31"),
-                    currency="USD",
-                )
-            },
-        )
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [
-                ["IDBZ", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
-                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
-                ["IDBZ", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
-                ["IE00B0M63516", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
-            ],
-        )
-
-    def test_a_pence_line_takes_the_issuers_pounds_as_pence(self):
-        """Test the declared amount of a GBp instrument."""
-        self._write(
-            "latest_prices.csv",
-            "Fund,Date,Price,Currency\nFLOS.L,2026-10-23,5000,GBp\n",
-        )
-        self._issuer_run(
-            [FundSpec("YA", "FLOS.L")],
-            [self.FLOS],
-            {
-                "290356": issuer_table(
-                    ("2026-05-21", "", "2026-05-29", "0.0991"),
-                    ("2026-11-12", "", "2026-11-25", "0.1"),
-                )
-            },
-            {"FLOS.L": [self.EVENT("2026-05-21", "9.91", "GBp")]},
-        )
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"]],
-        )
-        [row] = self._read("dividends_upcoming.csv")
-        self.assertEqual(row[3:6], ["10", "GBp", "declared"])
-
-    def test_one_failing_page_costs_nothing_else(self):
-        """Test the failure is reported and the other instrument is written."""
-        results = self._issuer_run(
-            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
-            [self.IGLS, self.FLOS],
-            {
-                "251804": RuntimeError("boom"),
-                "290356": issuer_table(("2026-05-21", "", "2026-05-29", "0.0991")),
-            },
-            {
-                "IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")],
-                "FLOS.L": [self.EVENT("2026-05-21", "0.0991", "GBP")],
-            },
-        )
-        self.assertEqual(results.failures, ["IGLS.L: pay dates: boom"])
-        self.assertEqual(self.fetched.count("251804"), 3)
-        self.assertEqual(
-            {(row[0], row[2]) for row in self._read("dividends_history.csv")},
-            {("IGLS.L", ""), ("FLOS.L", "2026-05-29")},
-        )
-
-    def test_a_page_that_has_changed_is_a_reported_failure(self):
-        """Test a parse error is handled like any other fetch error."""
-        results = self._issuer_run(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": ValueError("iShares product 251804: no distributions table")},
-        )
-        self.assertEqual(
-            results.failures,
-            ["IGLS.L: pay dates: iShares product 251804: no distributions table"],
-        )
-
-    def test_a_day_the_issuer_fails_does_not_take_the_pay_dates_away(self):
-        """Test Yahoo's daily upsert cannot blank what the issuer gave."""
-        specs = [FundSpec("YA", "IGLS.L")]
-        events = {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]}
-        self._issuer_run(
-            specs, [self.IGLS], {"251804": issuer_table(self.PAST)}, events
-        )
-        self._issuer_run(specs, [self.IGLS], {"251804": OSError("down")}, events)
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
-        )
-
-    def test_the_pages_are_fetched_a_second_apart(self):
-        """Test a pause between instruments, none before the first."""
-        self._issuer_run(
-            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
-            [self.IGLS, self.FLOS],
-            {"251804": issuer_table(self.PAST), "290356": issuer_table(self.PAST)},
-        )
-        self.assertEqual(self.sleeps, [scrape_fund_price.ISSUER_PAUSE_SECONDS])
-        self.assertEqual(scrape_fund_price.ISSUER_PAUSE_SECONDS, 1)
-
-    def test_no_sources_means_no_requests(self):
-        """Test the file is optional."""
-        self._issuer_run([FundSpec("YA", "IGLS.L")], [])
-        self.assertEqual((self.fetched, self.sleeps), ([], []))
-
-    def test_a_second_run_changes_nothing_and_reports_nothing(self):
-        """Test the declared row is news once."""
-        args = (
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": issuer_table(self.PAST, self.NEXT)},
-            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
-        )
-        first = self._issuer_run(*args)
-        files = {
-            name: self._text(name)
-            for name in ("dividends_history.csv", "dividends_upcoming.csv")
-        }
-        second = self._issuer_run(*args)
-        self.assertEqual(
-            files,
-            {name: self._text(name) for name in files},
-        )
-        [news] = first.summary
-        self.assertEqual(
-            (news.name, news.ex_date, news.pay_date, news.amount, news.status),
-            ("IGLS.L", "2026-11-12", "2026-11-25", "2.5", "declared"),
-        )
-        self.assertEqual(second.summary, [])
-
-
-class TestIssuerDatesInTheRebuild(IssuerRunCase):
-    """Test --backfill-dividends with an issuer source (SPEC-011, #87)."""
-
-    def _rebuild(self, specs, sources, tables, events=None, start=None):
-        def runner(specs, dists, data_dir, today):
-            return scrape_fund_price.backfill_dividends(
-                specs, dists, start, data_dir, today, sources=sources
-            )
-
-        return self._issuer_run(specs, sources, tables, events, runner=runner)
-
-    def test_yahoo_and_issuer_rows_from_the_start_are_replaced(self):
-        """Test the rebuild applies the issuer last and drops what it dropped."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "IGLS.L,2025-07-17,2025-07-30,2.4917,GBP,IS\n"
-            "IGLS.L,2026-01-15,2026-01-28,9,GBP,IS\n"
-            "IGLS.L,2026-02-02,2026-02-20,1,GBP,IS\n"
-            "IGLS.L,2026-03-03,,1,GBP,config\n",
-        )
-        report = self._rebuild(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {
-                "251804": issuer_table(
-                    ("2025-07-17", "", "2025-07-30", "2.4917"),
-                    ("2026-01-15", "", "2026-01-28", "2.5662"),
-                    self.PAST,
-                    self.NEXT,
-                )
-            },
-            {
-                "IGLS.L": [
-                    self.EVENT("2026-01-15", "2.5662", "GBP"),
-                    self.EVENT("2026-07-16", "2.4146", "GBP"),
-                ]
-            },
-            start="2026-01-01",
-        )
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [
-                ["IGLS.L", "2025-07-17", "2025-07-30", "2.4917", "GBP", "IS"],
-                ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
-                ["IGLS.L", "2026-03-03", "", "1", "GBP", "config"],
-                ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
-            ],
-        )
-        [entry] = report.entries
-        self.assertEqual((entry["deleted"], entry["status"]), (2, "rebuilt"))
-        self.assertEqual(report.failures, [])
-        [upcoming] = self._read("dividends_upcoming.csv")
-        self.assertEqual(upcoming[1:3], ["2026-11-12", "2026-11-25"])
-        self.assertEqual(upcoming[5], "declared")
-
-    def test_an_instrument_with_no_yahoo_route_is_rebuilt_from_the_issuer(self):
-        """Test the FT-priced fund has its own line in the report."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "IE00B0M63516,2025-09-18,2025-09-30,0.2,USD,IS\n"
-            "IE00B0M63516,2026-03-19,2026-03-27,9,USD,IS\n"
-            "IE00B0M63516,2026-04-01,2026-04-10,1,USD,IS\n",
-        )
-        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
-        report = self._rebuild(
-            [FundSpec("FT", "IE00B0M63516")],
-            [source],
-            {
-                "251853": issuer_table(
-                    ("2025-09-18", "", "2025-09-30", "0.2"),
-                    ("2026-03-19", "", "2026-03-27", "0.26"),
-                    currency="USD",
-                )
-            },
-            start="2026-01-01",
-        )
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [
-                ["IE00B0M63516", "2025-09-18", "2025-09-30", "0.2", "USD", "IS"],
-                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
-            ],
-        )
-        [entry] = report.entries
-        self.assertEqual(
-            entry,
-            {
-                "identifier": "IE00B0M63516",
-                "before": 3,
-                "deleted": 2,
-                "retained": 1,
-                "inserted": 1,
-                "first": "2026-03-19",
-                "last": "2026-03-19",
-                "currency": "USD",
-                "status": "rebuilt",
-            },
-        )
-
-    def test_a_failing_page_keeps_its_rows_and_fails_the_report(self):
-        """Test nothing is lost when the issuer does not answer."""
-        text = (
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "IE00B0M63516,2026-03-19,2026-03-27,0.26,USD,IS\n"
-            "IGLS.L,2026-07-16,2026-07-29,2.4146,GBP,IS\n"
-        )
-        self._write("dividends_history.csv", text)
-        report = self._rebuild(
-            [FundSpec("FT", "IE00B0M63516"), FundSpec("YA", "IGLS.L")],
-            [
-                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
-                self.IGLS,
-            ],
-            {"251853": OSError("down"), "251804": OSError("down")},
-            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
-        )
-        self.assertEqual(self._text("dividends_history.csv"), text)
-        self.assertEqual(
-            report.failures,
-            ["IE00B0M63516: pay dates: down", "IGLS.L: pay dates: down"],
-        )
-        self.assertEqual(
-            [entry["status"] for entry in report.entries],
-            ["failed, kept existing", "rebuilt"],
-        )
-
-    def test_a_failing_yahoo_fetch_still_takes_the_issuers_rows(self):
-        """Test the two sources are independent."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "IGLS.L,2026-07-16,,2.4146,GBP,YA\n",
-        )
-        report = self._rebuild(
-            [FundSpec("YA", "IGLS.L")],
-            [self.IGLS],
-            {"251804": issuer_table(self.PAST)},
-            {"IGLS.L": RuntimeError("down")},
-        )
-        self.assertEqual(report.failures, ["IGLS.L: dividends: down"])
-        self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
-        )
-
-
-class TestIssuerSourcesInMain(DataDirCase):
-    """Test main() reads and passes dividend_sources.txt (SPEC-011, #87)."""
-
-    def _write(self, text):
-        self.write_text("dividend_sources.txt", text)
-
-    def _argv(self, backfill):
-        return ["--backfill-dividends", "--from", "2024-01-01"] if backfill else []
-
-    def _main(self, backfill=False):
-        """Run main() on the test directory's files, the run's steps stubbed.
-
-        distributions.txt is pointed at a file that does not exist, so the
-        committed schedules are not validated against the one stubbed fund.
-        """
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.DIVIDEND_SOURCES_FILE",
-                    self.path("dividend_sources.txt"),
-                )
-            )
-            enter(
-                patch(
-                    "scrape_fund_price.DISTRIBUTIONS_FILE",
-                    self.path("distributions.txt"),
-                )
-            )
-            stubs = enter(
-                daily_run_stubs(
-                    specs=[FundSpec("YA", "IGLS.L")],
-                    backfill_dividends=BackfillReport(),
-                )
-            )
-            self.scrape = stubs["scrape_funds"]
-            self.update = stubs["update_dividends"]
-            self.rebuild = stubs["backfill_dividends"]
-            main(self._argv(backfill))
-
-    def test_the_daily_run_passes_the_validated_sources(self):
-        """Test update_dividends gets them by keyword."""
-        self._write("IGLS.L,IS,251804\n")
-        self._main()
-        [source] = self.update.call_args.kwargs["sources"]
-        self.assertEqual((source.identifier, source.source_id), ("IGLS.L", "251804"))
-
-    def test_the_rebuild_passes_the_validated_sources(self):
-        """Test --backfill-dividends gets them by keyword."""
-        self._write("IGLS.L,IS,251804\n")
-        self._main(backfill=True)
-        [source] = self.rebuild.call_args.kwargs["sources"]
-        self.assertEqual(source.identifier, "IGLS.L")
-
-    def test_a_bad_file_fails_before_any_network_call(self):
-        """Test validation comes first, in both modes."""
-        self._write("NOPE,IS,251804\n")
-        for backfill in (False, True):
-            with self.subTest(backfill=backfill):
-                with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
-                    self._main(backfill)
-        self.scrape.assert_not_called()
-        self.update.assert_not_called()
-        self.rebuild.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# SPEC-012: pay-date sources IV (Invesco), SS (SSGA), Q4 (Q4 Inc IR) and ET
-# (etnet), each one canned response recorded once from the live site (#89).
-# ---------------------------------------------------------------------------
-
-
-def make_xlsx(rows, sheet_name="Open Fund", inline=False):
-    """Build a minimal workbook of one sheet from rows of strings and numbers."""
-    import io
-    import zipfile
-
-    def cell(row, column, value):
-        ref = f"{'ABCDEFGHIJKL'[column]}{row}"
-        if isinstance(value, (int, float)):
-            return f'<c r="{ref}" t="n"><v>{value}</v></c>'
-        if inline:
-            return f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>'
-        strings.append(value)
-        return f'<c r="{ref}" t="s"><v>{len(strings) - 1}</v></c>'
-
-    strings = []
-    body = "".join(
-        f'<row r="{n}">'
-        + "".join(cell(n, c, v) for c, v in enumerate(row) if v is not None)
-        + "</row>"
-        for n, row in enumerate(rows, start=1)
-    )
-    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    parts = {
-        "xl/workbook.xml": (
-            f'<workbook xmlns="{ns}" xmlns:r="{rel}"><sheets>'
-            f'<sheet name="{sheet_name}" sheetId="2" r:id="rId1"/></sheets></workbook>'
-        ),
-        "xl/_rels/workbook.xml.rels": (
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
-            'relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" '
-            f'Type="{rel}/worksheet"/></Relationships>'
-        ),
-        "xl/worksheets/sheet1.xml": (
-            f'<worksheet xmlns="{ns}"><sheetData>{body}</sheetData></worksheet>'
-        ),
-        "xl/sharedStrings.xml": (
-            f'<sst xmlns="{ns}">'
-            + "".join(f"<si><t>{s}</t></si>" for s in strings)
-            + "</sst>"
-        ),
-    }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        for name, text in parts.items():
-            archive.writestr(name, text)
-    return buffer.getvalue()
-
-
-class TestPayDateSourceConfiguration(DataDirCase):
-    """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
-
-    SPECS = [
-        FundSpec("YA", "QQQ"),
-        FundSpec("YA", "GLTL.L"),
-        FundSpec("YA", "KNSL"),
-        FundSpec("YA", "0639.HK"),
-    ]
-
-    def _read(self, text):
-        path = self.write_text("dividend_sources.txt", text)
-        return scrape_fund_price.read_dividend_sources(path, self.SPECS)
-
-    def test_the_four_codes_are_known(self):
-        """Test the code list and the authority of each."""
-        for code in ("IS", "IV", "SS", "Q4", "ET"):
-            self.assertIn(code, scrape_fund_price.DIVIDEND_SOURCE_CODES)
-            self.assertEqual(scrape_fund_price.SOURCE_AUTHORITY[code], 2)
-
-    def test_reads_one_line_per_source(self):
-        """Test the documented ids parse, codes case-insensitively."""
-        sources = self._read(
-            "QQQ,IV,46090E103\n"
-            "GLTL.L,ss,IE00B6YX5L24  # SPDR\n"
-            "KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS\n"
-            "0639.HK,ET,639\n"
-        )
-        self.assertEqual(
-            [(s.identifier, s.source, s.source_id) for s in sources],
-            [
-                ("QQQ", "IV", "46090E103"),
-                ("GLTL.L", "SS", "IE00B6YX5L24"),
-                ("KNSL", "Q4", "ir.kinsalecapitalgroup.com/XNYS"),
-                ("0639.HK", "ET", "639"),
-            ],
-        )
-
-    def test_a_malformed_source_id_names_the_line(self):
-        """Test each code checks its own id before any network call."""
-        cases = {
-            "QQQ,IV,46090E10": "line 1.*CUSIP",
-            "QQQ,IV,46090e103": "line 1.*CUSIP",
-            "QQQ,IV,": "line 1.*CUSIP",
-            "GLTL.L,SS,IE00B6YX5L2": "line 1.*ISIN",
-            "GLTL.L,SS,251804": "line 1.*ISIN",
-            "KNSL,Q4,ir.kinsalecapitalgroup.com": "line 1.*host/MIC",
-            "KNSL,Q4,ir.kinsale.com/xnys": "line 1.*host/MIC",
-            "KNSL,Q4,https://ir.kinsale.com/XNYS": "line 1.*host/MIC",
-            "KNSL,Q4,ir.kinsale.com/XNYS/x": "line 1.*host/MIC",
-            "0639.HK,ET,0639": "line 1.*HK code",
-            "0639.HK,ET,abc": "line 1.*HK code",
-            "0639.HK,ET,123456": "line 1.*HK code",
-        }
-        for text, pattern in cases.items():
-            with self.subTest(text=text):
-                with self.assertRaisesRegex(ValueError, pattern):
-                    self._read(text + "\n")
-
-    def test_the_committed_file_names_the_four_instruments(self):
-        """Test the shipped rows validate against the committed funds.txt."""
-        sources = scrape_fund_price.read_dividend_sources(
-            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
-        )
-        by_code = {s.source: s for s in sources if s.source != "IS"}
-        self.assertEqual(
-            {code: (s.identifier, s.source_id) for code, s in by_code.items()},
-            {
-                "IV": ("QQQ", "46090E103"),
-                "SS": ("GLTL.L", "IE00B6YX5L24"),
-                "Q4": ("KNSL", "ir.kinsalecapitalgroup.com/XNYS"),
-                "ET": ("0639.HK", "639"),
-            },
-        )
 
 
 class TestInvescoParsing(unittest.TestCase):
@@ -8163,6 +7098,723 @@ class TestIssuerDispatch(unittest.TestCase):
             scrape_fund_price.fetch_issuer_table(source)
 
 
+class TestIssuerAmounts(unittest.TestCase):
+    """Test the issuer's amount in the stored row's currency (SPEC-011, #87)."""
+
+    def _convert(self, text, class_currency, target):
+        return scrape_fund_price.issuer_amount(text, class_currency, target)
+
+    def test_an_equal_currency_is_unchanged(self):
+        """Test GBP for a GBP row."""
+        amount = self._convert("2.4146", "GBP", "GBP")
+        self.assertEqual((amount.text, amount.currency), ("2.4146", "GBP"))
+
+    def test_pounds_become_pence_for_a_pence_row(self):
+        """Test the factor of 100 and the rounding it brings."""
+        amount = self._convert("0.0991", "GBP", "GBp")
+        self.assertEqual((amount.text, amount.currency), ("9.91", "GBp"))
+        self.assertEqual(amount.tolerance, decimal.Decimal("0.005"))
+        self.assertEqual(self._convert("0.1", "GBP", "GBp").text, "10")
+
+    def test_a_page_that_names_no_currency_is_taken_in_the_row_currency(self):
+        """Test the shipped pages without a share-class entry."""
+        self.assertEqual(self._convert("1.5", "", "USD").currency, "USD")
+        self.assertEqual(self._convert("0.015", "", "GBp").text, "1.5")
+
+    def test_no_target_currency_takes_the_issuers(self):
+        """Test an instrument with no stored currency."""
+        amount = self._convert("1.5", "USD", "")
+        self.assertEqual((amount.text, amount.currency), ("1.5", "USD"))
+
+    def test_different_currencies_cannot_be_compared(self):
+        """Test USD against GBP is no amount."""
+        self.assertIsNone(self._convert("1.5", "USD", "GBP"))
+        self.assertIsNone(self._convert("1.5", "USD", "GBp"))
+
+    def test_zero_is_no_amount(self):
+        """Test the 0.0 rows the issuer lists for a fund's first, empty period."""
+        self.assertIsNone(self._convert("0.0", "GBP", "GBP"))
+
+    def test_the_tolerance_is_half_the_last_decimal_place(self):
+        """Test agreement means equal within the issuer's rounding."""
+        amount = self._convert("0.0128", "GBP", "GBp")
+        self.assertTrue(scrape_fund_price.amounts_agree("1.2841", amount))
+        self.assertTrue(scrape_fund_price.amounts_agree("1.28", amount))
+        self.assertFalse(scrape_fund_price.amounts_agree("1.29", amount))
+        self.assertFalse(scrape_fund_price.amounts_agree("x", amount))
+
+
+class TestApplyIssuerTable(unittest.TestCase):
+    """Test merging an issuer's table into the history (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
+        return scrape_fund_price.apply_issuer_table(
+            history, identifier, table, currency, self.TODAY, start
+        )
+
+    @staticmethod
+    def _keyed(*rows):
+        return {(row[0], row[1]): list(row) for row in rows}
+
+    def test_a_yahoo_row_gains_its_pay_date(self):
+        """Test the point of the spec."""
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        written = self._apply(
+            history, issuer_table(("2026-07-16", "2026-07-17", "2026-07-29", "2.4146"))
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(
+            history[("IGLS.L", "2026-07-16")],
+            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+        )
+
+    def test_yahoos_amount_is_kept_when_they_agree(self):
+        """Test the more precise figure stays."""
+        history = self._keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
+        self._apply(
+            history,
+            issuer_table(("2017-07-13", "", "2017-07-27", "0.0128")),
+            identifier="IWDG.L",
+        )
+        self.assertEqual(
+            history[("IWDG.L", "2017-07-13")],
+            ["IWDG.L", "2017-07-13", "2017-07-27", "1.2841", "GBp", "IS"],
+        )
+
+    def test_the_issuers_amount_wins_when_they_differ(self):
+        """Test IWDG.L 2020-01-16: Yahoo 1.77p, the issuer 1.75p."""
+        history = self._keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
+        self._apply(
+            history,
+            issuer_table(("2020-01-16", "", "2020-01-30", "0.0175")),
+            identifier="IWDG.L",
+        )
+        self.assertEqual(history[("IWDG.L", "2020-01-16")][3], "1.75")
+        self.assertEqual(history[("IWDG.L", "2020-01-16")][4], "GBp")
+
+    def test_an_amount_in_another_currency_is_left_alone(self):
+        """Test the dates are taken and the figure that cannot be compared stays."""
+        history = self._keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
+        self._apply(
+            history,
+            issuer_table(("2026-07-16", "", "2026-07-29", "1.9")),
+            identifier="X",
+        )
+        self.assertEqual(
+            history[("X", "2026-07-16")],
+            ["X", "2026-07-16", "2026-07-29", "2.4", "USD", "IS"],
+        )
+
+    def test_a_zero_issuer_amount_leaves_the_stored_amount(self):
+        """Test IDTG.L 2019-12-12: Yahoo 0.0037, the issuer 0.0."""
+        history = self._keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
+        self._apply(
+            history,
+            issuer_table(("2019-12-12", "", "2019-12-30", "0.0")),
+            identifier="IDTG.L",
+        )
+        self.assertEqual(history[("IDTG.L", "2019-12-12")][3], "0.0037")
+
+    def test_a_blank_pay_date_keeps_the_stored_one(self):
+        """Test the issuer cannot take a date away."""
+        history = self._keyed(
+            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4146", "GBP", "YA"]
+        )
+        self._apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
+        self.assertEqual(history[("IGLS.L", "2026-07-16")][2], "2026-07-30")
+
+    def test_a_row_yahoo_lacks_is_inserted_in_the_price_currency(self):
+        """Test the gaps in Yahoo's history (INXG.L lacks 18)."""
+        history = {}
+        self._apply(
+            history,
+            issuer_table(("2026-05-21", "2026-05-22", "2026-05-29", "0.0991")),
+            currency="GBp",
+            identifier="FLOS.L",
+        )
+        self.assertEqual(
+            history[("FLOS.L", "2026-05-21")],
+            ["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"],
+        )
+
+    def test_an_inserted_row_without_a_price_currency_takes_the_issuers(self):
+        """Test an instrument with no stored price."""
+        history = {}
+        self._apply(
+            history,
+            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
+            currency="",
+        )
+        self.assertEqual(history[("IGLS.L", "2026-05-21")][3:5], ["0.5", "USD"])
+
+    def test_nothing_is_inserted_without_a_usable_amount(self):
+        """Test a zero, or an amount that cannot be put in the currency."""
+        history = {}
+        self._apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
+        self._apply(
+            history,
+            issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
+        )
+        self.assertEqual(history, {})
+
+    def test_a_blank_stored_currency_is_filled(self):
+        """Test Yahoo gave none."""
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertEqual(history[("IGLS.L", "2026-07-16")][4], "GBP")
+
+    def test_a_date_a_day_out_is_one_dividend(self):
+        """Test FLOS.L and IUAG.L 2021: Yahoo 11-12, the issuer 11-11."""
+        history = self._keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
+        written = self._apply(
+            history,
+            issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
+            identifier="FLOS.L",
+        )
+        self.assertEqual(written, 2)  # the new row, and the twin removed
+        self.assertEqual(
+            history,
+            self._keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
+        )
+
+    def test_a_twin_is_removed_beside_an_exact_match(self):
+        """Test the YA twin Yahoo's window would re-insert every day."""
+        history = self._keyed(
+            ["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"],
+            ["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"],
+        )
+        self._apply(
+            history,
+            issuer_table(("2021-11-11", "", "2021-11-25", "0.071")),
+            identifier="FLOS.L",
+        )
+        self.assertEqual(list(history), [("FLOS.L", "2021-11-11")])
+
+    def test_a_near_row_with_another_amount_is_a_different_dividend(self):
+        """Test a special dividend two days away stays."""
+        history = self._keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("IGLS.L", "2026-07-18"), history)
+        self.assertIn(("IGLS.L", "2026-07-16"), history)
+
+    def test_a_near_row_that_is_itself_an_issuer_date_stays(self):
+        """Test a monthly payer's neighbours are not twins."""
+        history = self._keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
+        self._apply(
+            history,
+            issuer_table(
+                ("2026-06-02", "", "2026-06-20", "1.0"),
+                ("2026-06-04", "", "2026-06-22", "1.0"),
+            ),
+            identifier="X",
+        )
+        self.assertEqual(sorted(ex for _, ex in history), ["2026-06-02", "2026-06-04"])
+
+    def test_another_funds_and_other_sources_rows_are_not_twins(self):
+        """Test only this fund's Yahoo rows are candidates."""
+        history = self._keyed(
+            ["OTHER", "2026-07-17", "", "2.4146", "GBP", "YA"],
+            ["IGLS.L", "2026-07-17", "2026-07-30", "2.4146", "GBP", "config"],
+        )
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("OTHER", "2026-07-17"), history)
+        self.assertIn(("IGLS.L", "2026-07-17"), history)
+
+    def test_a_config_row_on_the_same_date_gives_way(self):
+        """Test the issuer beats the owner's schedule."""
+        history = self._keyed(
+            ["IGLS.L", "2026-07-16", "2026-07-30", "2.4", "GBP", "config"]
+        )
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertEqual(
+            history[("IGLS.L", "2026-07-16")],
+            ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+        )
+
+    def test_future_rows_are_not_history(self):
+        """Test a declared dividend belongs to the upcoming file."""
+        history = {}
+        written = self._apply(
+            history, issuer_table(("2026-10-27", "", "2026-11-10", "2.4146"))
+        )
+        self.assertEqual((written, history), (0, {}))
+
+    def test_today_is_history(self):
+        """Test the boundary matches Yahoo's."""
+        history = {}
+        self._apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
+        self.assertIn(("IGLS.L", "2026-10-26"), history)
+
+    def test_rows_before_the_start_date_are_not_touched(self):
+        """Test a rebuild from a date."""
+        history = {}
+        self._apply(
+            history,
+            issuer_table(
+                ("2025-07-17", "", "2025-07-30", "2.4917"),
+                ("2026-01-15", "", "2026-01-28", "2.5662"),
+            ),
+            start="2026-01-01",
+        )
+        self.assertEqual(list(history), [("IGLS.L", "2026-01-15")])
+
+    def test_a_second_apply_changes_nothing(self):
+        """Test idempotence."""
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        self._apply(history, table)
+        before = {key: list(row) for key, row in history.items()}
+        self.assertEqual(self._apply(history, table), 0)
+        self.assertEqual(history, before)
+
+    def test_a_damaged_history_row_is_skipped_not_fatal(self):
+        """Test an unreadable ex-date among the neighbours."""
+        history = self._keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self.assertIn(("IGLS.L", "soon"), history)
+        self.assertIn(("IGLS.L", "2026-07-16"), history)
+
+    def test_the_recorded_igls_page_agrees_with_yahoos_rows(self):
+        """Test the real table over the rows the committed history holds."""
+        history = self._keyed(
+            ["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"],
+            ["IGLS.L", "2026-01-15", "", "2.5662", "GBP", "YA"],
+        )
+        table = scrape_fund_price.parse_ishares_distributions(
+            fixture_text("ishares_251804_igls.html"), "251804"
+        )
+        self._apply(history, table)
+        self.assertEqual(len(history), 36)
+        self.assertEqual(
+            history[("IGLS.L", "2026-01-15")],
+            ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
+        )
+        self.assertEqual({row[5] for row in history.values()}, {"IS"})
+
+
+class TestIssuerDeclaredDividend(unittest.TestCase):
+    """Test a future issuer row as the declared dividend (SPEC-011, #87)."""
+
+    TODAY = date(2026, 10, 26)
+
+    def _declared(self, table, currency="GBP"):
+        return scrape_fund_price.issuer_declared(table, currency, self.TODAY)
+
+    def test_the_earliest_future_row_is_declared(self):
+        """Test ex-dates after today, oldest of them."""
+        table = issuer_table(
+            ("2026-07-16", "", "2026-07-29", "2.4146"),
+            ("2026-11-12", "2026-11-13", "2026-11-25", "2.5"),
+            ("2027-01-14", "", "2027-01-27", "2.6"),
+        )
+        self.assertEqual(
+            self._declared(table),
+            scrape_fund_price.DeclaredDividend(
+                "2026-11-12", "2026-11-25", "2.5", "GBP"
+            ),
+        )
+
+    def test_today_is_history_not_declared(self):
+        """Test the boundary matches apply_issuer_table."""
+        table = issuer_table(("2026-10-26", "", "2026-11-09", "2.5"))
+        self.assertIsNone(self._declared(table))
+
+    def test_no_future_row_is_none(self):
+        """Test nothing is declared until the issuer says so."""
+        table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        self.assertIsNone(self._declared(table))
+
+    def test_the_amount_is_in_the_price_currency(self):
+        """Test pounds become pence for a pence line."""
+        table = issuer_table(("2026-11-12", "", "2026-11-25", "0.0991"))
+        declared = self._declared(table, "GBp")
+        self.assertEqual((declared.amount, declared.currency), ("9.91", "GBp"))
+
+    def test_an_amount_that_cannot_be_stated_is_empty(self):
+        """Test zero, or another currency, leaves the amount to the last paid."""
+        for text, currency in (("0.0", "GBP"), ("1.5", "USD")):
+            with self.subTest(text=text, currency=currency):
+                table = issuer_table(
+                    ("2026-11-12", "", "2026-11-25", text), currency=currency
+                )
+                declared = self._declared(table, "GBP")
+                self.assertEqual((declared.amount, declared.currency), ("", ""))
+                self.assertEqual(declared.ex_date, "2026-11-12")
+
+    def test_a_row_without_a_pay_date_is_declared_without_one(self):
+        """Test the ex-date alone is a declaration."""
+        table = issuer_table(("2026-11-12", "", "", "2.5"))
+        self.assertEqual(self._declared(table).pay_date, "")
+
+
+class TestDailyIssuerDates(IssuerRunCase):
+    """Test the daily run with an issuer source (SPEC-011, #87)."""
+
+    def test_the_pay_date_and_the_declared_row_reach_both_files(self):
+        """Test the point of the spec, end to end."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        self.assertEqual(results.failures, [])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+        self.assertEqual(
+            self._read("dividends_upcoming.csv"),
+            [
+                [
+                    "IGLS.L",
+                    "2026-11-12",
+                    "2026-11-25",
+                    "2.5",
+                    "GBP",
+                    "declared",
+                    "2026-10-26",
+                ]
+            ],
+        )
+
+    def test_the_issuer_declaration_replaces_yahoos_and_the_estimate(self):
+        """Test one declared row, the issuer's."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
+        )
+        rows = self._read("dividends_upcoming.csv")
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
+        )
+
+    def test_yahoos_declaration_stands_when_the_issuer_has_none(self):
+        """Test the issuer adds, it does not retract."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+            declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
+        )
+        rows = self._read("dividends_upcoming.csv")
+        self.assertEqual(
+            [(row[1], row[5]) for row in rows], [("2026-11-19", "declared")]
+        )
+
+    def test_rows_are_published_under_every_alias(self):
+        """Test a source line may name an alias; every identifier gets the rows."""
+        source = scrape_fund_price.DividendSource("JFM0003373", "IS", "251804")
+        self._issuer_run(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
+            [source],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+        )
+        self.assertEqual(
+            [(row[0], row[1], row[5]) for row in self._read("dividends_history.csv")],
+            [
+                ("0P00000YAN", "2026-07-16", "IS"),
+                ("JFM0003373", "2026-07-16", "IS"),
+            ],
+        )
+        self.assertEqual(
+            [(row[0], row[1]) for row in self._read("dividends_upcoming.csv")],
+            [("0P00000YAN", "2026-11-12"), ("JFM0003373", "2026-11-12")],
+        )
+
+    def test_an_instrument_with_no_yahoo_route_is_filled_from_the_issuer(self):
+        """Test the FT-priced iShares fund, in its stored price currency."""
+        self._write(
+            "latest_prices.csv",
+            "Fund,Date,Price,Currency\nIE00B0M63516,2026-10-23,40.5,USD\n",
+        )
+        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
+        self._issuer_run(
+            [FundSpec("FT", "IE00B0M63516", ("IDBZ",))],
+            [source],
+            {
+                "251853": issuer_table(
+                    ("2026-03-19", "2026-03-20", "2026-03-27", "0.26"),
+                    ("2026-09-17", "2026-09-18", "2026-09-30", "0.31"),
+                    currency="USD",
+                )
+            },
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IDBZ", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+                ["IDBZ", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
+                ["IE00B0M63516", "2026-09-17", "2026-09-30", "0.31", "USD", "IS"],
+            ],
+        )
+
+    def test_a_pence_line_takes_the_issuers_pounds_as_pence(self):
+        """Test the declared amount of a GBp instrument."""
+        self._write(
+            "latest_prices.csv",
+            "Fund,Date,Price,Currency\nFLOS.L,2026-10-23,5000,GBp\n",
+        )
+        self._issuer_run(
+            [FundSpec("YA", "FLOS.L")],
+            [self.FLOS],
+            {
+                "290356": issuer_table(
+                    ("2026-05-21", "", "2026-05-29", "0.0991"),
+                    ("2026-11-12", "", "2026-11-25", "0.1"),
+                )
+            },
+            {"FLOS.L": [self.EVENT("2026-05-21", "9.91", "GBp")]},
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"]],
+        )
+        [row] = self._read("dividends_upcoming.csv")
+        self.assertEqual(row[3:6], ["10", "GBp", "declared"])
+
+    def test_one_failing_page_costs_nothing_else(self):
+        """Test the failure is reported and the other instrument is written."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
+            [self.IGLS, self.FLOS],
+            {
+                "251804": RuntimeError("boom"),
+                "290356": issuer_table(("2026-05-21", "", "2026-05-29", "0.0991")),
+            },
+            {
+                "IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")],
+                "FLOS.L": [self.EVENT("2026-05-21", "0.0991", "GBP")],
+            },
+        )
+        self.assertEqual(results.failures, ["IGLS.L: pay dates: boom"])
+        self.assertEqual(self.fetched.count("251804"), 3)
+        self.assertEqual(
+            {(row[0], row[2]) for row in self._read("dividends_history.csv")},
+            {("IGLS.L", ""), ("FLOS.L", "2026-05-29")},
+        )
+
+    def test_a_page_that_has_changed_is_a_reported_failure(self):
+        """Test a parse error is handled like any other fetch error."""
+        results = self._issuer_run(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": ValueError("iShares product 251804: no distributions table")},
+        )
+        self.assertEqual(
+            results.failures,
+            ["IGLS.L: pay dates: iShares product 251804: no distributions table"],
+        )
+
+    def test_a_day_the_issuer_fails_does_not_take_the_pay_dates_away(self):
+        """Test Yahoo's daily upsert cannot blank what the issuer gave."""
+        specs = [FundSpec("YA", "IGLS.L")]
+        events = {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]}
+        self._issuer_run(
+            specs, [self.IGLS], {"251804": issuer_table(self.PAST)}, events
+        )
+        self._issuer_run(specs, [self.IGLS], {"251804": OSError("down")}, events)
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+
+    def test_the_pages_are_fetched_a_second_apart(self):
+        """Test a pause between instruments, none before the first."""
+        self._issuer_run(
+            [FundSpec("YA", "IGLS.L"), FundSpec("YA", "FLOS.L")],
+            [self.IGLS, self.FLOS],
+            {"251804": issuer_table(self.PAST), "290356": issuer_table(self.PAST)},
+        )
+        self.assertEqual(self.sleeps, [scrape_fund_price.ISSUER_PAUSE_SECONDS])
+        self.assertEqual(scrape_fund_price.ISSUER_PAUSE_SECONDS, 1)
+
+    def test_no_sources_means_no_requests(self):
+        """Test the file is optional."""
+        self._issuer_run([FundSpec("YA", "IGLS.L")], [])
+        self.assertEqual((self.fetched, self.sleeps), ([], []))
+
+    def test_a_second_run_changes_nothing_and_reports_nothing(self):
+        """Test the declared row is news once."""
+        args = (
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST, self.NEXT)},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        first = self._issuer_run(*args)
+        files = {
+            name: self._text(name)
+            for name in ("dividends_history.csv", "dividends_upcoming.csv")
+        }
+        second = self._issuer_run(*args)
+        self.assertEqual(
+            files,
+            {name: self._text(name) for name in files},
+        )
+        [news] = first.summary
+        self.assertEqual(
+            (news.name, news.ex_date, news.pay_date, news.amount, news.status),
+            ("IGLS.L", "2026-11-12", "2026-11-25", "2.5", "declared"),
+        )
+        self.assertEqual(second.summary, [])
+
+
+class TestIssuerDatesInTheRebuild(IssuerRunCase):
+    """Test --backfill-dividends with an issuer source (SPEC-011, #87)."""
+
+    def _rebuild(self, specs, sources, tables, events=None, start=None):
+        def runner(specs, dists, data_dir, today):
+            return scrape_fund_price.backfill_dividends(
+                specs, dists, start, data_dir, today, sources=sources
+            )
+
+        return self._issuer_run(specs, sources, tables, events, runner=runner)
+
+    def test_yahoo_and_issuer_rows_from_the_start_are_replaced(self):
+        """Test the rebuild applies the issuer last and drops what it dropped."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IGLS.L,2025-07-17,2025-07-30,2.4917,GBP,IS\n"
+            "IGLS.L,2026-01-15,2026-01-28,9,GBP,IS\n"
+            "IGLS.L,2026-02-02,2026-02-20,1,GBP,IS\n"
+            "IGLS.L,2026-03-03,,1,GBP,config\n",
+        )
+        report = self._rebuild(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {
+                "251804": issuer_table(
+                    ("2025-07-17", "", "2025-07-30", "2.4917"),
+                    ("2026-01-15", "", "2026-01-28", "2.5662"),
+                    self.PAST,
+                    self.NEXT,
+                )
+            },
+            {
+                "IGLS.L": [
+                    self.EVENT("2026-01-15", "2.5662", "GBP"),
+                    self.EVENT("2026-07-16", "2.4146", "GBP"),
+                ]
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IGLS.L", "2025-07-17", "2025-07-30", "2.4917", "GBP", "IS"],
+                ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
+                ["IGLS.L", "2026-03-03", "", "1", "GBP", "config"],
+                ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
+            ],
+        )
+        [entry] = report.entries
+        self.assertEqual((entry["deleted"], entry["status"]), (2, "rebuilt"))
+        self.assertEqual(report.failures, [])
+        [upcoming] = self._read("dividends_upcoming.csv")
+        self.assertEqual(upcoming[1:3], ["2026-11-12", "2026-11-25"])
+        self.assertEqual(upcoming[5], "declared")
+
+    def test_an_instrument_with_no_yahoo_route_is_rebuilt_from_the_issuer(self):
+        """Test the FT-priced fund has its own line in the report."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IE00B0M63516,2025-09-18,2025-09-30,0.2,USD,IS\n"
+            "IE00B0M63516,2026-03-19,2026-03-27,9,USD,IS\n"
+            "IE00B0M63516,2026-04-01,2026-04-10,1,USD,IS\n",
+        )
+        source = scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853")
+        report = self._rebuild(
+            [FundSpec("FT", "IE00B0M63516")],
+            [source],
+            {
+                "251853": issuer_table(
+                    ("2025-09-18", "", "2025-09-30", "0.2"),
+                    ("2026-03-19", "", "2026-03-27", "0.26"),
+                    currency="USD",
+                )
+            },
+            start="2026-01-01",
+        )
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [
+                ["IE00B0M63516", "2025-09-18", "2025-09-30", "0.2", "USD", "IS"],
+                ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
+            ],
+        )
+        [entry] = report.entries
+        self.assertEqual(
+            entry,
+            {
+                "identifier": "IE00B0M63516",
+                "before": 3,
+                "deleted": 2,
+                "retained": 1,
+                "inserted": 1,
+                "first": "2026-03-19",
+                "last": "2026-03-19",
+                "currency": "USD",
+                "status": "rebuilt",
+            },
+        )
+
+    def test_a_failing_page_keeps_its_rows_and_fails_the_report(self):
+        """Test nothing is lost when the issuer does not answer."""
+        text = (
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IE00B0M63516,2026-03-19,2026-03-27,0.26,USD,IS\n"
+            "IGLS.L,2026-07-16,2026-07-29,2.4146,GBP,IS\n"
+        )
+        self._write("dividends_history.csv", text)
+        report = self._rebuild(
+            [FundSpec("FT", "IE00B0M63516"), FundSpec("YA", "IGLS.L")],
+            [
+                scrape_fund_price.DividendSource("IE00B0M63516", "IS", "251853"),
+                self.IGLS,
+            ],
+            {"251853": OSError("down"), "251804": OSError("down")},
+            {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
+        )
+        self.assertEqual(self._text("dividends_history.csv"), text)
+        self.assertEqual(
+            report.failures,
+            ["IE00B0M63516: pay dates: down", "IGLS.L: pay dates: down"],
+        )
+        self.assertEqual(
+            [entry["status"] for entry in report.entries],
+            ["failed, kept existing", "rebuilt"],
+        )
+
+    def test_a_failing_yahoo_fetch_still_takes_the_issuers_rows(self):
+        """Test the two sources are independent."""
+        self._write(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            "IGLS.L,2026-07-16,,2.4146,GBP,YA\n",
+        )
+        report = self._rebuild(
+            [FundSpec("YA", "IGLS.L")],
+            [self.IGLS],
+            {"251804": issuer_table(self.PAST)},
+            {"IGLS.L": RuntimeError("down")},
+        )
+        self.assertEqual(report.failures, ["IGLS.L: dividends: down"])
+        self.assertEqual(
+            self._read("dividends_history.csv"),
+            [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
+        )
+
+
 class TestPayDateSourcesInTheRun(IssuerRunCase):
     """Test the new sources through the daily run and the rebuild (SPEC-012, #89)."""
 
@@ -8286,10 +7938,75 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         self.assertEqual(history[("QQQ", "2026-09-21")][2], "2026-10-08")
 
 
-# ---------------------------------------------------------------------------
-# SPEC-013: UK CPI (ONS series D7BT) published monthly as uk_cpi.csv, one
-# canned response recorded once from the live endpoint (#91).
-# ---------------------------------------------------------------------------
+class TestIssuerSourcesInMain(DataDirCase):
+    """Test main() reads and passes dividend_sources.txt (SPEC-011, #87)."""
+
+    def _write(self, text):
+        self.write_text("dividend_sources.txt", text)
+
+    def _argv(self, backfill):
+        return ["--backfill-dividends", "--from", "2024-01-01"] if backfill else []
+
+    def _main(self, backfill=False):
+        """Run main() on the test directory's files, the run's steps stubbed.
+
+        distributions.txt is pointed at a file that does not exist, so the
+        committed schedules are not validated against the one stubbed fund.
+        """
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(
+                patch(
+                    "scrape_fund_price.DIVIDEND_SOURCES_FILE",
+                    self.path("dividend_sources.txt"),
+                )
+            )
+            enter(
+                patch(
+                    "scrape_fund_price.DISTRIBUTIONS_FILE",
+                    self.path("distributions.txt"),
+                )
+            )
+            stubs = enter(
+                daily_run_stubs(
+                    specs=[FundSpec("YA", "IGLS.L")],
+                    backfill_dividends=BackfillReport(),
+                )
+            )
+            self.scrape = stubs["scrape_funds"]
+            self.update = stubs["update_dividends"]
+            self.rebuild = stubs["backfill_dividends"]
+            main(self._argv(backfill))
+
+    def test_the_daily_run_passes_the_validated_sources(self):
+        """Test update_dividends gets them by keyword."""
+        self._write("IGLS.L,IS,251804\n")
+        self._main()
+        [source] = self.update.call_args.kwargs["sources"]
+        self.assertEqual((source.identifier, source.source_id), ("IGLS.L", "251804"))
+
+    def test_the_rebuild_passes_the_validated_sources(self):
+        """Test --backfill-dividends gets them by keyword."""
+        self._write("IGLS.L,IS,251804\n")
+        self._main(backfill=True)
+        [source] = self.rebuild.call_args.kwargs["sources"]
+        self.assertEqual(source.identifier, "IGLS.L")
+
+    def test_a_bad_file_fails_before_any_network_call(self):
+        """Test validation comes first, in both modes."""
+        self._write("NOPE,IS,251804\n")
+        for backfill in (False, True):
+            with self.subTest(backfill=backfill):
+                with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
+                    self._main(backfill)
+        self.scrape.assert_not_called()
+        self.update.assert_not_called()
+        self.rebuild.assert_not_called()
+
+
+# ===========================================================================
+# UK CPI
+# ===========================================================================
 
 
 def ons_payload(months, cdid="D7BT"):
@@ -8635,10 +8352,9 @@ class TestUkCpiInMain(unittest.TestCase):
         stubs["update_uk_cpi"].assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# SPEC-014: the Bank of England Bank Rate published monthly as
-# uk_bank_rate.csv, one canned page recorded once from the live site (#93).
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# UK Bank Rate
+# ===========================================================================
 
 
 def boe_page(rows, table_id="stats-table"):
@@ -9048,6 +8764,352 @@ class TestUkBankRateInMain(unittest.TestCase):
         ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
         stubs["update_uk_bank_rate"].assert_not_called()
+
+
+# ===========================================================================
+# main() and the command line
+# ===========================================================================
+
+
+class TestMainEntryPoint(DataDirCase):
+    """Test the main() command-line entry point."""
+
+    @patch("builtins.print")
+    def test_main_history_without_start_date_errors(self, mock_print):
+        """Test --history without --start reports an error and stops.
+
+        main(argv) parses the list it is given, as parse_arguments(args)
+        does, so a test drives a mode with the real flags instead of patching
+        parse_arguments with a namespace whose unset attributes are truthy.
+        """
+        main(["--history", "AAPL"])
+        mock_print.assert_called_once_with(
+            "Error: --start date is required when using --history"
+        )
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.fetch_historical_data")
+    def test_main_history_success_prints_path(self, mock_fetch, mock_print):
+        """Test successful historical retrieval reports the saved file."""
+        mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
+        main(["--history", "AAPL", "--start", "2024-01-01"])
+        mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
+        mock_print.assert_called_once_with(
+            "Historical data saved to: data/history_AAPL_2024-01-01_2024-12-31.csv"
+        )
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.fetch_historical_data")
+    def test_main_history_error_is_reported(self, mock_fetch, mock_print):
+        """Test a failed historical retrieval surfaces the error message."""
+        mock_fetch.return_value = "Error: No data found for symbol BADSYM"
+        main(["--history", "BADSYM", "--start", "2024-01-01"])
+        mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
+
+    def test_the_summary_reads_the_history_in_the_data_directory(self):
+        """Test main() follows DATA_DIR rather than a path fixed at import.
+
+        The suite redirects DATA_DIR in setUpModule; a path bound at import
+        time to the literal data/prices_history.csv made every main() test
+        summarise the repository's committed history instead.
+        """
+        self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price", "Currency"],
+            [
+                ["TESTFUND", "2026-10-29", "100.00", "GBP"],
+                ["TESTFUND", "2026-10-30", "101.00", "GBP"],
+            ],
+        )
+        with daily_run_stubs(self.test_dir, specs=[FundSpec("YA", "TESTFUND")]) as s:
+            main([])
+        [row] = s["write_summary"].call_args.args[0]
+        self.assertEqual(
+            (row.name, row.new_date, row.new, row.old),
+            ("TESTFUND", "2026-10-30", "101.00", "100.00"),
+        )
+
+
+class TestFailureDoesNotSuppressOutput(unittest.TestCase):
+    """Test a partially failed run still publishes everything it obtained."""
+
+    SPECS = [FundSpec("YA", "QQQ"), FundSpec("YA", "GRAB")]
+
+    def test_results_are_written_before_failure_is_signalled(self):
+        """Test output is written even when some funds failed, then the job fails."""
+        results = ScrapeResults(
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+            failures=["GRAB: Error: Timeout"],
+        )
+        with daily_run_stubs(specs=self.SPECS, scrape_funds=results) as stubs:
+            with self.assertRaises(SystemExit) as error:
+                main([])
+
+        # The write must happen, otherwise a single failing fund would
+        # discard a whole day of good prices.
+        stubs["write_results"].assert_called_once_with(results)
+        self.assertEqual(error.exception.code, 1)
+
+    def test_clean_run_does_not_exit_non_zero(self):
+        """Test a run with no failures completes normally."""
+        results = ScrapeResults([["QQQ", "2026-09-18", "721.45", "USD"]])
+        with daily_run_stubs(specs=self.SPECS[:1], scrape_funds=results) as stubs:
+            main([])
+        stubs["write_results"].assert_called_once_with(results)
+
+    def _crashing_run(self, crash):
+        """Run the daily mode with every step stubbed and `crash` raising.
+
+        Returns the stubs by name together with the exit code and what was
+        printed, so a test can assert which steps still ran.
+        """
+        outcomes = {
+            "update_uk_cpi": scrape_fund_price.UkCpiResults(),
+            "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
+            crash: RuntimeError(f"{crash} exploded"),
+        }
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")], pairs=["USDGBP"], **outcomes
+        ) as stubs:
+            with self.assertRaises(SystemExit) as error:
+                main([])
+        stubs["exit_code"] = error.exception.code
+        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
+        return stubs
+
+    def test_a_crash_in_the_price_step_does_not_cost_the_other_files(self):
+        """Test an exception outside the per-fund retries is a price failure.
+
+        AGENTS.md promises the run writes everything it obtained and only
+        then exits non-zero; the dividend, CPI and Bank Rate steps keep that
+        promise, so the price step must too.
+        """
+        ran = self._crashing_run("scrape_funds")
+        ran["write_fx_results"].assert_called_once()
+        ran["update_dividends"].assert_called_once()
+        ran["update_uk_cpi"].assert_called_once()
+        ran["update_uk_bank_rate"].assert_called_once()
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: prices: scrape_funds exploded", ran["printed"])
+
+    def test_a_crash_writing_the_prices_is_a_price_failure_too(self):
+        """Test the whole step is covered, not only the fetch."""
+        ran = self._crashing_run("write_results")
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: prices: write_results exploded", ran["printed"])
+
+    def test_a_crash_in_the_fx_step_does_not_cost_the_other_files(self):
+        """Test the FX step is isolated the same way, as `fx: <error>`."""
+        ran = self._crashing_run("snap_fx_rates")
+        ran["write_results"].assert_called_once()
+        ran["update_dividends"].assert_called_once()
+        ran["update_uk_cpi"].assert_called_once()
+        ran["update_uk_bank_rate"].assert_called_once()
+        ran["write_summary"].assert_called_once()
+        self.assertEqual(ran["exit_code"], 1)
+        self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
+
+
+class TestHistoricalData(DataDirCase):
+    """Test historical data retrieval functionality."""
+
+    def test_parse_arguments_history_with_dates(self):
+        """Test parsing command-line arguments for historical data with start and end dates."""
+        args = parse_arguments(
+            ["--history", "AAPL", "--start", "2024-01-01", "--end", "2024-12-31"]
+        )
+        self.assertEqual(args.history, "AAPL")
+        self.assertEqual(args.start, "2024-01-01")
+        self.assertEqual(args.end, "2024-12-31")
+
+    def test_parse_arguments_history_start_only(self):
+        """Test parsing command-line arguments with only start date."""
+        args = parse_arguments(["--history", "MSFT", "--start", "2024-11-01"])
+        self.assertEqual(args.history, "MSFT")
+        self.assertEqual(args.start, "2024-11-01")
+        self.assertIsNone(args.end)
+
+    def test_parse_arguments_no_history(self):
+        """Test parsing command-line arguments without history flag."""
+        args = parse_arguments([])
+        self.assertIsNone(args.history)
+        self.assertIsNone(args.start)
+        self.assertIsNone(args.end)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_fetch_historical_data_valid_symbol(self, mock_ticker):
+        """Test the bars are saved as history_<symbol>_<start>_<end>.csv."""
+        fake_ticker(mock_ticker, [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+
+        result = fetch_historical_data(
+            "AAPL", "2024-01-01", "2024-12-31", self.test_dir
+        )
+
+        mock_ticker.assert_called_once_with("AAPL")
+        mock_ticker.return_value.history.assert_called_once_with(
+            start="2024-01-01", end="2024-12-31"
+        )
+        name = "history_AAPL_2024-01-01_2024-12-31.csv"
+        self.assertEqual(result, self.path(name))
+        self.assertEqual(
+            self.read_rows(name), [["2024-01-02", "185.64"], ["2024-01-03", "184.25"]]
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_fetch_historical_data_invalid_symbol(self, mock_ticker):
+        """Test an error from Yahoo comes back as an error message."""
+        mock_ticker.return_value.history.side_effect = Exception("Invalid symbol")
+
+        result = fetch_historical_data(
+            "INVALID_XYZ", "2024-01-01", "2024-12-31", self.test_dir
+        )
+
+        self.assertEqual(result, "Error: Invalid symbol")
+
+    def test_fetch_historical_data_invalid_date_format(self):
+        """Test fetching historical data with invalid date format."""
+        result = fetch_historical_data(
+            "AAPL", "01-01-2024", "2024-12-31", self.test_dir
+        )
+        self.assertEqual(result, "Error: Invalid start date format. Use YYYY-MM-DD")
+
+    def test_fetch_historical_data_invalid_end_date_format(self):
+        """Test fetching historical data with a malformed end date."""
+        result = fetch_historical_data("AAPL", "2024-01-01", "31-12-2024")
+        self.assertEqual(result, "Error: Invalid end date format. Use YYYY-MM-DD")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_fetch_historical_data_empty_range_returns_error(self, mock_ticker):
+        """Test a date range yielding no rows reports no data found."""
+        fake_ticker(mock_ticker, [])
+        result = fetch_historical_data("AAPL", "2024-01-01", "2024-01-02")
+        self.assertEqual(result, "Error: No data found for symbol AAPL")
+
+    def test_fetch_historical_data_start_after_end(self):
+        """Test fetching historical data with start date after end date."""
+        result = fetch_historical_data(
+            "AAPL", "2024-12-31", "2024-01-01", self.test_dir
+        )
+        self.assertEqual(result, "Error: Start date must be before end date")
+
+
+# ===========================================================================
+# Live sources
+# ===========================================================================
+
+
+@unittest.skipUnless(
+    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
+)
+class TestFunctionalScraping(DataDirCase):
+    """Functional tests that can run against real websites (optional).
+
+    Every fetch is given the scratch directory: without one these write into
+    the repository's data/, leaving files such as latest_AAPL.price for a
+    symbol that is not in funds.txt.
+    """
+
+    def assertUsableQuotes(self, results, fund_id, expect_dated=True):
+        """Assert a live fetch produced at least one usable dated price.
+
+        Sources go down; that is a fact of life for this project rather than a
+        code defect, so an outage skips instead of failing. Anything that does
+        come back must still be well formed.
+        """
+        if results.failures:
+            self.skipTest(f"source unavailable: {results.failures[0]}")
+
+        self.assertGreaterEqual(len(results), 1)
+        today = date.today().isoformat()
+        for fund, price_date, price, currency in results:
+            self.assertEqual(fund, fund_id)
+            # A price date must be real, and never in the future.
+            parsed = date.fromisoformat(price_date)
+            self.assertLessEqual(parsed.isoformat(), today)
+            if expect_dated:
+                # Dated sources report the market's date, not the run date.
+                self.assertLess(parsed.weekday(), 5, f"{price_date} is a weekend")
+            self.assertNotEqual(price, "N/A")
+            self.assertNotEqual(price, "")
+            self.assertFalse(price.startswith("Error:"))
+            try:
+                float(price)
+            except ValueError:
+                self.fail(f"Price should be a valid number, got: {price}")
+
+    def test_functional_ft_scraping(self):
+        """Functional test for FT prices (requires internet connection)."""
+        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
+        self.assertUsableQuotes(results, "IE0008368742")
+        # FT reports the quoting currency alongside the price.
+        self.assertTrue(all(row[3] for row in results))
+
+    def test_functional_yahoo_scraping(self):
+        """Functional test for Yahoo scraping (requires internet connection)."""
+        results = scrape_funds([("YH", "IDTG.L")], self.test_dir)
+        # The scrape route reads a page showing only the current price, so its
+        # quote carries the run date and may fall on a weekend.
+        self.assertUsableQuotes(results, "IDTG.L", expect_dated=False)
+
+    def test_functional_morningstar_scraping(self):
+        """Functional test for Morningstar scraping (requires internet connection)."""
+        results = scrape_funds([("MS", "JFM0003373")], self.test_dir)
+        self.assertUsableQuotes(results, "JFM0003373", expect_dated=False)
+
+    def test_functional_yahoo_api(self):
+        """Functional test for the Yahoo Finance API (requires internet)."""
+        results = scrape_funds([("YA", "AAPL")], self.test_dir)
+        self.assertUsableQuotes(results, "AAPL")
+        self.assertTrue(all(row[3] == "USD" for row in results))
+
+    def test_functional_api_reports_the_sources_own_price_date(self):
+        """Functional test that stored dates come from the source, not the clock."""
+        quotes = fetch_yahoo_quotes(
+            "QQQ", (date.today() - timedelta(days=15)).isoformat()
+        )
+        if not quotes:
+            self.skipTest("Yahoo returned no bars")
+        self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
+        self.assertTrue(all(q.currency == "USD" for q in quotes))
+        # Consecutive trading days must be distinct, not a carried-forward run.
+        self.assertEqual(len({q.date for q in quotes}), len(quotes))
+
+    def test_fetch_price_api_valid_symbol(self):
+        """Functional test for fetch_price_api with a real symbol."""
+        price = fetch_price_api("AAPL")
+        self.assertIsNotNone(price)
+        self.assertNotEqual(price, "N/A")
+        try:
+            float(price)
+        except ValueError:
+            self.fail(f"Price should be a valid number, got: {price}")
+
+    def test_fetch_price_api_invalid_symbol(self):
+        """Functional test for fetch_price_api with a symbol Yahoo lacks."""
+        price = fetch_price_api("INVALID_SYMBOL_XYZ123")
+        self.assertTrue(price.startswith("Error:") or price == "N/A")
+
+
+@unittest.skipUnless(
+    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
+)
+class TestFunctionalClosedHoldingSources(unittest.TestCase):
+    """Functional test for the source only closed holdings use (optional)."""
+
+    def test_functional_investing_history(self):
+        """Functional test for investing.com (requires internet connection).
+
+        Uses a liquidated fund, so the window is fixed and the values cannot
+        change; an outage or a block skips rather than fails.
+        """
+        try:
+            quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-10")
+        except Exception as error:
+            self.skipTest(f"source unavailable: {error}")
+        self.assertEqual(quotes[0], Quote("2024-01-04", "218.95", ""))
+        self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
 if __name__ == "__main__":
