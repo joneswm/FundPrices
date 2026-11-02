@@ -2665,11 +2665,11 @@ class TestLineEndings(DataDirCase):
     def test_historical_mode_csv_uses_lf(self, mock_ticker):
         """Test the --history export is LF too."""
         fake_ticker(mock_ticker, bars=[("2026-09-18", 1.5)])
-        result = fetch_historical_data(
+        report = fetch_historical_data(
             "AAPL", "2026-09-01", "2026-09-18", self.test_dir
         )
-        self.assertFalse(result.startswith("Error:"), result)
-        self.assertNoCarriageReturns(os.path.basename(result))
+        self.assertEqual(report.failures, [])
+        self.assertNoCarriageReturns(os.path.basename(report.path))
 
     def test_price_file_per_fund_uses_lf(self):
         """Test the single-value .price files are LF."""
@@ -8813,37 +8813,77 @@ class TestUkBankRateInMain(unittest.TestCase):
 class TestMainEntryPoint(DataDirCase):
     """Test the main() command-line entry point."""
 
+    @staticmethod
+    def history_report(symbol="AAPL", rows=(), failures=()):
+        """A --history report as fetch_historical_data would return it."""
+        report = scrape_fund_price.HistoryReport(
+            symbol, f"data/history_{symbol}_2024-01-01_2024-12-31.csv"
+        )
+        report.rows = [list(row) for row in rows]
+        report.failures = list(failures)
+        return report
+
     @patch("builtins.print")
-    def test_main_history_without_start_date_errors(self, mock_print):
-        """Test --history without --start reports an error and stops.
+    def test_main_history_without_start_date_exits_two(self, mock_print):
+        """Test --history without --start is rejected before any network call.
 
         main(argv) parses the list it is given, as parse_arguments(args)
         does, so a test drives a mode with the real flags instead of patching
         parse_arguments with a namespace whose unset attributes are truthy.
         """
-        main(["--history", "AAPL"])
+        with self.assertRaises(SystemExit) as error:
+            main(["--history", "AAPL"])
+        self.assertEqual(error.exception.code, 2)
         mock_print.assert_called_once_with(
-            "Error: --start date is required when using --history"
+            "Error: --start is required when using --history"
         )
 
     @patch("builtins.print")
     @patch("scrape_fund_price.fetch_historical_data")
-    def test_main_history_success_prints_path(self, mock_fetch, mock_print):
-        """Test successful historical retrieval reports the saved file."""
-        mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
+    def test_main_history_success_prints_the_report(self, mock_fetch, mock_print):
+        """Test a successful export reports what it wrote, like the rebuilds."""
+        mock_fetch.return_value = self.history_report(
+            rows=[["AAPL", "2024-01-02", "184.08", "USD"]]
+        )
         main(["--history", "AAPL", "--start", "2024-01-01"])
         mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
-        mock_print.assert_called_once_with(
-            "Historical data saved to: data/history_AAPL_2024-01-01_2024-12-31.csv"
+        printed = mock_print.call_args.args[0].splitlines()
+        self.assertIn(
+            "| AAPL | 1 | 2024-01-02 | 2024-01-02 | USD "
+            "| data/history_AAPL_2024-01-01_2024-12-31.csv |",
+            printed,
         )
 
     @patch("builtins.print")
     @patch("scrape_fund_price.fetch_historical_data")
-    def test_main_history_error_is_reported(self, mock_fetch, mock_print):
-        """Test a failed historical retrieval surfaces the error message."""
-        mock_fetch.return_value = "Error: No data found for symbol BADSYM"
-        main(["--history", "BADSYM", "--start", "2024-01-01"])
-        mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
+    def test_main_history_failure_exits_non_zero(self, mock_fetch, mock_print):
+        """Test a symbol that failed is on the exit code, not an Error: string."""
+        mock_fetch.return_value = self.history_report(
+            "BADSYM", failures=["BADSYM: Invalid symbol"]
+        )
+        with self.assertRaises(SystemExit) as error:
+            main(["--history", "BADSYM", "--start", "2024-01-01"])
+        self.assertEqual(error.exception.code, 1)
+        printed = mock_print.call_args.args[0].splitlines()
+        self.assertIn("**Failures**", printed)
+        self.assertIn("- BADSYM: Invalid symbol", printed)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.fetch_historical_data")
+    def test_main_history_report_reaches_the_job_summary(self, mock_fetch, _):
+        """Test the export's report lands on the Actions run page too."""
+        mock_fetch.return_value = self.history_report(
+            rows=[["AAPL", "2024-01-02", "184.08", "USD"]]
+        )
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
+            main(["--history", "AAPL", "--start", "2024-01-01", "--end", "2024-12-31"])
+        written = self.read_text("summary.md").splitlines()
+        self.assertEqual(written[0], "## History of AAPL from 2024-01-01 to 2024-12-31")
+        self.assertIn(
+            "| AAPL | 1 | 2024-01-02 | 2024-01-02 | USD "
+            "| data/history_AAPL_2024-01-01_2024-12-31.csv |",
+            written,
+        )
 
     def test_the_summary_reads_the_history_in_the_data_directory(self):
         """Test main() follows DATA_DIR rather than a path fixed at import.
@@ -8951,8 +8991,78 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
 
 
+class TestHistoryArguments(unittest.TestCase):
+    """Test --history is validated before any network call, like the rebuilds."""
+
+    def _validate(self, *argv):
+        return scrape_fund_price.validate_history_args(parse_arguments(list(argv)))
+
+    def test_start_is_required(self):
+        """Test the missing start date is reported, not assumed."""
+        self.assertIn("--start", self._validate("--history", "AAPL"))
+
+    def test_a_bad_or_future_start_date_is_rejected(self):
+        """Test the same date rules as --backfill, worded for --start."""
+        self.assertIn(
+            "Invalid --start",
+            self._validate("--history", "AAPL", "--start", "01/01/24"),
+        )
+        self.assertIn(
+            "Invalid --start",
+            self._validate("--history", "AAPL", "--start", "2024-13-45"),
+        )
+        future = (date.today() + timedelta(days=1)).isoformat()
+        self.assertIn(
+            "future", self._validate("--history", "AAPL", "--start", future).lower()
+        )
+
+    def test_a_bad_end_date_is_rejected(self):
+        """Test --end is checked the same way."""
+        error = self._validate(
+            "--history", "AAPL", "--start", "2024-01-01", "--end", "31-12-2024"
+        )
+        self.assertIn("Invalid --end", error)
+
+    def test_an_end_before_the_start_is_rejected(self):
+        """Test an empty window is refused rather than fetched."""
+        error = self._validate(
+            "--history", "AAPL", "--start", "2024-12-31", "--end", "2024-01-01"
+        )
+        self.assertIn("--end", error)
+        self.assertIn("before", error)
+
+    def test_other_modes_cannot_be_combined(self):
+        """Test one mode at a time."""
+        for flags in (["--backfill"], ["--import-closed"], ["--backfill-dividends"]):
+            with self.subTest(flags=flags):
+                error = self._validate(
+                    "--history", "AAPL", "--start", "2024-01-01", *flags
+                )
+                self.assertIn("cannot be combined", error)
+
+    def test_a_good_invocation_has_no_error(self):
+        """Test a well-formed window, with or without --end, passes."""
+        self.assertIsNone(self._validate("--history", "AAPL", "--start", "2024-01-01"))
+        self.assertIsNone(
+            self._validate(
+                "--history", "AAPL", "--start", "2024-01-01", "--end", "2024-01-01"
+            )
+        )
+
+    def test_not_asked_for_is_not_validated(self):
+        """Test the other modes and the daily run skip the check."""
+        self.assertIsNone(self._validate("--backfill"))
+        self.assertIsNone(self._validate())
+
+
 class TestHistoricalData(DataDirCase):
-    """Test historical data retrieval functionality."""
+    """Test the --history export runs on the module's own price path.
+
+    The old implementation went to yfinance directly, returned "Error:"
+    strings and bound data_dir at import time (#97). The rebuild writes the
+    same dated, currency-carrying rows prices_history.csv would hold, through
+    fetch_yahoo_quotes and fetch_with_retries.
+    """
 
     def test_parse_arguments_history_with_dates(self):
         """Test parsing command-line arguments for historical data with start and end dates."""
@@ -8978,60 +9088,134 @@ class TestHistoricalData(DataDirCase):
         self.assertIsNone(args.end)
 
     @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_valid_symbol(self, mock_ticker):
-        """Test the bars are saved as history_<symbol>_<start>_<end>.csv."""
-        fake_ticker(mock_ticker, [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    def test_rows_are_dated_and_formatted_as_the_source_reports_them(self, mock_ticker):
+        """Test the file holds history rows: source date, exact price, currency.
 
-        result = fetch_historical_data(
-            "AAPL", "2024-01-01", "2024-12-31", self.test_dir
+        The bars are float32, so 124.87 arrives as 124.87000274658203 and
+        must be stored as 124.87, as the daily run stores it. The window is
+        inclusive at both ends: Yahoo treats the end as exclusive, so the
+        fetch asks for the day after, as the closed-holding import does.
+        """
+        fake_ticker(
+            mock_ticker,
+            bars=[("2026-10-01", 124.87000274658203), ("2026-10-02", 126530.25)],
+            currency="USD",
+        )
+
+        report = fetch_historical_data(
+            "AAPL", "2026-10-01", "2026-10-10", self.test_dir
         )
 
         mock_ticker.assert_called_once_with("AAPL")
         mock_ticker.return_value.history.assert_called_once_with(
-            start="2024-01-01", end="2024-12-31"
+            start="2026-10-01", end="2026-10-11", auto_adjust=False
         )
-        name = "history_AAPL_2024-01-01_2024-12-31.csv"
-        self.assertEqual(result, self.path(name))
+        name = "history_AAPL_2026-10-01_2026-10-10.csv"
+        self.assertEqual(report.path, self.path(name))
+        self.assertEqual(report.failures, [])
+        with open(self.path(name), newline="") as f:
+            header = next(csv.reader(f))
+        self.assertEqual(header, scrape_fund_price.HISTORY_HEADER)
+        rows = [
+            ["AAPL", "2026-10-01", "124.87", "USD"],
+            ["AAPL", "2026-10-02", "126530.25", "USD"],
+        ]
+        self.assertEqual(self.read_rows(name), rows)
+        self.assertEqual(report.rows, rows)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_no_end_date_reaches_the_latest_bar(self, mock_ticker):
+        """Test an open window runs to the newest bar and is named by today."""
+        fake_ticker(mock_ticker, bars=[("2026-10-01", 1.5)])
+
+        report = fetch_historical_data("AAPL", "2026-10-01", None, self.test_dir)
+
+        mock_ticker.return_value.history.assert_called_once_with(
+            start="2026-10-01", end=None, auto_adjust=False
+        )
+        today = date.today().isoformat()
+        self.assertEqual(report.path, self.path(f"history_AAPL_2026-10-01_{today}.csv"))
+        self.assertEqual(report.failures, [])
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_a_failing_symbol_is_retried_then_reported_as_a_failure(self, mock_q):
+        """Test the retries apply and a lost symbol is a failure, not a string."""
+        mock_q.side_effect = Exception("Invalid symbol")
+
+        report = fetch_historical_data(
+            "INVALID_XYZ", "2026-10-01", "2026-10-10", self.test_dir
+        )
+
+        self.assertEqual(mock_q.call_count, scrape_fund_price.MAX_PRICE_ATTEMPTS)
+        self.assertEqual(report.failures, ["INVALID_XYZ: Invalid symbol"])
+        self.assertEqual(report.rows, [])
+        self.assertEqual(os.listdir(self.test_dir), [])
+
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_a_transient_error_is_retried(self, mock_q):
+        """Test one failed attempt costs nothing when the next succeeds."""
+        mock_q.side_effect = [
+            Exception("timeout"),
+            [Quote("2026-10-01", "1.5", "GBP")],
+        ]
+
+        report = fetch_historical_data("AAA", "2026-10-01", "2026-10-10", self.test_dir)
+
+        self.assertEqual(report.failures, [])
         self.assertEqual(
-            self.read_rows(name), [["2024-01-02", "185.64"], ["2024-01-03", "184.25"]]
+            self.read_rows("history_AAA_2026-10-01_2026-10-10.csv"),
+            [["AAA", "2026-10-01", "1.5", "GBP"]],
         )
 
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_invalid_symbol(self, mock_ticker):
-        """Test an error from Yahoo comes back as an error message."""
-        mock_ticker.return_value.history.side_effect = Exception("Invalid symbol")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_an_empty_range_is_a_failure_and_writes_nothing(self, mock_q):
+        """Test no bars at all is reported: Yahoo answers an unknown ticker so."""
+        mock_q.return_value = []
 
-        result = fetch_historical_data(
-            "INVALID_XYZ", "2024-01-01", "2024-12-31", self.test_dir
+        report = fetch_historical_data(
+            "AAPL", "2026-10-01", "2026-10-02", self.test_dir
         )
 
-        self.assertEqual(result, "Error: Invalid symbol")
-
-    def test_fetch_historical_data_invalid_date_format(self):
-        """Test fetching historical data with invalid date format."""
-        result = fetch_historical_data(
-            "AAPL", "01-01-2024", "2024-12-31", self.test_dir
+        self.assertEqual(
+            report.failures, ["AAPL: no prices between 2026-10-01 and 2026-10-02"]
         )
-        self.assertEqual(result, "Error: Invalid start date format. Use YYYY-MM-DD")
+        self.assertEqual(os.listdir(self.test_dir), [])
 
-    def test_fetch_historical_data_invalid_end_date_format(self):
-        """Test fetching historical data with a malformed end date."""
-        result = fetch_historical_data("AAPL", "2024-01-01", "31-12-2024")
-        self.assertEqual(result, "Error: Invalid end date format. Use YYYY-MM-DD")
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_writes_under_the_module_data_dir_by_default(self, mock_q):
+        """Test data_dir is DATA_DIR at call time, not bound at import (#103)."""
+        mock_q.return_value = [Quote("2026-10-01", "1.5", "GBP")]
+        target = self.path("out")
 
-    @patch("scrape_fund_price.yf.Ticker")
-    def test_fetch_historical_data_empty_range_returns_error(self, mock_ticker):
-        """Test a date range yielding no rows reports no data found."""
-        fake_ticker(mock_ticker, [])
-        result = fetch_historical_data("AAPL", "2024-01-01", "2024-01-02")
-        self.assertEqual(result, "Error: No data found for symbol AAPL")
+        with patch("scrape_fund_price.DATA_DIR", target):
+            report = fetch_historical_data("AAA", "2026-10-01", "2026-10-10")
 
-    def test_fetch_historical_data_start_after_end(self):
-        """Test fetching historical data with start date after end date."""
-        result = fetch_historical_data(
-            "AAPL", "2024-12-31", "2024-01-01", self.test_dir
+        self.assertEqual(
+            report.path, os.path.join(target, "history_AAA_2026-10-01_2026-10-10.csv")
         )
-        self.assertEqual(result, "Error: Start date must be before end date")
+        self.assertTrue(os.path.isfile(report.path))
+
+    def test_the_report_renders_rows_and_failures(self):
+        """Test the report reads like the rebuild reports."""
+        report = scrape_fund_price.HistoryReport("AAPL", "data/history_AAPL.csv")
+        self.assertIn("| AAPL | 0 | - | - | - | - |", report.to_markdown().splitlines())
+
+        report.rows = [
+            ["AAPL", "2026-10-01", "124.87", "USD"],
+            ["AAPL", "2026-10-02", "126530.25", "USD"],
+        ]
+        lines = report.to_markdown().splitlines()
+        self.assertEqual(lines[0], "| Symbol | Rows | First | Last | Ccy | File |")
+        self.assertIn(
+            "| AAPL | 2 | 2026-10-01 | 2026-10-02 | USD | data/history_AAPL.csv |",
+            lines,
+        )
+        self.assertNotIn("**Failures**", lines)
+
+        report.failures.append("AAPL: timeout")
+        lines = report.to_markdown().splitlines()
+        self.assertIn("**Failures**", lines)
+        self.assertIn("- AAPL: timeout", lines)
 
 
 # ===========================================================================
