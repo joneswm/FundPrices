@@ -9030,6 +9030,14 @@ class TestOnsCpiParsing(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     scrape_fund_price.parse_ons_cpi(text)
 
+    def test_a_month_entry_that_is_not_an_object_is_refused(self):
+        """Test a month listed as bare text, not an object, is a changed shape."""
+        text = ons_payload(ons_months(2015, 2015)).replace(
+            '"months": [', '"months": ["2015 JAN", '
+        )
+        with self.assertRaisesRegex(ValueError, "not an object.*2015 JAN"):
+            scrape_fund_price.parse_ons_cpi(text)
+
     def test_a_series_that_no_longer_reaches_back_to_2015_is_refused(self):
         """Test a truncated series cannot replace the published file."""
         with self.assertRaisesRegex(ValueError, "2015-01"):
