@@ -1826,6 +1826,7 @@ class TestFundPriceScraper(DataDirCase):
         page.locator.return_value.first.text_content.return_value = "123.45"
 
         results = scrape_funds([("FT", "IE0008368742")], self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
 
         self.assertEqual(list(results), [["IE0008368742", "2026-10-19", "123.45", ""]])
         self.assertEqual(self.read_text("latest_IE0008368742.price").strip(), "123.45")
@@ -1845,6 +1846,7 @@ class TestFundPriceScraper(DataDirCase):
         test_funds = [("FT", "FT_FUND"), ("YA", "API_FUND")]
 
         results = scrape_funds(test_funds, self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
 
         self.assertEqual([row[2] for row in results], ["1234.56"] * 2)
         for _, fund_id in test_funds:
@@ -2041,6 +2043,7 @@ class TestFundPriceScraper(DataDirCase):
         page.locator.return_value.first.text_content.return_value = "123.45"
 
         results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
 
         self.assertEqual(list(results), [["TEST123", "2026-10-19", "123.45", ""]])
         self.assertEqual(results.failures, [])
@@ -2067,6 +2070,7 @@ class TestFundPriceScraper(DataDirCase):
         self.write_text("latest_TEST123.price", f"Error: {self.TIMEOUT}\n")
 
         results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
 
         # No fabricated row for today; the real last price is carried instead,
         # against the date it actually belongs to.
@@ -2164,7 +2168,8 @@ class TestWindowedScraping(DataDirCase):
         """Test the per-fund price file is not overwritten with an error."""
         self.write_text("latest_QQQ.price", "700.00\n")
         mock_ticker.side_effect = Exception("Network error")
-        scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
 
     @patch("scrape_fund_price.yf.Ticker")
@@ -2179,6 +2184,7 @@ class TestWindowedScraping(DataDirCase):
         self.write_text("latest_QQQ.price", "700.00\n")
         mock_ticker.side_effect = Exception("Network error")
         results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        write_results(results, self.test_dir)
         self.assertEqual(results.carried, [])
         self.assertEqual(len(results.failures), 1)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
@@ -2230,7 +2236,7 @@ class TestAliasPublishing(DataDirCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_a_price_file_is_written_per_identifier(self, mock_ticker):
         """Test per-fund price files exist for aliases too."""
-        self._scrape(mock_ticker, [self.SPEC])
+        write_results(self._scrape(mock_ticker, [self.SPEC]), self.test_dir)
         for fund_id in ("0P00000YAN", "JFM0003373"):
             with self.subTest(fund=fund_id):
                 price_file = self.read_text(f"latest_{fund_id}.price")
@@ -2671,7 +2677,8 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_latest_price_file("CNX1.L", "133800", self.test_dir)
         bars = [("2026-10-07", 135120.0), ("2026-10-08", 134720.0)]
         fake_ticker(mock_ticker, bars, currency="GBp")
-        scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        results = scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
     @patch("scrape_fund_price.sync_playwright")
@@ -2681,7 +2688,8 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_results(list(self.THURSDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "134720", self.test_dir)
         fake_ticker(mock_ticker, [("2026-10-09", 133800.0)], currency="GBp")
-        scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        results = scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
     @patch("scrape_fund_price.sync_playwright")

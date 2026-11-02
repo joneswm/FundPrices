@@ -142,12 +142,17 @@ class ScrapeResults(list):
     reported as the latest known price but are deliberately kept out of
     history: writing them there would invent a price for a date the source
     never published.
+
+    `latest` holds one row per published identifier for its
+    latest_<id>.price file, which write_results writes: the newest quote, a
+    newer stored row, or the carried row.
     """
 
-    def __init__(self, rows=None, failures=None, carried=None):
+    def __init__(self, rows=None, failures=None, carried=None, latest=None):
         super().__init__(rows or [])
         self.failures = failures or []
         self.carried = carried or []
+        self.latest = latest or []
 
 
 # ===========================================================================
@@ -1181,9 +1186,13 @@ def write_latest_price_file(fund_id, price, data_dir):
 def scrape_funds(funds, data_dir=None, now=None):
     """Scrape a window of dated prices for each fund and return results.
 
+    Writes nothing: the rows, the carried rows and the rows for each
+    identifier's .price file (`results.latest`) are for write_results.
+
     Args:
         funds: FundSpec instances, or plain (source, identifier) pairs
-        data_dir: Directory for per-fund price files (default: DATA_DIR)
+        data_dir: Directory whose stored prices are the floor for "latest"
+            and the fallback for a failed fund (default: DATA_DIR)
         now: Aware datetime the window runs back from and sessions are
             judged by (default: the current time)
     """
@@ -1191,7 +1200,6 @@ def scrape_funds(funds, data_dir=None, now=None):
         data_dir = DATA_DIR
     now = now or datetime.datetime.now(datetime.timezone.utc)
 
-    os.makedirs(data_dir, exist_ok=True)
     results = ScrapeResults()
     start = (now.date() - datetime.timedelta(days=SNAP_WINDOW_DAYS)).isoformat()
     browser = LazyBrowser()
@@ -1225,7 +1233,7 @@ def scrape_funds(funds, data_dir=None, now=None):
                         results.carried.append([identifier, *last_known])
                         # Heal the published price file: it may still hold an
                         # error string written before this behaviour existed.
-                        write_latest_price_file(identifier, last_known[1], data_dir)
+                        results.latest.append([identifier, *last_known])
                 continue
 
             for quote in quotes:
@@ -1239,10 +1247,10 @@ def scrape_funds(funds, data_dir=None, now=None):
                 for identifier in spec.publish_ids:
                     # Never rewrite the price file from an older bar than the
                     # stored newest one (see keep_newer_stored_row).
-                    kept = keep_newer_stored_row(
-                        identifier, [identifier, latest.date, latest.price], stored
+                    row = [identifier, latest.date, latest.price, latest.currency]
+                    results.latest.append(
+                        keep_newer_stored_row(identifier, row, stored)
                     )
-                    write_latest_price_file(identifier, kept[2], data_dir)
     finally:
         browser.close()
 
@@ -1403,7 +1411,9 @@ def write_results(results, data_dir=None, now=None):
     repeated runs byte-identical.
 
     Args:
-        results: List of [fund_id, date, price, currency] rows
+        results: List of [fund_id, date, price, currency] rows; a
+            ScrapeResults also brings its carried rows and, on `latest`, the
+            rows whose latest_<id>.price files are written
         data_dir: Directory for output files (default: DATA_DIR)
         now: Aware datetime handed to write_history_files (default: the
             current time)
@@ -1437,6 +1447,9 @@ def write_results(results, data_dir=None, now=None):
     }
 
     write_history_files(list(history_rows.values()), data_dir, latest=latest, now=now)
+
+    for row in getattr(results, "latest", []):
+        write_latest_price_file(row[0], row[2], data_dir)
 
 
 # ===========================================================================
