@@ -1,5 +1,5 @@
 # Spec Kit Configuration for FundPrices
-# Generated: 2024-11-20
+# Generated: 2025-11-20
 
 project:
   name: FundPrices
@@ -8,7 +8,6 @@ project:
 paths:
   specs: specs/
   templates: .specify/templates/
-  prompts: .github/prompts/
 
 workflow:
   phases:
@@ -22,7 +21,10 @@ workflow:
   require_tdd: true  # Custom: Mandatory TDD workflow
 
 standards:
+  # Two gates, both enforced in CI: 90% overall and 95% on
+  # scrape_fund_price.py (constitution section 2).
   test_coverage_minimum: 90
+  test_coverage_minimum_main_module: 95
   code_formatter: black
   line_length: 88
   commit_format: conventional

@@ -1,6 +1,6 @@
 # SPEC-010: The Dividend Calendar
 
-**Status**: ✅ Built, on branch `dividends-calendar` (not yet merged to `main`)
+**Status**: ✅ Complete
 **Created**: 2026-10-26
 **Type**: Feature
 **Tracking**: [#85](https://github.com/joneswm/FundPrices/issues/85)

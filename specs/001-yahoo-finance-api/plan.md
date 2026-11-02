@@ -2,7 +2,7 @@
 
 **Spec**: SPEC-001  
 **Status**: ✅ Complete  
-**Created**: 2024-11-20 (Retrospective)
+**Created**: 2025-11-20 (Retrospective)
 
 ---
 
@@ -42,7 +42,7 @@ def fetch_price_api(symbol):
         symbol: Stock/fund symbol (e.g., 'AAPL', 'MSFT')
     
     Returns:
-        str: Price as string, or "Error: <message>" on failure
+        str: Price as string or error message
     """
     try:
         ticker = yf.Ticker(symbol)
@@ -139,7 +139,7 @@ pip install yfinance>=0.2.0
 
 ### Compatibility
 
-- Python 3.7+
+- Python 3.10, 3.12 and 3.14 (the CI matrix)
 - Works with existing dependencies (playwright, coverage)
 - No conflicts with current libraries
 
@@ -169,12 +169,14 @@ pip install yfinance>=0.2.0
 
 ### Error Format
 
-All errors follow consistent format:
+All errors followed one format when the feature shipped:
 ```
 "Error: <descriptive message>"
 ```
 
-This matches existing error format for web scraping failures.
+This matched the error format of the web-scraping sources at the time.
+
+**Superseded**: The error contract described here, a returned `"Error: ..."` string, was the project's contract when the feature shipped. SPEC-003 (2026-09-20) replaced it: the dated fetchers raise, `fetch_with_retries()` retries, and failures collect on `ScrapeResults.failures` (constitution section 4). `fetch_price_api()` keeps its string return, but nothing on the daily path calls it.
 
 ## Testing Strategy
 
@@ -326,7 +328,8 @@ Rollback is low-risk because:
    - Update source code table
    - Add yfinance to dependencies
 
-3. **implementation_status.md**
+3. **Legacy status record** (`docs/user_stories/`, frozen since the move to
+   GitHub Issues)
    - Mark US-025 as complete
    - Document implementation details
    - Note test coverage
@@ -338,7 +341,7 @@ Rollback is low-risk because:
 
 ## Timeline and Milestones
 
-**Retrospective Note**: Feature completed in 2024
+**Retrospective Note**: Feature completed on 2025-10-19
 
 - ✅ Dependency added to requirements.txt
 - ✅ `fetch_price_api()` function implemented
@@ -379,4 +382,5 @@ Potential improvements (out of scope for this spec):
 
 **Plan Status**: ✅ Complete  
 **Implementation Status**: ✅ Complete  
-**Next Steps**: See SPEC-027 for historical data retrieval
+**Next Steps**: See US-027 (legacy user story, 2025-10-21) for historical data
+retrieval

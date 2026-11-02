@@ -2,8 +2,8 @@
 
 **Spec**: SPEC-001  
 **Status**: ✅ Complete  
-**Implemented**: 2024  
-**Created**: 2024-11-20 (Retrospective)
+**Implemented**: 2025-10-19  
+**Created**: 2025-11-20 (Retrospective)
 
 ---
 
@@ -31,7 +31,9 @@ Successfully replaced Google Finance web scraping with Yahoo Finance API integra
 
 ### 2. Error Handling Strategy
 
-**Decision**: Return `"Error: <message>"` format for all failures
+**Decision**: Return an `"Error: ..."` string for all failures
+
+**Superseded**: The error contract described here, a returned `"Error: ..."` string, was the project's contract when the feature shipped. SPEC-003 (2026-09-20) replaced it: the dated fetchers raise, `fetch_with_retries()` retries, and failures collect on `ScrapeResults.failures` (constitution section 4). `fetch_price_api()` keeps its string return, but nothing on the daily path calls it.
 
 **Rationale**:
 - Consistent with existing web scraping error format
@@ -91,7 +93,7 @@ def fetch_price_api(symbol: str) -> str:
         symbol: Stock/fund symbol (e.g., 'AAPL', 'MSFT')
     
     Returns:
-        str: Price as string, or "Error: <message>" on failure
+        str: Price as string or error message
     """
 ```
 
@@ -266,7 +268,8 @@ Tested with various symbols:
    - Updated source code table
    - Added yfinance to dependencies
 
-3. **implementation_status.md**
+3. **Legacy status record** (`docs/user_stories/`, frozen since the move to
+   GitHub Issues)
    - Marked US-025 as complete
    - Documented implementation details
    - Noted test coverage
@@ -295,7 +298,8 @@ Tested with various symbols:
 
 ### Recommendations for Future
 
-1. **Historical Data**: Use yfinance for historical price retrieval (SPEC-027)
+1. **Historical Data**: Use yfinance for historical price retrieval (done as
+   US-027, 2025-10-21)
 2. **Real-time Updates**: Consider WebSocket for live prices
 3. **Multiple APIs**: Support fallback to alternative APIs
 4. **Rate Limiting**: Monitor and respect Yahoo Finance rate limits
@@ -342,7 +346,7 @@ Tested with various symbols:
 
 ### Downstream Impact
 
-- **SPEC-027**: Historical data retrieval builds on this work
+- **US-027**: Historical data retrieval builds on this work
 - **Future Specs**: API approach can be extended to other sources
 
 ## References
@@ -350,7 +354,7 @@ Tested with various symbols:
 - [yfinance Documentation](https://pypi.org/project/yfinance/)
 - [yfinance GitHub](https://github.com/ranaroussi/yfinance)
 - [Yahoo Finance](https://finance.yahoo.com/)
-- [Original User Story: US-025](../../docs/user_stories/implementation_status.md#us-025)
+- [Original user story US-025, in the frozen legacy record](../../docs/user_stories/)
 
 ---
 

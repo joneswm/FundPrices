@@ -11,7 +11,7 @@
 
 **Spec**: SPEC-001  
 **Status**: ✅ All Complete  
-**Created**: 2024-11-20 (Retrospective)
+**Created**: 2025-11-20 (Retrospective)
 
 ---
 
@@ -73,7 +73,9 @@ Create new function to fetch prices via Yahoo Finance API.
 - [x] Function accepts symbol parameter
 - [x] Function returns price as string
 - [x] Function handles errors gracefully
-- [x] Function returns "Error: <message>" on failure
+- [x] Function returns an `"Error: ..."` string on failure (the contract at the
+      time; superseded by SPEC-003, under which fetchers raise and failures
+      collect on `ScrapeResults.failures`)
 
 ### TDD Cycle
 
@@ -122,7 +124,7 @@ def fetch_price_api(symbol):
         symbol: Stock/fund symbol (e.g., 'AAPL', 'MSFT')
     
     Returns:
-        str: Price as string, or "Error: <message>" on failure
+        str: Price as string or error message
     """
     try:
         ticker = yf.Ticker(symbol)
@@ -376,7 +378,8 @@ Update all relevant documentation to reflect API integration.
 ### Acceptance Criteria
 - [x] README.md updated
 - [x] AGENTS.md updated
-- [x] implementation_status.md updated
+- [x] Legacy status record in `docs/user_stories/` updated (frozen since the
+      move to GitHub Issues)
 - [x] Code comments added
 
 ### Steps
@@ -391,7 +394,7 @@ Update all relevant documentation to reflect API integration.
    - Update source code table
    - Add yfinance to dependencies
 
-3. **Update implementation_status.md**
+3. **Update the legacy status record** (`docs/user_stories/`, now frozen)
    - Mark US-025 as complete
    - Document implementation details
    - Note test coverage
@@ -407,7 +410,7 @@ docs: Update documentation for Yahoo Finance API (SPEC-001)
 
 - Update README with GF source explanation
 - Update AGENTS.md with API approach
-- Mark US-025 complete in implementation_status.md
+- Mark US-025 complete in the legacy status record
 - Add code comments explaining API integration
 
 Co-authored-by: Ona <no-reply@ona.com>
@@ -448,7 +451,8 @@ Co-authored-by: Ona <no-reply@ona.com>
 - `requirements.txt` - Added yfinance dependency
 - `README.md` - Updated documentation
 - `AGENTS.md` - Updated documentation
-- `docs/user_stories/implementation_status.md` - Marked complete
+- `docs/user_stories/` legacy status record - Marked complete (frozen since the
+  move to GitHub Issues)
 
 ### Lessons Learned
 
@@ -462,4 +466,5 @@ Co-authored-by: Ona <no-reply@ona.com>
 
 **Tasks Status**: ✅ All Complete  
 **Spec Status**: ✅ Complete  
-**Next Steps**: See SPEC-027 for historical data retrieval
+**Next Steps**: See US-027 (legacy user story, 2025-10-21) for historical data
+retrieval

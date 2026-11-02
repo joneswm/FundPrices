@@ -1,7 +1,7 @@
 # Technical Plan: The Dividend Calendar
 
 **Spec**: SPEC-010
-**Status**: ✅ Built, on branch `dividends-calendar`
+**Status**: ✅ Complete
 **Created**: 2026-10-26
 
 ---

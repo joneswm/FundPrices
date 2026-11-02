@@ -10,8 +10,8 @@
 > New work belongs in [GitHub Issues](https://github.com/joneswm/FundPrices/issues), not in this file.
 
 **Status**: ✅ Complete  
-**Created**: 2024-11-20 (Retrospective)  
-**Implemented**: 2024 (as US-025)  
+**Created**: 2025-11-20 (Retrospective)  
+**Implemented**: 2025-10-19 (as US-025)  
 **Type**: Feature Enhancement
 
 ---
@@ -73,7 +73,7 @@ Replace Google Finance web scraping with Yahoo Finance API integration using the
 ## Out of Scope
 
 The following are explicitly **not** included in this specification:
-- Historical data retrieval (separate spec: SPEC-027)
+- Historical data retrieval (separate user story: US-027)
 - Real-time streaming prices
 - Multiple API providers (only Yahoo Finance)
 - Cryptocurrency prices
@@ -109,7 +109,8 @@ The following are explicitly **not** included in this specification:
 5. **Documentation**
    - [x] README updated with GF source explanation
    - [x] AGENTS.md updated with API approach
-   - [x] `implementation_status.md` updated
+   - [x] Legacy status record in `docs/user_stories/` updated (frozen since the
+         move to GitHub Issues)
    - [x] Code comments explain API usage
 
 ## Stakeholders
@@ -149,7 +150,7 @@ The following are explicitly **not** included in this specification:
 
 ## Timeline
 
-**Retrospective Note**: This feature was implemented in 2024 as US-025.
+**Retrospective Note**: This feature was implemented on 2025-10-19 as US-025.
 
 - Specification: 1 hour
 - Planning: 1 hour
@@ -160,15 +161,18 @@ The following are explicitly **not** included in this specification:
 
 ## Related Specifications
 
-- **SPEC-027**: Historical Price Data Retrieval (extends this spec)
+- **US-027**: Historical Price Data Retrieval (legacy user story, 2025-10-21;
+  extends this spec)
 - **US-025**: Original user story (legacy format)
 
 ## Notes
 
 This is a **retrospective specification** created during the Spec Kit migration. The feature was originally implemented as US-025 using traditional user story format. This spec documents what was built to serve as an example for future specifications.
 
+The error contract described here, a returned `"Error: ..."` string, was the project's contract when the feature shipped. SPEC-003 (2026-09-20) replaced it: the dated fetchers raise, `fetch_with_retries()` retries, and failures collect on `ScrapeResults.failures` (constitution section 4). `fetch_price_api()` keeps its string return, but nothing on the daily path calls it.
+
 ## References
 
 - [yfinance Documentation](https://pypi.org/project/yfinance/)
 - [Yahoo Finance](https://finance.yahoo.com/)
-- [Original User Story: US-025](../../docs/user_stories/implementation_status.md#us-025)
+- [Original user story US-025, in the frozen legacy record](../../docs/user_stories/)

@@ -1,6 +1,6 @@
 # SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
 
-**Status**: ✅ Built, on branch `pay-date-sources` (not yet merged)
+**Status**: ✅ Complete
 **Created**: 2026-10-27
 **Type**: Feature (follow-up to SPEC-011)
 **Tracking**: [#89](https://github.com/joneswm/FundPrices/issues/89)

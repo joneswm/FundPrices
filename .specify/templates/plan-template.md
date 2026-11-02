@@ -97,13 +97,22 @@ Input → Component A → Component B → Output
    - **User Impact**: [What user sees]
    - **Recovery**: [How to recover]
 
-### Error Format
+### Error Contract
 
-[Define consistent error format]
+Follow constitution section 4; do not invent a format per feature:
+
+- A fetcher that cannot return a dated value **raises** (`ValueError` when the source
+  answered with nothing usable). It never returns an error string or a made-up row
+- Every fetch goes through `fetch_with_retries()`, which retries up to
+  `MAX_PRICE_ATTEMPTS` and returns `(None, <error text>)` after the last attempt
+- Failures **collect on the result object** (`<identifier>: <error>`, or the step's
+  name for a step that fails as a whole); the run writes everything it obtained,
+  prints the failures and only then exits non-zero
+- **No error text is ever written to a data file**
 
 ```python
-# Example error format
-"Error: <descriptive message>"
+# Example: a source that answered with nothing usable
+raise ValueError(f"{label}: no distributions table")
 ```
 
 ## Testing Strategy
@@ -132,6 +141,7 @@ Input → Component A → Component B → Output
 ### Coverage Target
 
 - **Overall**: 90% minimum
+- **`scrape_fund_price.py`**: 95% minimum (both gates are enforced in CI)
 - **New Code**: 100% coverage
 - **Modified Code**: Maintain or improve existing coverage
 

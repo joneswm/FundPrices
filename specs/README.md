@@ -6,30 +6,34 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 > Specs describe *what and how*; issues track *what still needs doing*. Reference the issue
 > number from the spec, and close the issue when the spec ships.
 
-## Active Specifications
+## Specifications
+
+Every spec below is complete and merged to `main`. `plan.md` and `tasks.md` are optional
+for a small spec: SPEC-012, SPEC-013 and SPEC-014 have only a `spec.md`, which carries
+the plan.
 
 ### SPEC-014: Bank Rate Published Monthly
-**Status**: ✅ Built (branch `uk-bank-rate`, not yet merged)
+**Status**: ✅ Complete
 **Location**: [014-uk-bank-rate/](014-uk-bank-rate/)
 **Description**: Publish the Bank of England Bank Rate in force at each month end as `data/uk_bank_rate.csv` (`Month,Rate,Series,AsOf`), derived from the Bank's Bank Rate history page once a run, so Portfolio Tracker can show a Sharpe ratio (#93).
 
 ### SPEC-013: UK CPI Published Monthly
-**Status**: ✅ Built (branch `uk-cpi`, not yet merged)
+**Status**: ✅ Complete
 **Location**: [013-uk-cpi/](013-uk-cpi/)
 **Description**: Publish the ONS series D7BT (CPI index, 2015=100) monthly as `data/uk_cpi.csv` (`Month,Index,Series,AsOf`), read once a run, so Portfolio Tracker can show real returns (#91).
 
 ### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
-**Status**: ✅ Built (branch `pay-date-sources`, not yet merged)
+**Status**: ✅ Complete
 **Location**: [012-pay-date-sources/](012-pay-date-sources/)
 **Description**: Four more issuer sources for `dividend_sources.txt`, wired as `IS` is: `IV` (Invesco, QQQ), `SS` (SSGA's workbook, GLTL.L), `Q4` (Kinsale's IR feed, KNSL) and `ET` (etnet, 0639.HK). Follow-up to SPEC-011 (#89).
 
 ### SPEC-011: Dividend Pay Dates from the Issuer
-**Status**: ✅ Built (branch `pay-dates`, not yet merged)
+**Status**: ✅ Complete
 **Location**: [011-pay-dates/](011-pay-dates/)
 **Description**: Add the issuer's own distribution table (iShares UK, source `IS`, configured per instrument in `dividend_sources.txt`) to the dividend files: the real pay date of every distribution, the amount where it differs from Yahoo's, and a distribution the issuer has announced as a `declared` upcoming row. Research in [docs/research/dividend_pay_date_sources.md](../docs/research/dividend_pay_date_sources.md) (#87).
 
 ### SPEC-010: The Dividend Calendar
-**Status**: ✅ Built (branch `dividends-calendar`, not yet merged)
+**Status**: ✅ Complete
 **Location**: [010-dividends/](010-dividends/)
 **Description**: Publish every instrument's past dividends and its next one, declared or projected, beside the prices, with a hand-kept `distributions.txt` for instruments no source covers. Stage DV-F of the Portfolio Tracker dividend design (#85).
 
@@ -48,15 +52,15 @@ This directory contains all Spec Kit specifications for the FundPrices project.
 **Location**: [007-daily-summary/](007-daily-summary/)
 **Description**: Publish a daily summary of price and FX movements, comparing each instrument with its previous distinct price date.
 
-### SPEC-005: End-of-Day FX Rates
-**Status**: ✅ Complete
-**Location**: [005-fx-rates/](005-fx-rates/)
-**Description**: Snap daily exchange rates as GBP per 1 unit of foreign currency, for NZD, SGD, USD and HKD.
-
 ### SPEC-006: History Backfill and Rebuild
 **Status**: ✅ Complete
 **Location**: [006-history-backfill/](006-history-backfill/)
 **Description**: Rebuild stored history from true-dated source data, deleting scrape-dated and carry-forward rows while protecting rows a flaky source omits.
+
+### SPEC-005: End-of-Day FX Rates
+**Status**: ✅ Complete
+**Location**: [005-fx-rates/](005-fx-rates/)
+**Description**: Snap daily exchange rates as GBP per 1 unit of foreign currency, for NZD, SGD, USD and HKD.
 
 ### SPEC-004: Identifier Aliases
 **Status**: ✅ Complete
@@ -106,7 +110,7 @@ Define **how** to build it:
 - Technology choices
 - Constraints and trade-offs
 
-**Output**: `plan.md`
+**Output**: `plan.md` (optional for a small spec; `spec.md` then carries the plan)
 
 ### 4. TASKS
 Break into manageable units:
@@ -115,7 +119,7 @@ Break into manageable units:
 - Clear acceptance criteria
 - Logical sequence
 
-**Output**: `tasks.md`
+**Output**: `tasks.md` (optional for a small spec)
 
 ### 5. IMPLEMENT
 Execute with TDD discipline:
@@ -136,7 +140,8 @@ Execute with TDD discipline:
    cd specs/00X-feature-name
    ```
 
-2. **Copy templates**:
+2. **Copy templates** (`plan.md` and `tasks.md` only when the spec is large enough
+   to need them):
    ```bash
    cp ../../.specify/templates/spec-template.md spec.md
    cp ../../.specify/templates/plan-template.md plan.md
@@ -147,7 +152,7 @@ Execute with TDD discipline:
 
 4. **Update tracking**:
    - Add to this README
-   - Update `docs/user_stories/implementation_status.md`
+   - Open a GitHub issue for the work and reference it from the spec
 
 ### Naming Convention
 
@@ -156,8 +161,8 @@ specs/
 └── XXX-feature-name/
     ├── spec.md           # SPECIFY phase
     ├── clarify.md        # CLARIFY phase (optional)
-    ├── plan.md           # PLAN phase
-    ├── tasks.md          # TASKS phase
+    ├── plan.md           # PLAN phase (optional for a small spec)
+    ├── tasks.md          # TASKS phase (optional for a small spec)
     └── implementation.md # IMPLEMENT phase notes (optional)
 ```
 
@@ -191,7 +196,7 @@ specs/
 All implementation follows **mandatory TDD workflow**:
 - Each task becomes a RED-GREEN-REFACTOR cycle
 - Tests written before code
-- 90%+ coverage maintained
+- Coverage gates hold: 90%+ overall, 95%+ on `scrape_fund_price.py` (both enforced in CI)
 - See: `constitution.md` for TDD requirements
 
 ### Commit Messages
@@ -215,7 +220,6 @@ Templates are available in `.specify/templates/`:
 - [Constitution](../constitution.md) - Project principles and standards
 - [Spec Kit Assessment](../docs/archive/spec_kit_assessment.md) - Archived: background on the migration
 - [TDD Workflow](../docs/technical_documentation/tdd_workflow.md) - TDD guidelines
-- [Implementation Status](../docs/user_stories/implementation_status.md) - Overall tracking
 
 ## Questions?
 
