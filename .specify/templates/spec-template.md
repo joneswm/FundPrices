@@ -45,7 +45,7 @@
 - [ ] [Reliability requirement]
 
 ### Quality Requirements
-- [ ] Maintain 90%+ test coverage
+- [ ] Coverage gates hold: 90%+ overall, 95%+ on `scrape_fund_price.py`
 - [ ] All tests pass
 - [ ] Documentation updated
 - [ ] Code follows constitution standards
@@ -131,6 +131,6 @@ The following are explicitly **not** included in this specification:
 
 **Next Steps**:
 1. Review and refine this specification
-2. Create technical plan (plan.md)
-3. Break into tasks (tasks.md)
-4. Begin implementation with TDD
+2. Create technical plan (plan.md) and break into tasks (tasks.md); both are optional
+   for a small spec, where this file carries the plan
+3. Begin implementation with TDD

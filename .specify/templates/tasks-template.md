@@ -199,18 +199,16 @@ Update documentation and validate the complete implementation.
 ### Acceptance Criteria
 - [ ] All documentation updated
 - [ ] All tests pass
-- [ ] Coverage maintained at 90%+
+- [ ] Coverage gates hold: 90%+ overall, 95%+ on `scrape_fund_price.py`
 - [ ] Code follows constitution standards
-- [ ] Implementation status updated
 
 ### Steps
 1. Update README.md
 2. Update AGENTS.md
-3. Update implementation_status.md
-4. Add code comments
-5. Run full test suite
-6. Verify coverage
-7. Manual validation
+3. Add code comments
+4. Run full test suite
+5. Verify coverage
+6. Manual validation
 
 ### Commit Message
 ```
@@ -218,7 +216,6 @@ docs: Update documentation for [feature name] (SPEC-XXX)
 
 - Update README with [changes]
 - Update AGENTS.md with [changes]
-- Mark SPEC-XXX complete in implementation_status.md
 - Add code comments explaining [feature]
 ```
 
@@ -262,7 +259,7 @@ docs: Update documentation for [feature name] (SPEC-XXX)
 
 ### Test Coverage
 
-- **Target**: 90%+ overall
+- **Target**: 90%+ overall, 95%+ on `scrape_fund_price.py`
 - **New Code**: 100% coverage
 - **Tests to Add**: [Number] unit tests, [Number] functional tests
 
