@@ -2121,6 +2121,22 @@ class TestWindowedScraping(DataDirCase):
         scrape_funds([("YA", "QQQ")], self.test_dir)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
 
+    @patch("scrape_fund_price.fetch_yahoo_quotes")
+    def test_price_file_alone_carries_nothing(self, mock_quotes):
+        """Test a fund stored only in its .price file has no row to carry.
+
+        The file holds a bare price with no date, so the only date a carried
+        row could take is today's, which would publish a stale price as a
+        fresh one. Nothing is invented: the failure is reported, the file is
+        left alone, and the fund has no row until a fetch succeeds.
+        """
+        self.write_text("latest_QQQ.price", "700.00\n")
+        mock_quotes.side_effect = Exception("Network error")
+        results = scrape_funds([("YA", "QQQ")], self.test_dir)
+        self.assertEqual(results.carried, [])
+        self.assertEqual(len(results.failures), 1)
+        self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
+
     @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.scrape_price_with_common_settings")
     @patch("scrape_fund_price.fetch_ft_quotes")
