@@ -38,9 +38,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          # Keyed on the resolved version, not requirements.txt: that pins
-          # playwright>=1.63.0, so it would not change when a new browser build
-          # is needed and we would serve a stale cache.
+          # Keyed on the resolved version, not requirements.txt: that holds a
+          # floor pin, which does not change when a new browser build is
+          # needed, so a key on the file would serve a stale cache.
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browser

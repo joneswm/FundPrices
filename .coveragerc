@@ -1,0 +1,29 @@
+# Coverage configuration, read by `coverage run` and `coverage report` wherever
+# they are called: run_tests.sh, the Makefile and .github/workflows/test.yml.
+# Both coverage gates live here and nowhere else.
+
+[run]
+# The application and its tests. validate_dev_env.py is a setup aid, not under
+# test, and would otherwise count as an unexecuted file.
+include =
+    scrape_fund_price.py
+    test_scrape_fund_price.py
+
+[report]
+# Gate 1: 90% of the application and tests together (constitution section 2).
+# `coverage report` exits 2 below this.
+fail_under = 90
+exclude_lines =
+    pragma: no cover
+    # The entry point runs only when the module is executed as a script, which
+    # no test does; excluding the guard excludes the call under it as well.
+    if __name__ == "__main__":
+
+[fundprices]
+# Gate 2: 95% of scrape_fund_price.py on its own (constitution section 2). The
+# combined figure can mask a gap here because the test file scores higher.
+# coverage.py has one fail_under, so run_tests.sh and test.yml read this value
+# and apply it with a second report restricted to the module:
+#     coverage report --include=scrape_fund_price.py --fail-under=<this value>
+# coverage.py ignores this section.
+main_fail_under = 95

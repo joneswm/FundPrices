@@ -2,7 +2,7 @@ name: Run Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -22,12 +22,12 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v7
-      
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v7
       with:
         python-version: ${{ matrix.python-version }}
-        
+
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
@@ -41,9 +41,9 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cache/ms-playwright
-        # Keyed on the resolved version, not requirements.txt: that pins
-        # playwright>=1.63.0, so it would not change when a new browser build
-        # is needed and we would serve a stale cache.
+        # Keyed on the resolved version, not requirements.txt: that holds a
+        # floor pin, which does not change when a new browser build is
+        # needed, so a key on the file would serve a stale cache.
         key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
     - name: Install Playwright browser
@@ -69,28 +69,39 @@ jobs:
             print("chromium launched:", b.version)
             b.close()
         PY
-        
-    - name: Run unit tests
+
+    - name: Run the mocked suite under coverage
+      # The live classes skip without FUNDPRICES_LIVE, so this needs no
+      # network and its figure does not depend on which branch a live source
+      # takes. Gate 1 (90% overall, constitution section 2) is fail_under in
+      # .coveragerc, applied by the report.
       run: |
-        python -m unittest test_scrape_fund_price.TestFundPriceScraper -v
-        
-    - name: Run functional tests
-      run: |
-        python -m unittest test_scrape_fund_price.TestFunctionalScraping -v
-        
-    - name: Run all tests with coverage
-      run: |
-        coverage run -m unittest test_scrape_fund_price.py
+        coverage run test_scrape_fund_price.py
         coverage report -m
-        
-    - name: Check overall coverage threshold
-      run: |
-        coverage run -m unittest test_scrape_fund_price.py
-        coverage report --fail-under=90
 
-    - name: Check main application code coverage
-      # constitution.md section 2 requires 95% minimum for main application code.
-      # The combined figure can mask a gap here, because the test file scores higher.
+    - name: Check scrape_fund_price.py coverage
+      # Gate 2 (95% on the application module alone, constitution section 2)
+      # is main_fail_under in .coveragerc. coverage.py has one fail_under, so
+      # it is applied as a second report of the same saved data; the combined
+      # figure can mask a gap here because the test file scores higher.
       run: |
-        coverage report --include=scrape_fund_price.py --fail-under=95
+        threshold=$(python - <<'PY'
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(".coveragerc")
+        print(config["fundprices"]["main_fail_under"])
+        PY
+        )
+        coverage report --include=scrape_fund_price.py --fail-under="$threshold"
 
+    - name: Run the live tests
+      # The two classes that hit FT, Yahoo, investing.com and Playwright, once
+      # per matrix entry. A failure here fails the build: stated explicitly so
+      # it is not relaxed by accident.
+      continue-on-error: false
+      env:
+        FUNDPRICES_LIVE: "1"
+      run: |
+        python -m unittest -v \
+          test_scrape_fund_price.TestFunctionalScraping \
+          test_scrape_fund_price.TestFunctionalClosedHoldingSources
