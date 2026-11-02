@@ -3450,20 +3450,11 @@ class TestSummaryRendering(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.test_dir, "daily_summary.md")))
 
 
-class TestSourceCodeCanonicalisation(unittest.TestCase):
+class TestSourceCodeCanonicalisation(DataDirCase):
     """Test the GF -> YA rename and its deprecation alias."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        path = os.path.join(self.test_dir, "funds.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+        return self.write_text("funds.txt", text)
 
     def test_current_codes_pass_through_unchanged(self):
         """Test canonical codes are left alone."""
@@ -3525,7 +3516,7 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         self.assertEqual(len(specs), 32)
 
 
-class TestLineEndings(unittest.TestCase):
+class TestLineEndings(DataDirCase):
     """Test every written file uses LF, independent of platform.
 
     csv.writer defaults to CRLF on every platform. Combined with git's
@@ -3535,17 +3526,12 @@ class TestLineEndings(unittest.TestCase):
     of real data.
     """
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def assertNoCarriageReturns(self, *names):
         for name in names:
-            path = os.path.join(self.test_dir, name)
+            path = self.path(name)
             self.assertTrue(os.path.exists(path), f"{name} was not written")
-            raw = open(path, "rb").read()
+            with open(path, "rb") as f:
+                raw = f.read()
             self.assertNotIn(b"\r", raw, f"{name} contains carriage returns")
             self.assertGreater(raw.count(b"\n"), 0, f"{name} has no line breaks")
 
@@ -3584,21 +3570,12 @@ class TestLineEndings(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_historical_mode_csv_uses_lf(self, mock_ticker):
         """Test the --history export is LF too."""
-        import pandas as pd
-
-        frame = pd.DataFrame(
-            {"Open": [1.0], "Close": [1.5]},
-            index=pd.to_datetime(["2026-09-18"]),
-        )
-        frame.empty  # touch, so the mock returns a real frame
-        mock_ticker.return_value.history.return_value = frame
-
+        fake_ticker(mock_ticker, bars=[("2026-09-18", 1.5)])
         result = fetch_historical_data(
             "AAPL", "2026-09-01", "2026-09-18", self.test_dir
         )
         self.assertFalse(result.startswith("Error:"), result)
-        raw = open(result, "rb").read()
-        self.assertNotIn(b"\r", raw)
+        self.assertNoCarriageReturns(os.path.basename(result))
 
     def test_price_file_per_fund_uses_lf(self):
         """Test the single-value .price files are LF."""
@@ -3606,7 +3583,7 @@ class TestLineEndings(unittest.TestCase):
         self.assertNoCarriageReturns("latest_AAA.price")
 
 
-class TestClosedHoldingConfiguration(unittest.TestCase):
+class TestClosedHoldingConfiguration(DataDirCase):
     """Test the closed-holdings config, which is deliberately not funds.txt.
 
     These instruments are no longer held. Keeping them out of funds.txt is
@@ -3614,17 +3591,8 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
     years ago, so the two files must stay separate.
     """
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        path = os.path.join(self.test_dir, "closed_holdings.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+        return self.write_text("closed_holdings.txt", text)
 
     def test_parses_a_holding_into_its_fields(self):
         """Test every field a one-off import needs is carried."""
