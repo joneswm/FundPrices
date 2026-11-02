@@ -1492,13 +1492,8 @@ class TestYahooQuoteFetching(unittest.TestCase):
         self.assertIn("Network error", price)
 
 
-FT_PAGE = """
-<html><head><title>Fund</title></head><body>
-<div class="mod-ui-data-list__label">Price (GBP)</div>
-<div data-mod-config="{&quot;symbol&quot;:&quot;28305998&quot;,&quot;period&quot;:&quot;day&quot;}"></div>
-</body></html>
-"""
-
+# Two hand-written FT rows for the shapes the recorded response lacks: an open
+# that differs from the close, and a thousands separator.
 FT_ROWS = """
 <tr>
   <td><span class="mod-ui-hide-small-below">Friday, September 18, 2026</span>
@@ -1516,71 +1511,113 @@ FT_ROWS = """
 
 
 class TestFTQuoteFetching(unittest.TestCase):
-    """Test dated quote retrieval from the FT historical-prices endpoint."""
+    """Test dated quote retrieval from the FT historical-prices endpoint.
 
-    def _responses(self, page=FT_PAGE, rows=FT_ROWS):
+    The page and the rows are GB00B1FXTF86's, recorded 2026-11-02 (see
+    fixtures/): the tearsheet trimmed to the elements the parser reads, and
+    the ajax response for 2026-10-19 to 2026-10-30 unchanged. FT reports no
+    row for Tuesday 2026-10-20, the kind of omission the rebuild's retention
+    rule exists for. FT_ROWS stands in only for shapes the recording lacks.
+    """
+
+    ISIN = "GB00B1FXTF86"
+    NOW = utc(2026, 11, 2, 12)  # every recorded day has settled in New York
+    PAGE = fixture_text("ft_GB00B1FXTF86_tearsheet.html")
+    HISTORY = json.loads(fixture_text("ft_GB00B1FXTF86_history.json"))
+    RECORDED_DATES = [
+        "2026-10-19",
+        "2026-10-21",
+        "2026-10-22",
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-27",
+        "2026-10-28",
+        "2026-10-29",
+        "2026-10-30",
+    ]
+
+    @staticmethod
+    def _responses(page=None, rows=None):
+        """The page response then the ajax response, recorded unless given.
+
+        A staticmethod because TestFTUnfinishedDay borrows it by class.
+        """
         page_resp = MagicMock()
-        page_resp.text = page
-        page_resp.raise_for_status.return_value = None
+        page_resp.text = TestFTQuoteFetching.PAGE if page is None else page
         ajax_resp = MagicMock()
-        ajax_resp.json.return_value = {"html": rows}
-        ajax_resp.raise_for_status.return_value = None
+        ajax_resp.json.return_value = (
+            TestFTQuoteFetching.HISTORY if rows is None else {"html": rows}
+        )
         return [page_resp, ajax_resp]
+
+    def fetch(self, start="2026-10-19", end="2026-10-30"):
+        return fetch_ft_quotes(self.ISIN, start, end, now=self.NOW)
 
     @patch("scrape_fund_price.requests.get")
     def test_returns_dated_quotes_with_currency(self, mock_get):
-        """Test rows become Quotes carrying the FT price date and currency."""
+        """Test the recorded rows become Quotes carrying FT's date and currency."""
         mock_get.side_effect = self._responses()
-        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
-        self.assertEqual(len(quotes), 2)
-        self.assertEqual(quotes[0].date, "2026-09-17")
-        self.assertEqual(quotes[1].date, "2026-09-18")
-        self.assertEqual(quotes[1].currency, "GBP")
+        quotes = self.fetch()
+        self.assertEqual([q.date for q in quotes], self.RECORDED_DATES)
+        self.assertEqual(quotes[0], Quote("2026-10-19", "6.99", "GBP"))
+        self.assertEqual(quotes[-1], Quote("2026-10-30", "6.84", "GBP"))
 
     @patch("scrape_fund_price.requests.get")
     def test_uses_close_not_open(self, mock_get):
         """Test the closing price is taken, not the opening price."""
-        mock_get.side_effect = self._responses()
-        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
-        self.assertEqual(quotes[1].price, "7.15")
+        mock_get.side_effect = self._responses(rows=FT_ROWS)
+        quotes = self.fetch("2026-09-01", "2026-09-20")
+        self.assertEqual([q.price for q in quotes], ["1234.5600", "7.15"])
 
     @patch("scrape_fund_price.requests.get")
     def test_strips_thousands_separators_without_float_conversion(self, mock_get):
         """Test FT text prices keep their exact digits, commas removed."""
-        mock_get.side_effect = self._responses()
-        quotes = fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
-        self.assertEqual(quotes[0].price, "1234.5600")
+        mock_get.side_effect = self._responses(rows=FT_ROWS)
+        quotes = self.fetch("2026-09-01", "2026-09-20")
+        self.assertEqual(quotes[0], Quote("2026-09-17", "1234.5600", "GBP"))
 
     @patch("scrape_fund_price.requests.get")
-    def test_requests_endpoint_with_slash_dates(self, mock_get):
-        """Test the ajax endpoint receives YYYY/MM/DD dates and the xid."""
+    def test_requests_the_page_then_the_endpoint_with_slash_dates(self, mock_get):
+        """Test the page gives the numeric xid and the ajax call YYYY/MM/DD dates.
+
+        The page carries the FT symbol GB00B1FXTF86:GBP in another module's
+        config; only the historical module's numeric id is the xid.
+        """
         mock_get.side_effect = self._responses()
-        fetch_ft_quotes("GB00B1FXTF86", "2026-09-01", "2026-09-20")
-        ajax_url = mock_get.call_args_list[1].args[0]
-        self.assertIn("startDate=2026/09/01", ajax_url)
-        self.assertIn("endDate=2026/09/20", ajax_url)
-        self.assertIn("symbol=28305998", ajax_url)
+        self.fetch()
+        page_url, ajax_url = (call.args[0] for call in mock_get.call_args_list)
+        self.assertEqual(
+            page_url, scrape_fund_price.FT_HISTORICAL_PAGE.format(isin=self.ISIN)
+        )
+        self.assertEqual(
+            ajax_url,
+            scrape_fund_price.FT_HISTORICAL_AJAX.format(
+                start="2026/10/19", end="2026/10/30", xid="28305998"
+            ),
+        )
 
     @patch("scrape_fund_price.requests.get")
     def test_missing_internal_id_raises(self, mock_get):
         """Test a page without the internal id is an error, not empty data."""
         mock_get.side_effect = self._responses(page="<html>no config here</html>")
-        with self.assertRaises(Exception):
-            fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+        with self.assertRaises(ValueError) as error:
+            self.fetch()
+        self.assertIn(self.ISIN, str(error.exception))
 
     @patch("scrape_fund_price.requests.get")
     def test_no_rows_raises(self, mock_get):
         """Test an empty result set is an error so the fallback can run."""
         mock_get.side_effect = self._responses(rows="")
-        with self.assertRaises(Exception):
-            fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")
+        with self.assertRaises(ValueError) as error:
+            self.fetch()
+        self.assertIn(self.ISIN, str(error.exception))
 
     @patch("scrape_fund_price.requests.get")
     def test_missing_currency_label_is_tolerated(self, mock_get):
         """Test quotes are still returned when no currency label is present."""
-        page = FT_PAGE.replace("Price (GBP)", "Price")
+        page = self.PAGE.replace("Price (GBP)", "Price")
         mock_get.side_effect = self._responses(page=page)
-        self.assertEqual(fetch_ft_quotes("GB00B1FXTF86", "2026-09-01")[0].currency, "")
+        self.assertEqual(self.fetch()[0], Quote("2026-10-19", "6.99", ""))
 
 
 class TestHistoryUpsert(unittest.TestCase):
