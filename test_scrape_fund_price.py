@@ -3037,20 +3037,11 @@ class TestSummaryRendering(DataDirCase):
         self.assertTrue(os.path.exists(self.path("daily_summary.md")))
 
 
-class TestSourceCodeCanonicalisation(unittest.TestCase):
+class TestSourceCodeCanonicalisation(DataDirCase):
     """Test the GF -> YA rename and its deprecation alias."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        path = os.path.join(self.test_dir, "funds.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+        return self.write_text("funds.txt", text)
 
     def test_current_codes_pass_through_unchanged(self):
         """Test canonical codes are left alone."""
@@ -3105,6 +3096,28 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
         mock_pw.assert_not_called()
 
+    def test_closed_holdings_share_the_alias(self):
+        """Test closed_holdings.txt uses funds.txt's source vocabulary."""
+        path = self.write_text(
+            "closed_holdings.txt", "BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        [holding] = read_closed_holdings(path)
+        self.assertEqual(holding.source, "YA")
+
+    def test_dividend_collection_shares_the_alias(self):
+        """Test a (source, identifier) pair spelt GF is still fetched from Yahoo."""
+        event = scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")
+        with patch.object(
+            scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: [event]
+        ):
+            with patch.object(
+                scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
+            ):
+                results = scrape_fund_price.collect_dividends(
+                    [("GF", "QQQ")], date(2026, 10, 26)
+                )
+        self.assertEqual(len(results), 1)
+
     def test_committed_funds_file_uses_only_current_codes(self):
         """Test the repository's own configuration has been migrated."""
         specs = read_fund_specs("funds.txt")
@@ -3112,7 +3125,7 @@ class TestSourceCodeCanonicalisation(unittest.TestCase):
         self.assertEqual(len(specs), 32)
 
 
-class TestLineEndings(unittest.TestCase):
+class TestLineEndings(DataDirCase):
     """Test every written file uses LF, independent of platform.
 
     csv.writer defaults to CRLF on every platform. Combined with git's
@@ -3122,17 +3135,12 @@ class TestLineEndings(unittest.TestCase):
     of real data.
     """
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def assertNoCarriageReturns(self, *names):
         for name in names:
-            path = os.path.join(self.test_dir, name)
+            path = self.path(name)
             self.assertTrue(os.path.exists(path), f"{name} was not written")
-            raw = open(path, "rb").read()
+            with open(path, "rb") as f:
+                raw = f.read()
             self.assertNotIn(b"\r", raw, f"{name} contains carriage returns")
             self.assertGreater(raw.count(b"\n"), 0, f"{name} has no line breaks")
 
@@ -3171,21 +3179,12 @@ class TestLineEndings(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_historical_mode_csv_uses_lf(self, mock_ticker):
         """Test the --history export is LF too."""
-        import pandas as pd
-
-        frame = pd.DataFrame(
-            {"Open": [1.0], "Close": [1.5]},
-            index=pd.to_datetime(["2026-09-18"]),
-        )
-        frame.empty  # touch, so the mock returns a real frame
-        mock_ticker.return_value.history.return_value = frame
-
+        fake_ticker(mock_ticker, bars=[("2026-09-18", 1.5)])
         result = fetch_historical_data(
             "AAPL", "2026-09-01", "2026-09-18", self.test_dir
         )
         self.assertFalse(result.startswith("Error:"), result)
-        raw = open(result, "rb").read()
-        self.assertNotIn(b"\r", raw)
+        self.assertNoCarriageReturns(os.path.basename(result))
 
     def test_price_file_per_fund_uses_lf(self):
         """Test the single-value .price files are LF."""
@@ -3193,7 +3192,7 @@ class TestLineEndings(unittest.TestCase):
         self.assertNoCarriageReturns("latest_AAA.price")
 
 
-class TestClosedHoldingConfiguration(unittest.TestCase):
+class TestClosedHoldingConfiguration(DataDirCase):
     """Test the closed-holdings config, which is deliberately not funds.txt.
 
     These instruments are no longer held. Keeping them out of funds.txt is
@@ -3201,17 +3200,8 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
     years ago, so the two files must stay separate.
     """
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        path = os.path.join(self.test_dir, "closed_holdings.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+        return self.write_text("closed_holdings.txt", text)
 
     def test_parses_a_holding_into_its_fields(self):
         """Test every field a one-off import needs is carried."""
@@ -3279,13 +3269,6 @@ class TestClosedHoldingConfiguration(unittest.TestCase):
                 )
             )
         self.assertIn("line 2", str(caught.exception))
-
-    def test_deprecated_source_code_is_canonicalised(self):
-        """Test the config shares funds.txt's source vocabulary."""
-        holding = read_closed_holdings(
-            self._write("BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n")
-        )[0]
-        self.assertEqual(holding.source, "YA")
 
     def test_committed_file_holds_the_closed_holdings(self):
         """Test the repository's own configuration matches what was researched."""
@@ -3409,6 +3392,18 @@ class TestInvestingQuotes(unittest.TestCase):
         self.assertEqual([q.date for q in quotes], ["2024-01-04"])
 
     @patch("scrape_fund_price.requests.get")
+    def test_a_row_without_a_date_is_skipped(self, mock_get):
+        """Test a row that cannot be dated is dropped, not stored under ''."""
+        mock_get.return_value = self._response(
+            [
+                {"last_closeRaw": "200.00"},
+                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
+            ]
+        )
+        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
+        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
+
+    @patch("scrape_fund_price.requests.get")
     def test_empty_payload_raises(self, mock_get):
         """Test an empty response is an error, not an empty import."""
         mock_get.return_value = self._response([])
@@ -3428,22 +3423,17 @@ class TestInvestingQuotes(unittest.TestCase):
         mock_fetch.assert_called_once_with("1182866", "2024-01-04", "2024-03-13")
 
 
-class TestClosedHoldingImport(unittest.TestCase):
+class TestClosedHoldingImport(DataDirCase):
     """Test the one-off import writes history and nothing else."""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        super().setUp()
         self.holding = ClosedHolding(
             "BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2023-01-05"
         )
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _history(self):
-        path = os.path.join(self.test_dir, "prices_history.csv")
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows("prices_history.csv")
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_rows_are_stored_under_the_identifier(self, mock_quotes):
@@ -3458,15 +3448,19 @@ class TestClosedHoldingImport(unittest.TestCase):
         """Test a source that over-returns cannot extend a closed holding.
 
         The window is the period actually held; a source returning the fund's
-        whole life would otherwise import years of irrelevant prices.
+        whole life would otherwise import years of irrelevant prices. Both
+        ends are inclusive: a quote on the window's last day is stored.
         """
         mock_quotes.return_value = [
             Quote("2022-12-30", "2.40", "USD"),
             Quote("2023-01-03", "2.4705", "USD"),
+            Quote("2023-01-05", "2.50", "USD"),
             Quote("2023-01-06", "2.60", "USD"),
         ]
         import_closed_holdings([self.holding], self.test_dir)
-        self.assertEqual([row[1] for row in self._history()], ["2023-01-03"])
+        self.assertEqual(
+            [row[1] for row in self._history()], ["2023-01-03", "2023-01-05"]
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_configured_currency_is_stored(self, mock_quotes):
@@ -3500,7 +3494,6 @@ class TestClosedHoldingImport(unittest.TestCase):
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_existing_rows_for_other_funds_are_untouched(self, mock_quotes):
         """Test the import adds to history and never rewrites it."""
-        os.makedirs(self.test_dir, exist_ok=True)
         write_history_files([["QQQ", "2023-01-03", "266.28", "USD"]], self.test_dir)
         mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
         import_closed_holdings([self.holding], self.test_dir)
@@ -3531,7 +3524,7 @@ class TestClosedHoldingImport(unittest.TestCase):
             "latest_BKCH.price",
         ):
             self.assertFalse(
-                os.path.exists(os.path.join(self.test_dir, name)),
+                os.path.exists(self.path(name)),
                 f"{name} should not be written by a closed-holding import",
             )
 
@@ -3563,20 +3556,29 @@ class TestClosedHoldingImport(unittest.TestCase):
         self.assertEqual(entry["deleted"], 0)
         self.assertIn("BKCH", report.to_markdown())
 
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
+        """Test a pence/pounds switch inside a window is flagged for review.
 
-class TestRebuildLeavesClosedHoldingsAlone(unittest.TestCase):
+        An import runs once and is then trusted, so a source that changes
+        quoting unit mid-window has to be visible in the report.
+        """
+        mock_quotes.return_value = [
+            Quote("2023-01-03", "8.49", "GBX"),
+            Quote("2023-01-04", "849.00", "GBX"),
+        ]
+        holding = ClosedHolding(
+            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
+        )
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(any("quoting unit" in w for w in report.warnings))
+
+
+class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
     """Test a rebuild preserves imported history without promoting it."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _rows(self, name):
-        path = os.path.join(self.test_dir, name)
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows(name)
 
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.scrape_fund_quotes")
@@ -3602,12 +3604,10 @@ class TestRebuildLeavesClosedHoldingsAlone(unittest.TestCase):
         mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
         backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
         self.assertEqual([row[0] for row in self._rows("latest_prices.csv")], ["QQQ"])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.test_dir, "latest_BN4MYX3.price"))
-        )
+        self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
 
 
-class TestClosedImportMainMode(unittest.TestCase):
+class TestClosedImportMainMode(DataDirCase):
     """Test the CLI entry point for the one-off import."""
 
     def test_flag_is_parsed(self):
@@ -3643,21 +3643,43 @@ class TestClosedImportMainMode(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main(["--import-closed"])
 
+    @patch("scrape_fund_price.import_closed_holdings")
+    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
+    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
+        """Test the reconciliation table reaches the Actions run page."""
+        report = BackfillReport()
+        report.entries.append(
+            {
+                "identifier": "BKCH",
+                "before": 0,
+                "deleted": 0,
+                "retained": 0,
+                "inserted": 285,
+                "first": "2023-01-03",
+                "last": "2024-02-16",
+                "currency": "USD",
+                "status": "imported",
+            }
+        )
+        mock_import.return_value = report
+        summary_path = self.path("step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+            main(["--import-closed"])
+        written = self.read_text("step_summary.md")
+        self.assertIn("Closed-holding import", written)
+        self.assertIn("BKCH", written)
 
-class TestClosedHoldingWindowEnds(unittest.TestCase):
+
+class TestClosedHoldingWindowEnds(DataDirCase):
     """Test the last day of a window survives, whatever the source's convention.
 
     Yahoo's daily bars treat the end date as exclusive while FT and investing
     .com treat it as inclusive, so passing the configured end straight through
     silently dropped the final day from Yahoo holdings only: BKCH imported 284
-    rows ending 2024-02-15 for a window ending 2024-02-16.
+    rows ending 2024-02-15 for a window ending 2024-02-16. That the stored
+    rows are then clipped to the inclusive window is
+    TestClosedHoldingImport.test_quotes_outside_the_window_are_dropped.
     """
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_sources_are_asked_past_the_window_end(self, mock_quotes):
@@ -3669,38 +3691,8 @@ class TestClosedHoldingWindowEnds(unittest.TestCase):
         import_closed_holdings([holding], self.test_dir)
         self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
 
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_the_configured_end_date_is_imported(self, mock_quotes):
-        """Test a quote on the window's last day is stored, not clipped."""
-        mock_quotes.return_value = [
-            Quote("2024-02-15", "9.943", "USD"),
-            Quote("2024-02-16", "10.115", "USD"),
-        ]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
-        )
-        import_closed_holdings([holding], self.test_dir)
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            rows = [row for row in csv.reader(f)][1:]
-        self.assertEqual([row[1] for row in rows], ["2024-02-15", "2024-02-16"])
 
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_the_extra_day_is_still_clipped(self, mock_quotes):
-        """Test over-fetching does not leak a day past the window."""
-        mock_quotes.return_value = [
-            Quote("2024-02-16", "10.115", "USD"),
-            Quote("2024-02-19", "10.50", "USD"),
-        ]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
-        )
-        import_closed_holdings([holding], self.test_dir)
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            rows = [row for row in csv.reader(f)][1:]
-        self.assertEqual([row[1] for row in rows], ["2024-02-16"])
-
-
-class TestInvestingEmptyPayloads(unittest.TestCase):
+class TestInvestingEmptyPayloads(DataDirCase):
     """Test the IV handler survives the shapes a dead window returns.
 
     Asking investing.com for a window after a fund stopped publishing returns
@@ -3733,22 +3725,12 @@ class TestInvestingEmptyPayloads(unittest.TestCase):
     def test_the_import_records_it_as_a_failure(self, mock_quotes):
         """Test a holding whose window returns nothing is reported, not fatal."""
         mock_quotes.side_effect = ValueError("investing.com returned no rows")
-        test_dir = tempfile.mkdtemp()
-        try:
-            report = import_closed_holdings(
-                [
-                    ClosedHolding(
-                        "X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21"
-                    )
-                ],
-                test_dir,
-            )
-            self.assertTrue(report.failures)
-        finally:
-            shutil.rmtree(test_dir)
+        holding = ClosedHolding("X", "IV", "1190399", "USD", "2026-09-01", "2026-09-21")
+        report = import_closed_holdings([holding], self.test_dir)
+        self.assertTrue(report.failures)
 
 
-class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
+class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
     """Test the 90-day window tracks latest_prices.csv, not raw history.
 
     A closed holding can have real prices inside the last 90 days: FBTC ran to
@@ -3758,17 +3740,11 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
     """
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.today = date.today()
-        self.recent = (self.today - timedelta(days=5)).isoformat()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        super().setUp()
+        self.recent = (date.today() - timedelta(days=5)).isoformat()
 
     def _rolling(self):
-        path = os.path.join(self.test_dir, "prices_history_90_days.csv")
-        with open(path, newline="") as f:
-            return [row for row in csv.reader(f)][1:]
+        return self.read_rows("prices_history_90_days.csv")
 
     def test_closed_holdings_are_excluded_from_the_window(self):
         """Test a recent closed-holding row stays out of the rolling file."""
@@ -3790,8 +3766,7 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         write_history_files(
             rows, self.test_dir, latest={"QQQ": ["QQQ", self.recent, "266.28", "USD"]}
         )
-        with open(os.path.join(self.test_dir, "prices_history.csv"), newline="") as f:
-            stored = [row for row in csv.reader(f)][1:]
+        stored = self.read_rows("prices_history.csv")
         self.assertEqual(sorted(row[0] for row in stored), ["FBTC", "QQQ"])
 
     def test_derived_latest_still_covers_everything(self):
@@ -3806,85 +3781,6 @@ class TestRollingWindowCoversCurrentFundsOnly(unittest.TestCase):
         ]
         write_history_files(rows, self.test_dir)
         self.assertEqual(sorted(row[0] for row in self._rolling()), ["AAA", "QQQ"])
-
-
-class TestClosedHoldingCoverageGaps(unittest.TestCase):
-    """Test the closed-holding paths the first round of tests left unexercised.
-
-    The constitution asks for every line of a new feature to be tested; a
-    coverage review found four that were not.
-    """
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def test_default_filename_is_the_committed_config(self):
-        """Test calling with no argument reads closed_holdings.txt."""
-        self.assertEqual(
-            read_closed_holdings(),
-            read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE),
-        )
-
-    @patch("scrape_fund_price.requests.get")
-    def test_investing_row_without_a_date_is_skipped(self, mock_get):
-        """Test a row that cannot be dated is dropped, not stored under ''."""
-        response = MagicMock()
-        response.json.return_value = {
-            "data": [
-                {"last_closeRaw": "200.00"},
-                {"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"},
-            ]
-        }
-        mock_get.return_value = response
-        quotes = fetch_investing_quotes("1182866", "2024-01-04", "2024-01-05")
-        self.assertEqual([q.date for q in quotes], ["2024-01-04"])
-
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_a_quoting_unit_jump_is_reported(self, mock_quotes):
-        """Test a pence/pounds switch inside a window is flagged for review.
-
-        An import runs once and is then trusted, so a source that changes
-        quoting unit mid-window has to be visible in the report.
-        """
-        mock_quotes.return_value = [
-            Quote("2023-01-03", "8.49", "GBX"),
-            Quote("2023-01-04", "849.00", "GBX"),
-        ]
-        holding = ClosedHolding(
-            "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
-        )
-        report = import_closed_holdings([holding], self.test_dir)
-        self.assertTrue(any("quoting unit" in w for w in report.warnings))
-
-    @patch("scrape_fund_price.import_closed_holdings")
-    @patch("scrape_fund_price.read_closed_holdings", return_value=[])
-    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
-        """Test the reconciliation table reaches the Actions run page."""
-        report = BackfillReport()
-        report.entries.append(
-            {
-                "identifier": "BKCH",
-                "before": 0,
-                "deleted": 0,
-                "retained": 0,
-                "inserted": 285,
-                "first": "2023-01-03",
-                "last": "2024-02-16",
-                "currency": "USD",
-                "status": "imported",
-            }
-        )
-        mock_import.return_value = report
-        summary_path = os.path.join(self.test_dir, "step_summary.md")
-        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
-            main(["--import-closed"])
-        with open(summary_path, encoding="utf-8") as f:
-            written = f.read()
-        self.assertIn("Closed-holding import", written)
-        self.assertIn("BKCH", written)
 
 
 class TestSummaryRowMarkers(unittest.TestCase):
@@ -3953,7 +3849,7 @@ class TestFunctionalClosedHoldingSources(unittest.TestCase):
         self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
-class TestLatestNeverGoesBackwards(unittest.TestCase):
+class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
 
     On 2026-10-10 Yahoo served no Friday close for the London ETFs, so the run
@@ -3975,19 +3871,11 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
         ["SGLN.L", "2026-10-08", "6039", "GBp"],
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, name):
-        with open(os.path.join(self.test_dir, name), newline="") as f:
-            return list(csv.reader(f))[1:]
+        return self.read_rows(name)
 
     def _price_file(self, fund):
-        with open(os.path.join(self.test_dir, f"latest_{fund}.price")) as f:
-            return f.read().strip()
+        return self.read_text(f"latest_{fund}.price").strip()
 
     def _stale_run(self):
         """Friday is stored, then a run whose newest bar is Thursday."""
@@ -4044,7 +3932,7 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
     def test_stored_latest_row_newer_than_history_is_kept(self):
         """Test latest_prices.csv itself is a floor, not only the history."""
         write_results(list(self.FRIDAY), self.test_dir)
-        os.remove(os.path.join(self.test_dir, "prices_history.csv"))
+        os.remove(self.path("prices_history.csv"))
         write_results([self.THURSDAY[0]], self.test_dir)
         latest = {r[0]: r for r in self._read("latest_prices.csv")}
         self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
@@ -4098,7 +3986,11 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
         self.assertEqual(self._price_file("IWDG.L"), "1270.5")
 
     def test_latest_fx_keeps_the_newer_rate(self):
-        """Test latest_fx.csv is derived from history and cannot regress."""
+        """Test latest_fx.csv is derived from history and cannot regress.
+
+        TestFxStorage covers the newest date winning within one write; this
+        is the stale second run, an older date written after a newer one.
+        """
         write_fx_results([["USDGBP", "2026-10-09", "0.75568"]], self.test_dir)
         write_fx_results([["USDGBP", "2026-10-08", "0.75672"]], self.test_dir)
         self.assertEqual(
@@ -4116,40 +4008,24 @@ class TestYahooEmptyLatestBar(unittest.TestCase):
 
     ROWS = [("2026-10-08", 134720.0), ("2026-10-09", float("nan"))]
 
-    def _ticker(self, mock_ticker, rows, meta):
-        import pandas as pd
-
-        idx = pd.DatetimeIndex([pd.Timestamp(d, tz="Europe/London") for d, _ in rows])
-        frame = pd.DataFrame({"Close": [c for _, c in rows]}, index=idx)
-        inst = MagicMock()
-        inst.history.return_value = frame
-        inst.fast_info = {"currency": "GBp"}
-        if isinstance(meta, Exception):
-            inst.get_history_metadata.side_effect = meta
-        else:
-            inst.get_history_metadata.return_value = meta
-        mock_ticker.return_value = inst
-        return inst
-
     @staticmethod
     def _meta(price=133800.0, traded="2026-10-09 16:35", end="2026-10-09 16:30"):
-        import pandas as pd
+        return history_metadata(price, traded, end)
 
-        def stamp(text):
-            return pd.Timestamp(text, tz="Europe/London")
-
-        return {
-            "regularMarketPrice": price,
-            "regularMarketTime": stamp(traded),
-            "exchangeTimezoneName": "Europe/London",
-            "currentTradingPeriod": {"regular": {"end": stamp(end)}},
-        }
+    def _fetch(self, mock_ticker, meta, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
+        return fetch_yahoo_quotes("CNX1.L", "2026-09-30")
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_closing_price_from_metadata_fills_the_empty_bar(self, mock_ticker):
         """Test the finished session's price stands in for the null close."""
-        self._ticker(mock_ticker, self.ROWS, self._meta())
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta())
         self.assertEqual(
             quotes,
             [
@@ -4162,41 +4038,41 @@ class TestYahooEmptyLatestBar(unittest.TestCase):
     def test_a_session_still_open_is_not_filled(self, mock_ticker):
         """Test an intraday price is never stored as a close."""
         meta = self._meta(traded="2026-10-09 15:00", end="2026-10-09 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, meta)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_metadata_from_another_day_is_not_used(self, mock_ticker):
         """Test the price must belong to the empty bar's own date."""
         meta = self._meta(traded="2026-10-08 16:35", end="2026-10-08 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, meta)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_trading_period_that_moved_on_counts_as_closed(self, mock_ticker):
         """Test a later session end shows the bar's day is over."""
-        meta = self._meta(end="2026-10-12 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta(end="2026-10-12 16:30"))
         self.assertEqual(quotes[-1], Quote("2026-10-09", "133800", "GBp"))
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_only_the_newest_bar_is_filled(self, mock_ticker):
         """Test an empty bar in the middle of the window stays dropped."""
         rows = [("2026-10-07", float("nan")), ("2026-10-08", 134720.0)]
-        self._ticker(mock_ticker, rows, self._meta())
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta(), rows)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unusable_metadata_falls_back_to_dropping_the_bar(self, mock_ticker):
         """Test bad metadata never raises or invents a price."""
-        for meta in (RuntimeError("boom"), {}, self._meta(price=float("nan"))):
-            self._ticker(mock_ticker, self.ROWS, meta)
-            quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
-            self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+        shapes = {
+            "raises": RuntimeError("boom"),
+            "empty": {},
+            "no price": self._meta(price=float("nan")),
+        }
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta)
+                self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
 
 class TestYahooUnfinishedSession(unittest.TestCase):
@@ -4207,17 +4083,25 @@ class TestYahooUnfinishedSession(unittest.TestCase):
     """
 
     ROWS = [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)]
-    _ticker = TestYahooEmptyLatestBar._ticker
-    _meta = staticmethod(TestYahooEmptyLatestBar._meta)
+
+    @staticmethod
+    def _meta(traded, end):
+        return history_metadata(10970.0, traded, end)
 
     @staticmethod
     def _now(text):
-        import pandas as pd
+        """A London wall-clock time, as the run's `now`."""
+        london = scrape_fund_price.ZoneInfo("Europe/London")
+        return datetime.datetime.fromisoformat(text).replace(tzinfo=london)
 
-        return pd.Timestamp(text, tz="Europe/London").to_pydatetime()
-
-    def _fetch(self, mock_ticker, meta, now):
-        self._ticker(mock_ticker, self.ROWS, meta)
+    def _fetch(self, mock_ticker, meta, now, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
         return fetch_yahoo_quotes("SWDA.L", "2026-10-01", now=self._now(now))
 
     @patch("scrape_fund_price.yf.Ticker")
@@ -4237,17 +4121,19 @@ class TestYahooUnfinishedSession(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_keeps_previous_session_while_today_is_open(self, mock_ticker):
         """Test only a bar dated on the open session's day is held back."""
-        self.ROWS = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
+        rows = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
         meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
-        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56", rows)
         self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unusable_metadata_keeps_the_newest_bar(self, mock_ticker):
         """Test a price is not lost because the session cannot be judged."""
-        for meta in (RuntimeError("boom"), {}):
-            quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
-            self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+        shapes = {"raises": RuntimeError("boom"), "empty": {}}
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+                self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
 
 
 class TestFTUnfinishedDay(unittest.TestCase):
@@ -4268,9 +4154,20 @@ class TestFTUnfinishedDay(unittest.TestCase):
             "<td><span>0</span></td></tr>"
         )
 
+    @staticmethod
+    def _responses(rows):
+        """The FT page, then the ajax rows, as requests.get returns them."""
+        page_resp = MagicMock()
+        page_resp.text = FT_PAGE
+        page_resp.raise_for_status.return_value = None
+        ajax_resp = MagicMock()
+        ajax_resp.json.return_value = {"html": rows}
+        ajax_resp.raise_for_status.return_value = None
+        return [page_resp, ajax_resp]
+
     def _fetch(self, mock_get, days, now):
         rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
-        mock_get.side_effect = TestFTQuoteFetching._responses(None, rows=rows)
+        mock_get.side_effect = self._responses(rows)
         now = datetime.datetime.fromisoformat(now)
         return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
 
@@ -4318,21 +4215,13 @@ class TestFTUnfinishedDay(unittest.TestCase):
         browser.page.assert_not_called()
 
 
-class TestDistributionConfiguration(unittest.TestCase):
+class TestDistributionConfiguration(DataDirCase):
     """Test distributions.txt parsing and validation (SPEC-010, #85)."""
 
     KNOWN = {"GB00B1FXTF86", "IE0008368742", "BMV7ZZ3"}
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text, known="default"):
-        path = os.path.join(self.test_dir, "distributions.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("distributions.txt", text)
         if known == "default":
             known = self.KNOWN
         return scrape_fund_price.read_distributions(path, known)
@@ -4382,10 +4271,14 @@ class TestDistributionConfiguration(unittest.TestCase):
         monthly = ";".join(f"{month:02d}-10" for month in range(1, 13))
         [dist] = self._read(f"GB00B1FXTF86,monthly,{monthly},5\n")
         self.assertEqual(len(dist.xd_dates), 12)
-        with self.assertRaisesRegex(ValueError, "line 1.*2 ex-dates"):
-            self._read("GB00B1FXTF86,quarterly,03-01;09-01,30\n")
-        with self.assertRaisesRegex(ValueError, "line 1.*1 ex-date"):
-            self._read("GB00B1FXTF86,annual,03-01;09-01,30\n")
+        wrong = {
+            "quarterly": "2 ex-dates",
+            "annual": "1 ex-date",
+        }
+        for frequency, complaint in wrong.items():
+            with self.subTest(frequency=frequency):
+                with self.assertRaisesRegex(ValueError, f"line 1.*{complaint}"):
+                    self._read(f"GB00B1FXTF86,{frequency},03-01;09-01,30\n")
 
     def test_leap_day_is_allowed(self):
         """Test 02-29 is a real ex-date for the years that have one."""
@@ -4410,8 +4303,15 @@ class TestDistributionConfiguration(unittest.TestCase):
 
     def test_a_missing_file_has_no_entries(self):
         """Test the file is optional."""
-        path = os.path.join(self.test_dir, "absent.txt")
+        path = self.path("absent.txt")
         self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+    def test_the_configured_file_is_read_by_default(self):
+        """Test the production call names no file."""
+        path = self.write_text("distributions.txt", "X,annual,03-01,30\n")
+        with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
+            [dist] = scrape_fund_price.read_distributions()
+        self.assertEqual(dist.identifier, "X")
 
     def test_identifier_must_be_configured(self):
         """Test a line for an unknown instrument names the line."""
@@ -4470,17 +4370,13 @@ class TestYahooDividendEvents(unittest.TestCase):
     """Test dividend events from the Yahoo daily-bar route (SPEC-010, #85)."""
 
     def _ticker(self, mock_ticker, rows, currency="GBP", column=True):
-        import pandas as pd
-
-        inst = MagicMock()
-        idx = pd.to_datetime([d for d, _ in rows])
-        data = {"Close": [1.0] * len(rows)}
-        if column:
-            data["Dividends"] = [v for _, v in rows]
-        inst.history.return_value = pd.DataFrame(data, index=idx)
-        inst.fast_info = {"currency": currency}
-        mock_ticker.return_value = inst
-        return inst
+        """Bars closing at 1.0, with `rows` as [(date, dividend)]."""
+        return fake_ticker(
+            mock_ticker,
+            bars=[(day, 1.0) for day, _ in rows],
+            currency=currency,
+            dividends=[amount for _, amount in rows] if column else None,
+        )
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_returns_one_event_per_ex_date_with_the_price_currency(self, mock_ticker):
@@ -4544,12 +4440,16 @@ class TestYahooDividendEvents(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_missing_values_and_columns_give_no_events(self, mock_ticker):
         """Test NaN, an absent column and an empty frame are not errors."""
-        self._ticker(mock_ticker, [("2026-09-18", float("nan"))])
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
-        self._ticker(mock_ticker, [("2026-09-18", 1.0)], column=False)
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
-        self._ticker(mock_ticker, [])
-        self.assertEqual(scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01"), [])
+        shapes = {
+            "nan": dict(rows=[("2026-09-18", float("nan"))]),
+            "no column": dict(rows=[("2026-09-18", 1.0)], column=False),
+            "empty frame": dict(rows=[]),
+        }
+        for shape, frame in shapes.items():
+            with self.subTest(frame=shape):
+                self._ticker(mock_ticker, **frame)
+                events = scrape_fund_price.fetch_yahoo_dividends("A", "2026-09-01")
+                self.assertEqual(events, [])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unknown_currency_is_empty_not_an_error(self, mock_ticker):
@@ -4658,34 +4558,26 @@ class TestYahooDeclaredDividends(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_date_values_come_in_several_shapes(self, mock_ticker):
         """Test datetimes, ISO text and garbage are each handled."""
-        as_datetime = self._declared(
-            mock_ticker,
-            calendar={"Ex-Dividend Date": datetime.datetime(2026, 11, 12, 9, 30)},
-        )
-        self.assertEqual(as_datetime.ex_date, "2026-11-12")
-        as_text = self._declared(
-            mock_ticker, calendar={"Ex-Dividend Date": "2026-11-12"}
-        )
-        self.assertEqual(as_text.ex_date, "2026-11-12")
+        readable = {
+            "datetime": datetime.datetime(2026, 11, 12, 9, 30),
+            "text": "2026-11-12",
+        }
+        for shape, value in readable.items():
+            with self.subTest(shape=shape):
+                declared = self._declared(
+                    mock_ticker, calendar={"Ex-Dividend Date": value}
+                )
+                self.assertEqual(declared.ex_date, "2026-11-12")
         for junk in ("soon", "", None, True, 1e30, [date(2026, 11, 12)]):
-            self.assertIsNone(
-                self._declared(
+            with self.subTest(junk=junk):
+                declared = self._declared(
                     mock_ticker, calendar={"Ex-Dividend Date": junk}, info={}
                 )
-            )
+                self.assertIsNone(declared)
 
 
-class TestDividendHistoryStorage(unittest.TestCase):
+class TestDividendHistoryStorage(DataDirCase):
     """Test dividends_history.csv reading and writing (SPEC-010, #85)."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _path(self):
-        return os.path.join(self.test_dir, "dividends_history.csv")
 
     def test_rows_are_written_sorted_with_a_header_and_lf_endings(self):
         """Test the file is ordered by ex-date then fund, deterministically."""
@@ -4697,10 +4589,8 @@ class TestDividendHistoryStorage(unittest.TestCase):
             ],
             self.test_dir,
         )
-        with open(self._path(), newline="") as f:
-            text = f.read()
         self.assertEqual(
-            text,
+            self.read_text("dividends_history.csv"),
             "Fund,ExDate,PayDate,Amount,Currency,Source\n"
             "QQQ,2026-03-24,,0.8,USD,YA\n"
             "IGLS.L,2026-06-23,,0.1,GBP,YA\n"
@@ -4720,20 +4610,22 @@ class TestDividendHistoryStorage(unittest.TestCase):
 
     def test_rows_without_a_fund_or_ex_date_are_skipped(self):
         """Test a damaged line cannot stop the run."""
-        with open(self._path(), "w", newline="") as f:
-            f.write(
-                "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-                ",2026-03-24,,0.8,USD,YA\n"
-                "QQQ,,,0.8,USD,YA\n"
-                "QQQ,2026-06-23,,0.9,USD,YA\n"
-            )
+        self.write_text(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
+            ",2026-03-24,,0.8,USD,YA\n"
+            "QQQ,,,0.8,USD,YA\n"
+            "QQQ,2026-06-23,,0.9,USD,YA\n",
+        )
         stored = scrape_fund_price.read_dividend_history(self.test_dir)
         self.assertEqual(list(stored), [("QQQ", "2026-06-23")])
 
     def test_short_rows_are_padded(self):
         """Test a row missing its trailing columns still reads."""
-        with open(self._path(), "w", newline="") as f:
-            f.write("Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2026-06-23\n")
+        self.write_text(
+            "dividends_history.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2026-06-23\n",
+        )
         stored = scrape_fund_price.read_dividend_history(self.test_dir)
         self.assertEqual(
             stored[("QQQ", "2026-06-23")], ["QQQ", "2026-06-23", "", "", "", ""]
@@ -4854,10 +4746,10 @@ class TestDividendCollection(unittest.TestCase):
                 scrape_fund_price.collect_dividends(specs, self.TODAY)
         self.assertEqual(calls, ["QQQ"])
 
-    def test_plain_pairs_and_the_deprecated_source_code_are_accepted(self):
-        """Test callers may pass (source, identifier) pairs, GF included."""
+    def test_plain_pairs_are_accepted(self):
+        """Test callers may pass (source, identifier) pairs."""
         results = self._collect(
-            [("GF", "QQQ")],
+            [("YA", "QQQ")],
             events={"QQQ": [scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")]},
         )
         self.assertEqual(len(results), 1)
@@ -5131,18 +5023,78 @@ class TestEstimateNextDividend(unittest.TestCase):
         self.assertEqual(self._estimate(rows).amount, "1")
 
 
-class TestDistributionSchedules(unittest.TestCase):
-    """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
+class DividendRunCase(DataDirCase):
+    """Shared scaffolding for the dividend tests (SPEC-010).
+
+    The run date, builders for the two files' rows, a distributions.txt
+    parser, and the dividend update run with Yahoo faked.
+    """
 
     TODAY = date(2026, 10, 26)
 
+    # The IssuerRunCase classes (SPEC-011, SPEC-012) still call these; step
+    # 2.Z of #97 removes them once those callers use the DataDirCase methods.
+    def _file(self, name):
+        return self.path(name)
+
+    def _text(self, name):
+        return self.read_text(name)
+
+    def _read(self, name):
+        return self.read_rows(name)
+
+    def _write(self, name, text):
+        self.write_text(name, text)
+
+    @staticmethod
+    def row(fund, ex, pay, amount, currency, source):
+        """A dividends_history.csv row."""
+        return [fund, ex, pay, amount, currency, source]
+
+    @classmethod
+    def upcoming(cls, fund, ex, pay, amount, currency, status, as_of=None):
+        """A dividends_upcoming.csv row, as of the run date unless given."""
+        as_of = as_of or cls.TODAY.isoformat()
+        return [fund, ex, pay, amount, currency, status, as_of]
+
+    def write_history(self, *rows):
+        """Store dividends_history.csv rows, as an earlier run would have."""
+        header = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+        return self.write_csv("dividends_history.csv", header, rows)
+
+    def _dists(self, *lines):
+        """Parse distributions.txt lines, without the identifier check."""
+        path = self.write_text("distributions.txt", "\n".join(lines) + "\n")
+        return scrape_fund_price.read_distributions(path, None)
+
+    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
+        """Run update_dividends (or `runner`) with Yahoo faked."""
+        events = events or {}
+        declared = declared or {}
+        self.windows = []
+
+        def fake_events(symbol, window_start, end=None):
+            self.windows.append((symbol, window_start))
+            value = events.get(symbol, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def fake_declared(symbol, today=None):
+            return declared.get(symbol)
+
+        runner = runner or scrape_fund_price.update_dividends
+        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
+            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
+                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+
+
+class TestDistributionSchedules(DividendRunCase):
+    """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
+
     def _dist(self, text):
         """Parse a single distributions.txt line."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write(text + "\n")
-            [dist] = scrape_fund_price.read_distributions(path, None)
+        [dist] = self._dists(text)
         return dist
 
     def test_the_estimate_is_the_next_occurrence_of_an_ex_date(self):
@@ -5201,8 +5153,8 @@ class TestDistributionSchedules(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                ["X", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"],
-                ["X", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"],
+                self.row("X", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"),
+                self.row("X", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"),
             ],
         )
 
@@ -5235,39 +5187,23 @@ class TestDistributionSchedules(unittest.TestCase):
         self.assertEqual([row[1] for row in rows], ["2026-09-01"])
 
 
-class TestDividendUpcomingStorage(unittest.TestCase):
+class TestDividendUpcomingStorage(DividendRunCase):
     """Test dividends_upcoming.csv reading and writing (SPEC-010, #85)."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     def test_rows_are_written_sorted_with_a_header(self):
         """Test the file is ordered by ex-date then fund."""
         scrape_fund_price.write_dividend_upcoming(
             [
-                ["QQQ", "2026-12-22", "", "0.9", "USD", "estimated", "2026-10-26"],
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.1",
-                    "GBP",
-                    "declared",
-                    "2026-10-26",
-                ],
-                ["AAA", "2026-12-22", "", "", "", "estimated", "2026-10-26"],
+                self.upcoming("QQQ", "2026-12-22", "", "0.9", "USD", "estimated"),
+                self.upcoming(
+                    "IGLS.L", "2026-11-12", "2026-11-28", "0.1", "GBP", "declared"
+                ),
+                self.upcoming("AAA", "2026-12-22", "", "", "", "estimated"),
             ],
             self.test_dir,
         )
-        with open(
-            os.path.join(self.test_dir, "dividends_upcoming.csv"), newline=""
-        ) as f:
-            text = f.read()
         self.assertEqual(
-            text,
+            self.read_text("dividends_upcoming.csv"),
             "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
             "IGLS.L,2026-11-12,2026-11-28,0.1,GBP,declared,2026-10-26\n"
             "AAA,2026-12-22,,,,estimated,2026-10-26\n"
@@ -5276,7 +5212,7 @@ class TestDividendUpcomingStorage(unittest.TestCase):
 
     def test_rows_round_trip(self):
         """Test reading gives back what was written."""
-        rows = [["QQQ", "2026-12-22", "", "0.9", "USD", "estimated", "2026-10-26"]]
+        rows = [self.upcoming("QQQ", "2026-12-22", "", "0.9", "USD", "estimated")]
         scrape_fund_price.write_dividend_upcoming(rows, self.test_dir)
         self.assertEqual(scrape_fund_price.read_dividend_upcoming(self.test_dir), rows)
 
@@ -5286,23 +5222,21 @@ class TestDividendUpcomingStorage(unittest.TestCase):
 
     def test_damaged_rows_are_skipped_and_short_rows_padded(self):
         """Test a bad line cannot stop the run."""
-        with open(os.path.join(self.test_dir, "dividends_upcoming.csv"), "w") as f:
-            f.write(
-                "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
-                ",2026-12-22,,,,estimated,2026-10-26\n"
-                "QQQ,,,,,estimated,2026-10-26\n"
-                "QQQ,2026-12-22\n"
-            )
+        self.write_text(
+            "dividends_upcoming.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
+            ",2026-12-22,,,,estimated,2026-10-26\n"
+            "QQQ,,,,,estimated,2026-10-26\n"
+            "QQQ,2026-12-22\n",
+        )
         self.assertEqual(
             scrape_fund_price.read_dividend_upcoming(self.test_dir),
             [["QQQ", "2026-12-22", "", "", "", "", ""]],
         )
 
 
-class TestUpcomingRowsForOneInstrument(unittest.TestCase):
+class TestUpcomingRowsForOneInstrument(DividendRunCase):
     """Test the declared, estimated and carried-over rules (SPEC-010, #85)."""
-
-    TODAY = date(2026, 10, 26)
 
     def _rows(
         self,
@@ -5324,11 +5258,16 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     ESTIMATE = scrape_fund_price.EstimatedDividend("2026-12-17", "", "0.33", "GBP")
 
+    def _stored(self, ex, status="estimated", pay="", as_of=None):
+        """A stored upcoming row for the instrument, as of the day before."""
+        as_of = as_of or (date.fromisoformat(ex) - timedelta(days=1)).isoformat()
+        return self.upcoming("IGLS.L", ex, pay, "0.3", "GBP", status, as_of)
+
     def test_an_estimate_becomes_an_estimated_row_as_of_today(self):
         """Test the projection is published with the run date."""
         self.assertEqual(
             self._rows(estimate=self.ESTIMATE),
-            [["IGLS.L", "2026-12-17", "", "0.33", "GBP", "estimated", "2026-10-26"]],
+            [self.upcoming("IGLS.L", "2026-12-17", "", "0.33", "GBP", "estimated")],
         )
 
     def test_a_declared_dividend_carries_the_last_paid_amount(self):
@@ -5337,15 +5276,9 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
         self.assertEqual(
             self._rows(declared=declared, estimate=self.ESTIMATE),
             [
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.33",
-                    "GBP",
-                    "declared",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    "IGLS.L", "2026-11-12", "2026-11-28", "0.33", "GBP", "declared"
+                )
             ],
         )
 
@@ -5373,31 +5306,19 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     def test_a_stored_estimate_is_replaced_not_accumulated(self):
         """Test a moved estimate leaves one row, the new one."""
-        stored = [
-            ["IGLS.L", "2026-12-10", "", "0.30", "GBP", "estimated", "2026-10-25"]
-        ]
+        stored = [self._stored("2026-12-10", as_of="2026-10-25")]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual([r[1] for r in rows], ["2026-12-17"])
 
     def test_a_stored_estimate_goes_when_there_is_no_estimate_any_more(self):
         """Test an instrument that stopped paying loses its projection."""
-        stored = [
-            ["IGLS.L", "2026-12-10", "", "0.30", "GBP", "estimated", "2026-10-25"]
-        ]
+        stored = [self._stored("2026-12-10", as_of="2026-10-25")]
         self.assertEqual(self._rows(stored=stored), [])
 
     def test_a_stored_declared_row_survives_a_day_yahoo_says_nothing(self):
         """Test a flaky calendar does not retract an announcement."""
         stored = [
-            [
-                "IGLS.L",
-                "2026-11-12",
-                "2026-11-28",
-                "0.3",
-                "GBP",
-                "declared",
-                "2026-10-20",
-            ]
+            self._stored("2026-11-12", "declared", pay="2026-11-28", as_of="2026-10-20")
         ]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual(rows, stored)
@@ -5405,15 +5326,7 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
     def test_a_moved_declaration_replaces_the_stored_one(self):
         """Test a new declared date supersedes the old, with the new AsOf."""
         stored = [
-            [
-                "IGLS.L",
-                "2026-11-12",
-                "2026-11-28",
-                "0.3",
-                "GBP",
-                "declared",
-                "2026-10-20",
-            ]
+            self._stored("2026-11-12", "declared", pay="2026-11-28", as_of="2026-10-20")
         ]
         declared = scrape_fund_price.DeclaredDividend("2026-11-19", "2026-12-03")
         rows = self._rows(stored=stored, declared=declared)
@@ -5421,51 +5334,51 @@ class TestUpcomingRowsForOneInstrument(unittest.TestCase):
 
     def test_a_row_stays_for_seven_days_after_its_ex_date_even_if_in_history(self):
         """Test the downstream has a week to match it."""
-        stored = [
-            ["IGLS.L", "2026-10-19", "", "0.3", "GBP", "estimated", "2026-10-18"],
-            ["IGLS.L", "2026-10-18", "", "0.3", "GBP", "estimated", "2026-10-17"],
-        ]
+        stored = [self._stored("2026-10-19"), self._stored("2026-10-18")]
         rows = self._rows(stored=stored, history_dates={"2026-10-19", "2026-10-18"})
         self.assertEqual([r[1] for r in rows], ["2026-10-19"])
 
     def test_a_row_older_than_seven_days_stays_while_it_is_not_in_the_history(self):
         """Test a missing dividend stays visible for the downstream's 'missing'."""
-        stored = [["IGLS.L", "2026-10-10", "", "0.3", "GBP", "estimated", "2026-10-09"]]
+        stored = [self._stored("2026-10-10")]
         self.assertEqual(self._rows(stored=stored), stored)
 
     def test_a_row_older_than_thirty_days_goes_either_way(self):
         """Test nothing lingers for ever, and day thirty is the last."""
-        stored = [
-            ["IGLS.L", "2026-09-25", "", "0.3", "GBP", "estimated", "2026-09-24"],
-            ["IGLS.L", "2026-09-20", "", "0.3", "GBP", "declared", "2026-09-19"],
-        ]
-        self.assertEqual(self._rows(stored=stored), [])
-        both = {"2026-09-25", "2026-09-20"}
-        self.assertEqual(self._rows(stored=stored, history_dates=both), [])
-        thirty = [["IGLS.L", "2026-09-26", "", "0.3", "GBP", "estimated", "2026-09-25"]]
-        self.assertEqual(self._rows(stored=thirty), thirty)
+        old = [self._stored("2026-09-25"), self._stored("2026-09-20", "declared")]
+        thirty = [self._stored("2026-09-26")]
+        rules = {
+            "not in history": (self._rows(stored=old), []),
+            "in history": (
+                self._rows(stored=old, history_dates={"2026-09-25", "2026-09-20"}),
+                [],
+            ),
+            "day thirty": (self._rows(stored=thirty), thirty),
+        }
+        for rule, (rows, expected) in rules.items():
+            with self.subTest(rule=rule):
+                self.assertEqual(rows, expected)
+
+    def test_a_stored_row_with_an_unreadable_date_is_dropped(self):
+        """Test a damaged file heals itself instead of stopping the run."""
+        stored = [self._stored("soon", "declared", as_of="2026-10-01")]
+        self.assertEqual(self._rows(stored=stored, last_paid=("", "")), [])
 
     def test_rows_are_ordered_by_ex_date(self):
         """Test a carried row precedes the new estimate."""
-        stored = [["IGLS.L", "2026-10-22", "", "0.3", "GBP", "estimated", "2026-10-21"]]
+        stored = [self._stored("2026-10-22")]
         rows = self._rows(stored=stored, estimate=self.ESTIMATE)
         self.assertEqual([r[1] for r in rows], ["2026-10-22", "2026-12-17"])
 
 
-class TestBuildDividendUpcoming(unittest.TestCase):
+class TestBuildDividendUpcoming(DividendRunCase):
     """Test the whole upcoming file from the day's inputs (SPEC-010, #85)."""
-
-    TODAY = date(2026, 10, 26)
 
     def _history(self, *rows):
         return {(row[0], row[1]): list(row) for row in rows}
 
     def _dist(self, text):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write(text + "\n")
-            return scrape_fund_price.read_distributions(path, None)
+        return self._dists(text)
 
     def _build(
         self,
@@ -5489,41 +5402,29 @@ class TestBuildDividendUpcoming(unittest.TestCase):
     def test_a_pattern_estimate_is_published_under_every_alias(self):
         """Test one projection, every identifier."""
         history = self._history(
-            ["0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"],
-            ["0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"],
-            ["JFM0003373", "2026-03-05", "", "1", "GBP", "YA"],
-            ["JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"],
+            self.row("0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"),
+            self.row("JFM0003373", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"),
         )
         rows = self._build([FundSpec("YA", "0P00000YAN", ("JFM0003373",))], history)
         self.assertEqual(
             rows,
             [
-                [
-                    "0P00000YAN",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
-                [
-                    "JFM0003373",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
+                self.upcoming(
+                    "0P00000YAN", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
+                self.upcoming(
+                    "JFM0003373", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
             ],
         )
 
     def test_history_held_only_under_an_alias_is_still_used(self):
         """Test an alias may carry the whole history."""
         history = self._history(
-            ["OLD", "2026-03-05", "", "1", "GBP", "YA"],
-            ["OLD", "2026-09-03", "", "1.1", "GBP", "YA"],
+            self.row("OLD", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("OLD", "2026-09-03", "", "1.1", "GBP", "YA"),
         )
         rows = self._build([FundSpec("YA", "NEW", ("OLD",))], history)
         self.assertEqual(sorted({r[0] for r in rows}), ["NEW", "OLD"])
@@ -5534,7 +5435,7 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_a_declared_dividend_is_published_for_the_lookup_id_and_aliases(self):
         """Test the calendar answer is keyed by lookup id, published everywhere."""
-        history = self._history(["QQQ", "2026-09-22", "", "0.9", "USD", "YA"])
+        history = self._history(self.row("QQQ", "2026-09-22", "", "0.9", "USD", "YA"))
         declared = {
             "QQQ": scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-28")
         }
@@ -5542,15 +5443,9 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                [
-                    "QQQ",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.9",
-                    "USD",
-                    "declared",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    "QQQ", "2026-11-12", "2026-11-28", "0.9", "USD", "declared"
+                )
             ],
         )
 
@@ -5565,15 +5460,14 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                [
+                self.upcoming(
                     "GB00B1FXTF86",
                     "2027-03-01",
                     "2027-03-31",
                     "0.0821",
                     "GBP",
                     "estimated",
-                    "2026-10-26",
-                ]
+                )
             ],
         )
 
@@ -5591,8 +5485,8 @@ class TestBuildDividendUpcoming(unittest.TestCase):
     def test_a_distributions_line_beats_the_pattern(self):
         """Test the owner's statement of the dates wins over a projection."""
         history = self._history(
-            ["X", "2026-03-05", "", "1", "GBP", "YA"],
-            ["X", "2026-09-03", "", "1", "GBP", "YA"],
+            self.row("X", "2026-03-05", "", "1", "GBP", "YA"),
+            self.row("X", "2026-09-03", "", "1", "GBP", "YA"),
         )
         dists = self._dist("X,annual,12-15,28,0.5")
         [row] = self._build([FundSpec("YA", "X")], history, dists)
@@ -5611,12 +5505,20 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_stored_rows_of_unconfigured_funds_are_dropped(self):
         """Test the file follows funds.txt."""
-        stored = [["GONE", "2026-12-17", "", "1", "GBP", "estimated", "2026-10-25"]]
+        stored = [
+            self.upcoming(
+                "GONE", "2026-12-17", "", "1", "GBP", "estimated", "2026-10-25"
+            )
+        ]
         self.assertEqual(self._build([FundSpec("YA", "QQQ")], stored=stored), [])
 
     def test_a_stored_declared_row_is_carried_for_every_alias(self):
         """Test a lookup that fails today keeps yesterday's announcement."""
-        stored = [["QQQ", "2026-11-12", "", "0.9", "USD", "declared", "2026-10-25"]]
+        stored = [
+            self.upcoming(
+                "QQQ", "2026-11-12", "", "0.9", "USD", "declared", "2026-10-25"
+            )
+        ]
         rows = self._build([FundSpec("YA", "QQQ", ("QQQ.US",))], stored=stored)
         self.assertEqual(
             [(r[0], r[6]) for r in rows],
@@ -5625,53 +5527,8 @@ class TestBuildDividendUpcoming(unittest.TestCase):
 
     def test_plain_pairs_are_accepted(self):
         """Test callers may pass (source, identifier) pairs."""
-        history = self._history(["QQQ", "2026-09-22", "", "0.9", "USD", "YA"])
-        self.assertEqual(len(self._build([("GF", "QQQ")], history)), 1)
-
-
-class DividendRunCase(DataDirCase):
-    """Shared scaffolding for tests that run the dividend update end to end."""
-
-    TODAY = date(2026, 10, 26)
-
-    def _file(self, name):
-        return self.path(name)
-
-    def _text(self, name):
-        return self.read_text(name)
-
-    def _read(self, name):
-        return self.read_rows(name)
-
-    def _write(self, name, text):
-        self.write_text(name, text)
-
-    def _dists(self, *lines):
-        path = self._file("distributions.txt")
-        with open(path, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        return scrape_fund_price.read_distributions(path, None)
-
-    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
-        """Run update_dividends (or `runner`) with Yahoo faked."""
-        events = events or {}
-        declared = declared or {}
-        self.windows = []
-
-        def fake_events(symbol, window_start, end=None):
-            self.windows.append((symbol, window_start))
-            value = events.get(symbol, [])
-            if isinstance(value, Exception):
-                raise value
-            return value
-
-        def fake_declared(symbol, today=None):
-            return declared.get(symbol)
-
-        runner = runner or scrape_fund_price.update_dividends
-        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
-            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
-                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+        history = self._history(self.row("QQQ", "2026-09-22", "", "0.9", "USD", "YA"))
+        self.assertEqual(len(self._build([("YA", "QQQ")], history)), 1)
 
 
 class TestDailyDividendUpdate(DividendRunCase):
@@ -5700,35 +5557,23 @@ class TestDailyDividendUpdate(DividendRunCase):
         }
         self._run([FundSpec("YA", "0P00000YAN", ("JFM0003373",))], events)
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
-                ["0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"],
-                ["JFM0003373", "2026-03-05", "", "1", "GBP", "YA"],
-                ["0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"],
-                ["JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"],
+                self.row("0P00000YAN", "2026-03-05", "", "1", "GBP", "YA"),
+                self.row("JFM0003373", "2026-03-05", "", "1", "GBP", "YA"),
+                self.row("0P00000YAN", "2026-09-03", "", "1.1", "GBP", "YA"),
+                self.row("JFM0003373", "2026-09-03", "", "1.1", "GBP", "YA"),
             ],
         )
         self.assertEqual(
-            self._read("dividends_upcoming.csv"),
+            self.read_rows("dividends_upcoming.csv"),
             [
-                [
-                    "0P00000YAN",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
-                [
-                    "JFM0003373",
-                    "2027-03-03",
-                    "",
-                    "1.1",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ],
+                self.upcoming(
+                    "0P00000YAN", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
+                self.upcoming(
+                    "JFM0003373", "2027-03-03", "", "1.1", "GBP", "estimated"
+                ),
             ],
         )
 
@@ -5740,17 +5585,11 @@ class TestDailyDividendUpdate(DividendRunCase):
         }
         self._run([FundSpec("YA", "QQQ")], events, declared)
         self.assertEqual(
-            self._read("dividends_upcoming.csv"),
+            self.read_rows("dividends_upcoming.csv"),
             [
-                [
-                    "QQQ",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.9",
-                    "USD",
-                    "declared",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    "QQQ", "2026-11-12", "2026-11-28", "0.9", "USD", "declared"
+                )
             ],
         )
 
@@ -5759,9 +5598,9 @@ class TestDailyDividendUpdate(DividendRunCase):
         events = {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
         self._run([FundSpec("YA", "QQQ")], events)
         names = ("dividends_history.csv", "dividends_upcoming.csv")
-        first = [self._text(name) for name in names]
+        first = [self.read_text(name) for name in names]
         self._run([FundSpec("YA", "QQQ")], events)
-        second = [self._text(name) for name in names]
+        second = [self.read_text(name) for name in names]
         self.assertEqual(first, second)
 
     def test_a_changed_amount_replaces_the_stored_row(self):
@@ -5773,28 +5612,23 @@ class TestDailyDividendUpdate(DividendRunCase):
             [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-09-22", "0.95", "USD")]}
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["QQQ", "2026-09-22", "", "0.95", "USD", "YA"]],
+            self.read_rows("dividends_history.csv"),
+            [self.row("QQQ", "2026-09-22", "", "0.95", "USD", "YA")],
         )
 
     def test_older_history_is_kept_when_the_window_moves_on(self):
         """Test the daily run only ever upserts."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2020-03-24,,0.5,USD,YA\n",
-        )
+        self.write_history(self.row("QQQ", "2020-03-24", "", "0.5", "USD", "YA"))
         self._run(
             [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-09-22", "0.9", "USD")]}
         )
-        self.assertEqual(len(self._read("dividends_history.csv")), 2)
+        self.assertEqual(len(self.read_rows("dividends_history.csv")), 2)
 
     def test_a_failed_instrument_keeps_its_rows_and_is_reported(self):
         """Test one failure costs only that instrument; the files are still written."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "BAD,2026-03-05,,1,USD,YA\n"
-            "BAD,2026-09-03,,1,USD,YA\n",
+        self.write_history(
+            self.row("BAD", "2026-03-05", "", "1", "USD", "YA"),
+            self.row("BAD", "2026-09-03", "", "1", "USD", "YA"),
         )
         results = self._run(
             [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")],
@@ -5804,41 +5638,37 @@ class TestDailyDividendUpdate(DividendRunCase):
             },
         )
         self.assertEqual(results.failures, ["BAD: dividends: down"])
-        funds = {row[0] for row in self._read("dividends_history.csv")}
+        funds = {row[0] for row in self.read_rows("dividends_history.csv")}
         self.assertEqual(funds, {"BAD", "QQQ"})
         # The failed fund's upcoming row is still projected from what it had.
-        funds = {row[0] for row in self._read("dividends_upcoming.csv")}
+        funds = {row[0] for row in self.read_rows("dividends_upcoming.csv")}
         self.assertEqual(funds, {"BAD", "QQQ"})
 
     def test_config_rows_enter_the_history_in_the_price_currency(self):
         """Test a distributions.txt line asserts its past dividends."""
-        self._write(
+        self.write_csv(
             "latest_prices.csv",
-            "Fund,Date,Price,Currency\nGB00B1FXTF86,2026-10-23,7.15,GBP\n",
+            ["Fund", "Date", "Price", "Currency"],
+            [["GB00B1FXTF86", "2026-10-23", "7.15", "GBP"]],
         )
         dists = self._dists(
             "GB00B1FXTF86,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01"
         )
         self._run([FundSpec("FT", "GB00B1FXTF86")], distributions=dists)
+        fund = "GB00B1FXTF86"
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
-                ["GB00B1FXTF86", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"],
-                ["GB00B1FXTF86", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"],
+                self.row(fund, "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"),
+                self.row(fund, "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"),
             ],
         )
         self.assertEqual(
-            self._read("dividends_upcoming.csv"),
+            self.read_rows("dividends_upcoming.csv"),
             [
-                [
-                    "GB00B1FXTF86",
-                    "2027-03-01",
-                    "2027-03-31",
-                    "0.0821",
-                    "GBP",
-                    "estimated",
-                    "2026-10-26",
-                ]
+                self.upcoming(
+                    fund, "2027-03-01", "2027-03-31", "0.0821", "GBP", "estimated"
+                )
             ],
         )
 
@@ -5850,9 +5680,11 @@ class TestDailyDividendUpdate(DividendRunCase):
             {"0P00000YAN": [self.EVENT("2026-09-03", "1.25", "GBP")]},
             distributions=dists,
         )
-        rows = self._read("dividends_history.csv")
-        self.assertEqual({row[0] for row in rows}, {"0P00000YAN", "JFM0003373"})
-        self.assertEqual({(row[3], row[5]) for row in rows}, {("1.25", "YA")})
+        rows = self.read_rows("dividends_history.csv")
+        with self.subTest(rule="every alias"):
+            self.assertEqual({row[0] for row in rows}, {"0P00000YAN", "JFM0003373"})
+        with self.subTest(rule="Yahoo wins"):
+            self.assertEqual({(row[3], row[5]) for row in rows}, {("1.25", "YA")})
 
     def test_a_closed_holding_gets_history_but_no_upcoming_row(self):
         """Test closed holdings are never fetched and never expected to pay."""
@@ -5861,10 +5693,10 @@ class TestDailyDividendUpdate(DividendRunCase):
         self.assertEqual(self.windows, [("QQQ", None)])
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read("dividends_history.csv"),
-            [["BMV7ZZ3", "2026-03-05", "2026-03-25", "0.4", "", "config"]],
+            self.read_rows("dividends_history.csv"),
+            [self.row("BMV7ZZ3", "2026-03-05", "2026-03-25", "0.4", "", "config")],
         )
-        self.assertEqual(self._read("dividends_upcoming.csv"), [])
+        self.assertEqual(self.read_rows("dividends_upcoming.csv"), [])
 
     def test_the_default_directory_and_date_are_used_when_omitted(self):
         """Test the production call has no arguments to get wrong."""
@@ -5876,8 +5708,8 @@ class TestDailyDividendUpdate(DividendRunCase):
                     scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
                 ):
                     scrape_fund_price.update_dividends([FundSpec("YA", "QQQ")], [])
-        self.assertTrue(os.path.isfile(self._file("dividends_history.csv")))
-        self.assertTrue(os.path.isfile(self._file("dividends_upcoming.csv")))
+        self.assertTrue(os.path.isfile(self.path("dividends_history.csv")))
+        self.assertTrue(os.path.isfile(self.path("dividends_upcoming.csv")))
 
 
 class TestDividendBackfill(DividendRunCase):
@@ -5895,12 +5727,10 @@ class TestDividendBackfill(DividendRunCase):
 
     def test_the_rebuild_replaces_source_rows_from_the_start_date(self):
         """Test rows Yahoo no longer reports go, and earlier ones stay."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "QQQ,2025-03-24,,0.5,USD,YA\n"
-            "QQQ,2026-03-24,,0.6,USD,YA\n"
-            "QQQ,2026-06-23,,0.7,USD,YA\n",
+        self.write_history(
+            self.row("QQQ", "2025-03-24", "", "0.5", "USD", "YA"),
+            self.row("QQQ", "2026-03-24", "", "0.6", "USD", "YA"),
+            self.row("QQQ", "2026-06-23", "", "0.7", "USD", "YA"),
         )
         report = self._backfill(
             [FundSpec("YA", "QQQ")],
@@ -5913,11 +5743,11 @@ class TestDividendBackfill(DividendRunCase):
             start="2026-01-01",
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
-                ["QQQ", "2025-03-24", "", "0.5", "USD", "YA"],
-                ["QQQ", "2026-03-25", "", "0.65", "USD", "YA"],
-                ["QQQ", "2026-06-23", "", "0.71", "USD", "YA"],
+                self.row("QQQ", "2025-03-24", "", "0.5", "USD", "YA"),
+                self.row("QQQ", "2026-03-25", "", "0.65", "USD", "YA"),
+                self.row("QQQ", "2026-06-23", "", "0.71", "USD", "YA"),
             ],
         )
         self.assertEqual(self.windows, [("QQQ", "2026-01-01")])
@@ -5939,34 +5769,27 @@ class TestDividendBackfill(DividendRunCase):
 
     def test_no_start_date_rebuilds_everything_from_the_source(self):
         """Test the whole of Yahoo's history is read and the source rows replaced."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\nQQQ,2019-03-24,,0.5,USD,YA\n",
-        )
+        self.write_history(self.row("QQQ", "2019-03-24", "", "0.5", "USD", "YA"))
         self._backfill(
             [FundSpec("YA", "QQQ")], {"QQQ": [self.EVENT("2026-06-23", "0.71", "USD")]}
         )
         self.assertEqual(self.windows, [("QQQ", None)])
         self.assertEqual(
-            [row[1] for row in self._read("dividends_history.csv")], ["2026-06-23"]
+            [row[1] for row in self.read_rows("dividends_history.csv")],
+            ["2026-06-23"],
         )
 
     def test_config_rows_survive_a_rebuild(self):
         """Test the owner's rows are not the source's to delete."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\n"
-            "QQQ,2026-03-24,2026-04-23,0.5,USD,config\n",
+        self.write_history(
+            self.row("QQQ", "2026-03-24", "2026-04-23", "0.5", "USD", "config")
         )
         self._backfill([FundSpec("YA", "QQQ")], {"QQQ": []})
-        self.assertEqual(len(self._read("dividends_history.csv")), 1)
+        self.assertEqual(len(self.read_rows("dividends_history.csv")), 1)
 
     def test_a_failing_instrument_keeps_what_it_had(self):
         """Test a source outage cannot wipe an instrument's history."""
-        self._write(
-            "dividends_history.csv",
-            "Fund,ExDate,PayDate,Amount,Currency,Source\nBAD,2026-03-05,,1,USD,YA\n",
-        )
+        self.write_history(self.row("BAD", "2026-03-05", "", "1", "USD", "YA"))
         report = self._backfill(
             [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")],
             {
@@ -5977,7 +5800,8 @@ class TestDividendBackfill(DividendRunCase):
         )
         self.assertEqual(report.failures, ["BAD: dividends: down"])
         self.assertEqual(
-            {row[0] for row in self._read("dividends_history.csv")}, {"BAD", "QQQ"}
+            {row[0] for row in self.read_rows("dividends_history.csv")},
+            {"BAD", "QQQ"},
         )
         bad = [e for e in report.entries if e["identifier"] == "BAD"][0]
         self.assertEqual((bad["deleted"], bad["status"]), (0, "failed, kept existing"))
@@ -5991,7 +5815,7 @@ class TestDividendBackfill(DividendRunCase):
         self.assertEqual(
             [e["identifier"] for e in report.entries], ["0P00000YAN", "JFM0003373"]
         )
-        self.assertEqual(len(self._read("dividends_history.csv")), 2)
+        self.assertEqual(len(self.read_rows("dividends_history.csv")), 2)
 
     def test_an_instrument_with_nothing_to_report_is_rebuilt_empty(self):
         """Test the report copes with no events (first and last are dashes)."""
@@ -6010,9 +5834,9 @@ class TestDividendBackfill(DividendRunCase):
             distributions=dists,
         )
         self.assertEqual([e["identifier"] for e in report.entries], ["QQQ"])
-        funds = {row[0] for row in self._read("dividends_history.csv")}
+        funds = {row[0] for row in self.read_rows("dividends_history.csv")}
         self.assertEqual(funds, {"GB00B1FXTF86", "QQQ"})
-        funds = {row[0] for row in self._read("dividends_upcoming.csv")}
+        funds = {row[0] for row in self.read_rows("dividends_upcoming.csv")}
         self.assertEqual(funds, {"GB00B1FXTF86", "QQQ"})
 
     def test_the_default_directory_and_date_are_used_when_omitted(self):
@@ -6024,14 +5848,14 @@ class TestDividendBackfill(DividendRunCase):
                 scrape_fund_price.backfill_dividends(
                     [FundSpec("YA", "QQQ")], [], "2026-01-01"
                 )
-        self.assertTrue(os.path.isfile(self._file("dividends_history.csv")))
+        self.assertTrue(os.path.isfile(self.path("dividends_history.csv")))
 
 
-class TestDividendSummary(unittest.TestCase):
+class TestDividendSummary(DividendRunCase):
     """Test the daily summary's Dividends section (SPEC-010, #85)."""
 
     def _row(self, fund, ex, pay="", amount="0.9", ccy="USD", status="estimated"):
-        return [fund, ex, pay, amount, ccy, status, "2026-10-26"]
+        return self.upcoming(fund, ex, pay, amount, ccy, status)
 
     def _build(self, previous, upcoming, specs=None):
         specs = specs or [FundSpec("YA", "QQQ")]
@@ -6138,16 +5962,12 @@ class TestDividendSummary(unittest.TestCase):
                 "QQQ", (), "2026-11-12", "", "0.9", "USD", "declared"
             )
         ]
-        with tempfile.TemporaryDirectory() as directory:
-            write_summary([], [], "2026-10-26", directory, dividend_rows=rows)
-            with open(
-                os.path.join(directory, "daily_summary.md"), encoding="utf-8"
-            ) as f:
-                self.assertIn(
-                    "| QQQ | 2026-11-12 | - | 0.9 | USD | declared |", f.read()
-                )
-            with open(os.path.join(directory, "daily_summary.csv")) as f:
-                self.assertNotIn("QQQ", f.read())
+        write_summary([], [], "2026-10-26", self.test_dir, dividend_rows=rows)
+        self.assertIn(
+            "| QQQ | 2026-11-12 | - | 0.9 | USD | declared |",
+            self.read_text("daily_summary.md"),
+        )
+        self.assertNotIn("QQQ", self.read_text("daily_summary.csv"))
 
 
 class TestDailyDividendSummaryFlow(DividendRunCase):
@@ -6225,26 +6045,24 @@ class TestDividendBackfillArguments(unittest.TestCase):
         self.assertIsNone(validate(self._args(backfill_dividends=False, backfill=True)))
 
 
-class TestConfiguredIdentifiers(unittest.TestCase):
+class TestConfiguredIdentifiers(DataDirCase):
     """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
 
     def test_funds_aliases_and_closed_holdings_are_all_known(self):
         """Test the three sources of identifiers."""
-        with tempfile.TemporaryDirectory() as directory:
-            closed = os.path.join(directory, "closed_holdings.txt")
-            with open(closed, "w") as f:
-                f.write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
-            known = scrape_fund_price.configured_identifiers(
-                [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
-                closed,
-            )
+        closed = self.write_text(
+            "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        known = scrape_fund_price.configured_identifiers(
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",)), ("FT", "GB00B1FXTF86")],
+            closed,
+        )
         self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
 
     def test_a_missing_closed_holdings_file_adds_nothing(self):
         """Test the file is optional here."""
         known = scrape_fund_price.configured_identifiers(
-            [("FT", "GB00B1FXTF86")],
-            os.path.join(tempfile.gettempdir(), "no-such-file"),
+            [("FT", "GB00B1FXTF86")], self.path("no-such-file")
         )
         self.assertEqual(known, {"GB00B1FXTF86"})
 
@@ -6255,45 +6073,28 @@ class TestConfiguredIdentifiers(unittest.TestCase):
         scrape_fund_price.read_distributions("distributions.txt", known)
 
 
-class TestDividendsInTheDailyRun(unittest.TestCase):
+class TestDividendsInTheDailyRun(DataDirCase):
     """Test main() runs the dividend update beside the prices (SPEC-010, #85)."""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
-        with open(self.distributions_file, "w") as f:
-            f.write("# nothing yet\n")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        super().setUp()
+        self.distributions_file = self.write_text(
+            "distributions.txt", "# nothing yet\n"
+        )
 
     def _run(self, update=None):
-        """Run main() with prices faked, keeping the mocks that matter."""
+        """Run main() with prices faked, keeping the stubs that matter."""
         if update is None:
             update = scrape_fund_price.DividendResults()
-        outcome = (
-            {"side_effect": update}
-            if isinstance(update, Exception)
-            else {"return_value": update}
-        )
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
-            )
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            self.scrape = enter(
-                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
-            )
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            self.update = enter(patch("scrape_fund_price.update_dividends", **outcome))
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            update_dividends=update,
+            DISTRIBUTIONS_FILE={"new": self.distributions_file},
+        ) as stubs:
+            self.scrape = stubs["scrape_funds"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_dividends"]
+            self.printed = stubs["print"]
             main([])
 
     def test_the_update_runs_after_the_prices_with_the_configuration(self):
@@ -6319,8 +6120,7 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 
     def test_a_bad_distributions_file_fails_before_any_network_call(self):
         """Test validation comes first, as it does for funds.txt."""
-        with open(self.distributions_file, "w") as f:
-            f.write("NOPE,annual,03-01,30\n")
+        self.write_text("distributions.txt", "NOPE,annual,03-01,30\n")
         with self.assertRaisesRegex(ValueError, "line 1.*NOPE"):
             self._run()
         self.scrape.assert_not_called()
@@ -6336,16 +6136,15 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 
     def test_a_crash_in_the_dividend_update_does_not_cost_the_summary(self):
         """Test the price summary is still written, and the run still fails."""
-        with patch("builtins.print") as mock_print:
-            with self.assertRaises(SystemExit):
-                self._run(update=RuntimeError("disk full"))
+        with self.assertRaises(SystemExit):
+            self._run(update=RuntimeError("disk full"))
         self.summary.assert_called_once()
         self.assertEqual(self.summary.call_args.kwargs["dividend_rows"], [])
-        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        printed = " ".join(str(call.args[0]) for call in self.printed.call_args_list)
         self.assertIn("dividends: disk full", printed)
 
 
-class TestDividendBackfillMainMode(unittest.TestCase):
+class TestDividendBackfillMainMode(DataDirCase):
     """Test main() with --backfill-dividends (SPEC-010, #85)."""
 
     def _argv(self, start="2024-01-01"):
@@ -6417,12 +6216,10 @@ class TestDividendBackfillMainMode(unittest.TestCase):
     ):
         """Test the rebuild is visible on the run page."""
         mock_backfill.return_value = self._report()
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "step_summary.md")
-            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
-                main(self._argv())
-            with open(path, encoding="utf-8") as f:
-                written = f.read()
+        path = self.path("step_summary.md")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
+            main(self._argv())
+        written = self.read_text("step_summary.md")
         self.assertIn("Dividend rebuild from 2024-01-01", written)
         self.assertIn("QQQ", written)
 
@@ -6434,33 +6231,6 @@ class TestDividendBackfillMainMode(unittest.TestCase):
             main(self._argv(start="yesterday"))
         self.assertEqual(error.exception.code, 2)
         mock_backfill.assert_not_called()
-
-
-class TestDividendEdgeCases(unittest.TestCase):
-    """Test the corners of the dividend code that the main cases skip."""
-
-    def test_distributions_are_read_from_the_configured_file_by_default(self):
-        """Test the production call names no file."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write("X,annual,03-01,30\n")
-            with patch.object(scrape_fund_price, "DISTRIBUTIONS_FILE", path):
-                [dist] = scrape_fund_price.read_distributions()
-        self.assertEqual(dist.identifier, "X")
-
-    def test_a_stored_upcoming_row_with_an_unreadable_date_is_dropped(self):
-        """Test a damaged file heals itself instead of stopping the run."""
-        rows = scrape_fund_price.upcoming_rows_for(
-            "X",
-            [["X", "soon", "", "1", "GBP", "declared", "2026-10-01"]],
-            set(),
-            ("", ""),
-            None,
-            None,
-            date(2026, 10, 26),
-        )
-        self.assertEqual(rows, [])
 
 
 class TestDividendSourceConfiguration(unittest.TestCase):
