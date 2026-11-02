@@ -1746,6 +1746,12 @@ class BackfillReport:
         self.failures = []
         self.warnings = []
 
+    def extend(self, other):
+        """Append another report's entries, warnings and failures to this one."""
+        self.entries.extend(other.entries)
+        self.warnings.extend(other.warnings)
+        self.failures.extend(other.failures)
+
     def to_markdown(self):
         """Render the report for stdout and the Actions job summary."""
         lines = [
@@ -1824,8 +1830,8 @@ def is_removable_row(row):
     return not currency
 
 
-def backfill_fx(pairs, start, data_dir=None, report=None, now=None):
-    """Rebuild stored FX rates from source data, from `start` onwards.
+def rebuild_fx_rows(pairs, start, stored, now=None):
+    """Rebuild FX rates from source data, from `start` onwards; write nothing.
 
     Uses the same rule as the price rebuild: a pair that fetches successfully
     has its rows from the start date replaced, while a pair that fails keeps
@@ -1834,20 +1840,17 @@ def backfill_fx(pairs, start, data_dir=None, report=None, now=None):
     Args:
         pairs: Six-letter pair names
         start: Inclusive ISO start date
-        data_dir: Directory for output files (default: DATA_DIR)
-        report: Existing BackfillReport to add to, or None for a new one
+        stored: The stored rates, keyed on (Pair, Date) as read_fx_rows
+            returns them; not modified
         now: Aware datetime the fetches judge each day's close by (default:
             the current time)
 
     Returns:
-        BackfillReport
+        (rows, report): every rate to store, and a BackfillReport with one
+        entry per pair
     """
-    if data_dir is None:
-        data_dir = DATA_DIR
-
-    os.makedirs(data_dir, exist_ok=True)
-    report = report if report is not None else BackfillReport()
-    stored = read_fx_rows(os.path.join(data_dir, "fx_history.csv"))
+    stored = dict(stored)
+    report = BackfillReport()
 
     for pair in pairs:
         quotes, error = fetch_with_retries(
@@ -1877,29 +1880,14 @@ def backfill_fx(pairs, start, data_dir=None, report=None, now=None):
             )
         )
 
-    write_fx_files(list(stored.values()), data_dir)
-    return report
+    return list(stored.values()), report
 
 
-def backfill_history(specs, start, data_dir=None, pairs=None, now=None):
-    """Rebuild stored history from source data, from `start` onwards.
+def backfill_fx(pairs, start, data_dir=None, now=None):
+    """Rebuild stored FX rates from `start` onwards and write the FX files.
 
-    Deletes rather than upserting: carry-forward and scrape-dated rows sit on
-    dates the sources never report, so they have no incoming row to replace
-    them and an upsert alone would leave them in place.
-
-    An instrument whose fetch fails keeps every row it already had. Rows
-    earlier than `start`, and rows for identifiers no longer configured, are
-    preserved either way.
-
-    Args:
-        specs: FundSpec instances to rebuild
-        start: Inclusive ISO start date
-        data_dir: Directory for output files (default: DATA_DIR)
-        pairs: FX pairs to rebuild afterwards; None reads fx_pairs.txt, an
-            empty list skips the FX rebuild
-        now: Aware datetime the fetches judge sessions by (default: the
-            current time)
+    Reads fx_history.csv, rebuilds it with rebuild_fx_rows and writes the
+    result with write_fx_files.
 
     Returns:
         BackfillReport
@@ -1908,8 +1896,36 @@ def backfill_history(specs, start, data_dir=None, pairs=None, now=None):
         data_dir = DATA_DIR
 
     os.makedirs(data_dir, exist_ok=True)
-    history_csv = os.path.join(data_dir, "prices_history.csv")
-    stored = read_history_rows(history_csv)
+    stored = read_fx_rows(os.path.join(data_dir, "fx_history.csv"))
+    rows, report = rebuild_fx_rows(pairs, start, stored, now=now)
+    write_fx_files(rows, data_dir)
+    return report
+
+
+def rebuild_price_rows(specs, start, stored, now=None):
+    """Rebuild price history from source data, from `start` onwards.
+
+    Deletes rather than upserting: carry-forward and scrape-dated rows sit on
+    dates the sources never report, so they have no incoming row to replace
+    them and an upsert alone would leave them in place.
+
+    An instrument whose fetch fails keeps every row it already had. Rows
+    earlier than `start`, and rows for identifiers no longer configured, are
+    preserved either way. Fetches, but writes nothing.
+
+    Args:
+        specs: FundSpec instances to rebuild
+        start: Inclusive ISO start date
+        stored: The stored history, keyed on (Fund, Date) as
+            read_history_rows returns it; not modified
+        now: Aware datetime the fetches judge sessions by (default: the
+            current time)
+
+    Returns:
+        (rows, report): every row with a usable price to store, and a
+        BackfillReport with one entry per published identifier
+    """
+    stored = dict(stored)
     report = BackfillReport()
     browser = LazyBrowser()
 
@@ -1975,6 +1991,33 @@ def backfill_history(specs, start, data_dir=None, pairs=None, now=None):
         browser.close()
 
     rows = [row for row in stored.values() if is_usable_price(row[2])]
+    return rows, report
+
+
+def backfill_history(specs, start, data_dir=None, now=None):
+    """Rebuild stored price history from `start` onwards and write it.
+
+    Reads prices_history.csv, rebuilds it with rebuild_price_rows, and
+    writes the history files and the .price files. The FX rates are rebuilt
+    separately, by backfill_fx; main() runs the two side by side.
+
+    Args:
+        specs: FundSpec instances to rebuild
+        start: Inclusive ISO start date
+        data_dir: Directory for output files (default: DATA_DIR)
+        now: Aware datetime the fetches judge sessions by (default: the
+            current time)
+
+    Returns:
+        BackfillReport
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+    stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
+    rows, report = rebuild_price_rows(specs, start, stored, now=now)
+
     # latest_prices.csv and the .price files describe what a fund is worth
     # now, so they cover configured funds only. History keeps everything,
     # including closed holdings, which are imported separately and have no
@@ -1991,11 +2034,6 @@ def backfill_history(specs, start, data_dir=None, pairs=None, now=None):
 
     for row in latest.values():
         write_latest_price_file(row[0], row[2], data_dir)
-
-    if pairs is None:
-        pairs = read_fx_pairs()
-    if pairs:
-        backfill_fx(pairs, start, data_dir, report=report, now=now)
 
     return report
 
@@ -4865,7 +4903,11 @@ def main(argv=None, now=None):
             raise SystemExit(2)
 
         specs = read_fund_specs(FUNDS_FILE)
-        report = backfill_history(specs, args.start, pairs=read_fx_pairs(), now=now)
+        report = backfill_history(specs, args.start, now=now)
+        # The rates are rebuilt from the same date, into the same report.
+        pairs = read_fx_pairs()
+        if pairs:
+            report.extend(backfill_fx(pairs, args.start, now=now))
         # Everything obtainable has been written before signalling failure.
         publish_report(report, f"Backfill from {args.start}")
         return

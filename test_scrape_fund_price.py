@@ -3175,47 +3175,6 @@ class TestBackfillRebuild(BackfillCase):
             [["SWDA.L", "2026-10-16", "11000", "GBp"]],
         )
 
-    @patch("scrape_fund_price.backfill_fx")
-    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
-    def test_the_fx_rebuild_follows_for_the_configured_pairs(self, _, mock_fx):
-        """Test backfill_history ends with backfill_fx for fx_pairs.txt's pairs."""
-        with patch("scrape_fund_price.read_fx_pairs", return_value=["USDGBP"]):
-            report = backfill_history([], "2026-09-01", self.test_dir)
-        mock_fx.assert_called_once_with(
-            ["USDGBP"], "2026-09-01", self.test_dir, report=report, now=None
-        )
-
-    @patch("scrape_fund_price.backfill_fx")
-    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
-    def test_pairs_from_the_caller_are_rebuilt_without_reading_the_file(
-        self, _, mock_fx
-    ):
-        """Test backfill_history(pairs=...) rebuilds the caller's pairs.
-
-        None keeps today's behaviour, reading fx_pairs.txt, until main()
-        passes read_fx_pairs() itself (#97, step 3.Z); a list is used as
-        given, so a test needs no stub to keep the live pairs out.
-        """
-        with patch(
-            "scrape_fund_price.read_fx_pairs",
-            side_effect=AssertionError("fx_pairs.txt was read"),
-        ):
-            report = backfill_history([], "2026-09-01", self.test_dir, pairs=["USDGBP"])
-        mock_fx.assert_called_once_with(
-            ["USDGBP"], "2026-09-01", self.test_dir, report=report, now=None
-        )
-
-    @patch("scrape_fund_price.backfill_fx")
-    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
-    def test_an_empty_pairs_list_skips_the_fx_rebuild(self, _, mock_fx):
-        """Test an explicit empty list means no FX rebuild, not the file."""
-        with patch(
-            "scrape_fund_price.read_fx_pairs",
-            side_effect=AssertionError("fx_pairs.txt was read"),
-        ):
-            backfill_history([], "2026-09-01", self.test_dir, pairs=[])
-        mock_fx.assert_not_called()
-
 
 class TestBackfillReporting(BackfillCase):
     """Test the reconciliation report and sanity warnings."""
@@ -3437,9 +3396,8 @@ class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
     def _rows(self, name):
         return self.read_rows(name)
 
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_imported_rows_survive_a_rebuild(self, mock_quotes, _pairs):
+    def test_imported_rows_survive_a_rebuild(self, mock_quotes):
         """Test rows for an unconfigured identifier are never deleted."""
         write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
         mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
@@ -3448,9 +3406,8 @@ class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
             ["BN4MYX3", "2024-01-04", "218.95", "GBX"], self._rows("prices_history.csv")
         )
 
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
     @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_rebuild_does_not_promote_them_to_latest(self, mock_quotes, _pairs):
+    def test_rebuild_does_not_promote_them_to_latest(self, mock_quotes):
         """Test latest_prices.csv covers configured funds only.
 
         The daily run builds latest from what it just fetched, so a rebuild
@@ -3615,7 +3572,7 @@ class TestBackfillMainMode(DataDirCase):
         stubs["backfill_fx"].assert_not_called()
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_successful_backfill_prints_the_report(
@@ -3630,12 +3587,11 @@ class TestBackfillMainMode(DataDirCase):
         self.assertEqual(
             mock_backfill.call_args.args, (mock_specs.return_value, "2023-01-01")
         )
-        self.assertEqual(mock_backfill.call_args.kwargs["pairs"], ["USDGBP"])
         printed = mock_print.call_args.args[0]
         self.assertIn(self.QQQ_ROW, printed.splitlines())
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_failures_exit_non_zero_after_writing(
@@ -3656,7 +3612,7 @@ class TestBackfillMainMode(DataDirCase):
         self.assertIn("- QQQ: Error: Timeout", printed)
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_report_is_added_to_the_actions_job_summary(
@@ -3674,7 +3630,7 @@ class TestBackfillMainMode(DataDirCase):
         self.assertIn(self.QQQ_ROW, written)
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
+    @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
     def test_no_summary_written_outside_actions(
@@ -9500,6 +9456,7 @@ class TestMainReadsTheClockOnce(DataDirCase):
         holdings = [ClosedHolding("X", "YA", "X.L", "USD", "2023-01-03", "2023-01-05")]
         outcomes = {
             "backfill_history": BackfillReport(),
+            "backfill_fx": BackfillReport(),
             "import_closed_holdings": BackfillReport(),
             "read_closed_holdings": holdings,
         }
@@ -9507,8 +9464,9 @@ class TestMainReadsTheClockOnce(DataDirCase):
             main(["--backfill", "--from", "2026-10-01"], now=self.NOW)
             main(["--import-closed"], now=self.NOW)
         s["backfill_history"].assert_called_once_with(
-            self.SPECS, "2026-10-01", pairs=["USDGBP"], now=self.NOW
+            self.SPECS, "2026-10-01", now=self.NOW
         )
+        s["backfill_fx"].assert_called_once_with(["USDGBP"], "2026-10-01", now=self.NOW)
         s["import_closed_holdings"].assert_called_once_with(holdings, now=self.NOW)
 
     @patch("builtins.print")
