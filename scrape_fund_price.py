@@ -1908,26 +1908,13 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=No
 
     os.makedirs(data_dir, exist_ok=True)
 
+    # A SummaryRow is a tuple in SUMMARY_HEADER's order; only the aliases
+    # need rendering, as the identifiers joined by ";".
     with open_for_write(os.path.join(data_dir, "daily_summary.csv")) as file:
         writer = csv_writer(file)
         writer.writerow(SUMMARY_HEADER)
         for row in price_rows + fx_rows:
-            writer.writerow(
-                [
-                    row.name,
-                    ";".join(row.aliases),
-                    row.currency,
-                    row.new_date,
-                    row.new,
-                    row.old_date,
-                    row.old,
-                    row.delta,
-                    row.pct_delta,
-                    row.age_days,
-                    row.stale,
-                    row.failed,
-                ]
-            )
+            writer.writerow(row._replace(aliases=";".join(row.aliases)))
 
     markdown = render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows)
     with open_for_write(

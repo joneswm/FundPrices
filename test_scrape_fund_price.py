@@ -4411,6 +4411,26 @@ class TestSummaryRendering(DataDirCase):
             write_summary(self.price_rows, self.fx_rows, "2026-09-18", self.test_dir)
         self.assertTrue(os.path.exists(self.path("daily_summary.md")))
 
+    def test_the_csv_header_is_summary_row_in_field_order(self):
+        """Test SUMMARY_HEADER names SummaryRow's fields, in order (#112).
+
+        write_summary writes each SummaryRow as the tuple it is, so the
+        header must follow the NamedTuple's own field order.
+        """
+        self.assertEqual(
+            [
+                "".join(part.title() for part in field.split("_"))
+                for field in scrape_fund_price.SummaryRow._fields
+            ],
+            scrape_fund_price.SUMMARY_HEADER,
+        )
+
+    def test_the_csv_joins_aliases_with_semicolons(self):
+        """Test an instrument's aliases share one cell, not the tuple's repr."""
+        row = self.price_rows[0]._replace(aliases=("A1", "A2"))
+        write_summary([row], [], "2026-09-18", self.test_dir)
+        self.assertEqual(self.read_rows("daily_summary.csv")[0][:2], ["QQQ", "A1;A2"])
+
 
 class TestSummaryRowMarkers(unittest.TestCase):
     """Test the name column carries aliases and the failure marker.
