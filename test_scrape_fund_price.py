@@ -2318,6 +2318,78 @@ class TestScrapeLoopClock(DataDirCase):
         self.assertEqual(list(results), [["GB00B1FXTF86", "2026-10-19", "7.15", ""]])
 
 
+class TestScrapeReturnsItsPriceFiles(DataDirCase):
+    """Test scrape_funds computes the .price files and write_results writes them.
+
+    The scrape fetches and decides; it writes nothing (#120). What each
+    published identifier's latest_<id>.price should hold comes back on
+    `results.latest`, one row per identifier.
+    """
+
+    SPEC = FundSpec("YA", "0P00000YAN", ("JFM0003373",))
+    HEADER = ["Fund", "Date", "Price", "Currency"]
+
+    def _scrape(self, mock_ticker, bars, error=None):
+        fake_ticker(mock_ticker, bars, currency="USD")
+        if error is not None:
+            mock_ticker.side_effect = error
+        return scrape_funds([self.SPEC], self.test_dir, now=RUN_NOW)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_scrape_writes_no_file(self, mock_ticker):
+        """Test a successful scrape leaves the data directory as it was."""
+        self._scrape(mock_ticker, [("2026-09-17", 192.43)])
+        self.assertEqual(os.listdir(self.test_dir), [])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_newest_quote_is_latest_for_every_identifier(self, mock_ticker):
+        """Test one latest row per published identifier, from the newest bar."""
+        bars = [("2026-09-16", 191.0), ("2026-09-17", 192.43)]
+        results = self._scrape(mock_ticker, bars)
+        self.assertEqual(
+            results.latest,
+            [
+                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+                ["JFM0003373", "2026-09-17", "192.43", "USD"],
+            ],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_newer_stored_row_stays_latest(self, mock_ticker):
+        """Test an older fetch returns the stored newer row (#78)."""
+        stored = ["JFM0003373", "2026-09-18", "193.00", "USD"]
+        self.write_csv("prices_history.csv", self.HEADER, [stored])
+        results = self._scrape(mock_ticker, [("2026-09-17", 192.43)])
+        self.assertEqual(results.latest[1], stored)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_failed_fund_returns_its_carried_rows_as_latest(self, mock_ticker):
+        """Test the last known price is what the .price files are healed to."""
+        stored = ["JFM0003373", "2026-09-17", "192.43", "USD"]
+        self.write_csv("prices_history.csv", self.HEADER, [stored])
+        results = self._scrape(mock_ticker, [], error=Exception("Network error"))
+        self.assertEqual(results.latest, results.carried)
+        self.assertEqual(os.listdir(self.test_dir), ["prices_history.csv"])
+
+    def test_write_results_writes_a_price_file_per_latest_row(self):
+        """Test the write side: each latest row becomes latest_<id>.price."""
+        results = ScrapeResults(
+            rows=[["AAA", "2026-09-17", "1.50", "GBP"]],
+            latest=[
+                ["AAA", "2026-09-17", "1.50", "GBP"],
+                ["BBB", "2026-09-16", "2.50", "USD"],
+            ],
+        )
+        write_results(results, self.test_dir)
+        self.assertEqual(self.read_text("latest_AAA.price"), "1.50\n")
+        self.assertEqual(self.read_text("latest_BBB.price"), "2.50\n")
+
+    def test_plain_rows_write_no_price_file(self):
+        """Test a caller passing bare rows gets the CSVs and nothing else."""
+        write_results([["AAA", "2026-09-17", "1.50", "GBP"]], self.test_dir)
+        self.assertFalse(os.path.exists(self.path("latest_AAA.price")))
+
+
 # ===========================================================================
 # Price storage
 # ===========================================================================
