@@ -54,10 +54,23 @@ warning that names the offending line.
 - **The browser is lazy.** `LazyBrowser` starts Chromium only if a fund actually needs
   scraping. With the current configuration no daily run starts it; it remains as the
   FT fallback.
+- **No intraday or provisional price is stored (#78, #83, #84).** A run during market
+  hours would otherwise store an intraday price, because Yahoo serves the running
+  session's bar with the latest trade as its close. `fetch_yahoo_quotes()` therefore drops
+  a priced newest bar while `session_still_open()` says its regular session has not
+  ended. Conversely, when Yahoo
+  serves the newest bar with a *null* close after the session, the close is read from the
+  chart metadata by `closing_price_from_metadata()`, but only if it provably traded on the
+  bar's date and the session is over; any doubt drops the bar. FT's dated endpoint has no
+  session times, so `fetch_ft_quotes()` stores a row only once `ft_row_settled()` says
+  16:00 New York (`FT_SETTLED_HOUR`) on its date has passed; the 21:05 UTC run is after
+  that all year round. A zero-volume bar more than `UNTRADED_SPIKE_RATIO` (1.2) from both
+  neighbours is dropped as another listing's price (`is_untraded_spike()`). The undated
+  scraping fallback is not covered by these.
 
 ### 2. Configuration
 
-Four text files, each validated in full before any network call, with errors naming
+Five text files, each validated in full before any network call, with errors naming
 the line.
 
 - **`funds.txt`** — `<source>,<lookup_id>[,<alias>[;<alias>...]]`. The instruments
@@ -108,6 +121,22 @@ them.)
   stored row with the same key, so corrections apply and re-runs cannot duplicate.
 - **Deterministic output.** Rows are sorted by date then fund, and every file is
   written with LF endings on every platform, so an unchanged day is an empty diff.
+- **Latest never goes backwards (#78).** The "latest" files (`latest_prices.csv` and
+  `latest_<identifier>.price`) never take a row older than the newest stored one:
+  `newest_stored_rows()` supplies the floor and `keep_newer_stored_row()` keeps the stored
+  row and prints a warning. The same date still replaces, so corrections apply. History
+  stays an upsert and loses nothing; this keeps the latest files, and the 90-day window
+  measured from them, from stepping back a day when a later run fetches an earlier date
+  than a previous one stored.
+- **An FX rate is the New York close (#80).** A day's rate is the rate at 17:00 in New
+  York, the close of the bar starting at 16:00 there in Yahoo's hourly bars
+  (`new_york_fx_closes()`). New York's own clock is used, so the cut follows the US clock
+  change (21:00 UTC in summer, 22:00 UTC in winter). A day is stored only once its cut has
+  passed, so no rate is provisional and a run at any time afterwards gives the same
+  value. Yahoo's daily FX bar is not used for recent days because its `Close` is the rate
+  at the start of the day. Hourly bars exist for about two years
+  (`FX_HOURLY_HISTORY_DAYS`, 729), so older dates, reached only by a rebuild, use the
+  daily bar's opening rate.
 - **Three owners, no overlap.** The daily run and the rebuild own the identifiers in
   `funds.txt`; the import owns the identifiers in `closed_holdings.txt`. A rebuild
   only touches identifiers it is given, and only ever promotes configured funds into
@@ -130,11 +159,13 @@ them.)
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `scrape.yml` | daily at 22:30 UTC, and manual | daily run, then commit and push |
+| `scrape.yml` | two runs, 21:05 and 09:17 UTC; `scrape.yml` is canonical. Also manual | daily run, then commit and push |
 | `backfill.yml` | manual only | rebuild from a chosen date |
 | `test.yml` | push and pull request | tests on Python 3.10, 3.12 and 3.14 with both coverage gates |
 
-- 22:30 UTC is after the US close all year round.
+- 21:05 UTC is after the US close all year round (21:00 UTC in winter, 20:00 UTC in
+  summer). 09:17 UTC picks up the funds' previous-day NAVs and any close the evening run
+  missed. GitHub starts scheduled runs hours late, so each time is a "not before".
 - `scrape.yml` and `backfill.yml` share a concurrency group so they cannot push at
   the same time.
 - Commit steps run with `if: always()`, so a partial run still saves what it fetched.
@@ -210,8 +241,9 @@ could be written has been.
 
 ## Performance
 
-- **Test suite**: about 10 seconds for ~250 tests, including a handful of live
-  functional tests that skip when a source is down.
+- **Test suite**: unit tests use mocks only and finish in seconds; live functional tests
+  hit the real sources and skip when one is down. Run `make test-coverage` for the
+  current test count and coverage figures rather than relying on a snapshot here.
 - **Daily run**: dominated by network time; no browser is started on the normal path.
 - **Rebuild from 2023**: a few minutes, paced by the deliberate pause between FT
   requests.
