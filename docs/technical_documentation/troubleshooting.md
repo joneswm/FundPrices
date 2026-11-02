@@ -211,8 +211,8 @@ python -c "from scrape_fund_price import read_fund_specs; print(read_fund_specs(
 
 # Test one fund with the same retry behaviour as the daily run
 python -c "
-from scrape_fund_price import FundSpec, scrape_funds
-results = scrape_funds([FundSpec('YA', 'IDTG.L')], data_dir='/tmp/fp-debug')
+from scrape_fund_price import FundSpec, collect_prices
+results = collect_prices([FundSpec('YA', 'IDTG.L')], data_dir='/tmp/fp-debug')
 print(list(results), results.failures)
 "
 ```

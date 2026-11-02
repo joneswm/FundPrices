@@ -187,10 +187,10 @@ them.)
 ## Data flow: daily run
 
 ```
-funds.txt ──> read_fund_specs ──> scrape_funds ──> write_results
+funds.txt ──> read_fund_specs ──> collect_prices ──> write_results
                                      │  per fund: fetch_with_retries(scrape_fund_quotes)
                                      │  on failure: carry the last known row forward
-fx_pairs.txt ─> read_fx_pairs ──> snap_fx_rates ──> write_fx_results
+fx_pairs.txt ─> read_fx_pairs ──> collect_fx_rates ──> write_fx_results
                                                         │
 funds.txt + distributions.txt ──┐
 dividend_sources.txt ───────────┴─> update_dividends ──> dividends_history.csv

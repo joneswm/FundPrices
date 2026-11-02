@@ -987,7 +987,7 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
             date_match.group(1), "%A, %B %d, %Y"
         ).date()
         # FT prices are text; keep the digits exactly as published.
-        price = normalize_price(cells[3].strip())
+        price = normalise_price(cells[3].strip())
         if not ft_row_settled(price_date, now):
             log.warning(
                 f"{isin} {price_date}: day not over in New York, "
@@ -1132,7 +1132,7 @@ def is_error_price(price):
     return isinstance(price, str) and price.startswith("Error:")
 
 
-def normalize_price(price):
+def normalise_price(price):
     """Remove thousands separators from a price before storing it."""
     return price.replace(",", "")
 
@@ -1155,7 +1155,7 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
     return None, last_error
 
 
-def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None):
+def scrape_fund_quotes(source, lookup_id, start, end=None, browser=None, now=None):
     """Return dated quotes for one fund from its configured source.
 
     YA, FT and IV use dated HTTP routes. An FT failure falls back to scraping
@@ -1173,22 +1173,22 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)
     code = source.upper()
 
     if code == "YA":
-        return fetch_yahoo_quotes(fund_id, start, day_after(end), now=now)
+        return fetch_yahoo_quotes(lookup_id, start, day_after(end), now=now)
 
     if code == "IV":
-        return fetch_investing_quotes(fund_id, start, end, now=now)
+        return fetch_investing_quotes(lookup_id, start, end, now=now)
 
     if code == "FT":
         try:
-            return fetch_ft_quotes(fund_id, start, end, now=now)
+            return fetch_ft_quotes(lookup_id, start, end, now=now)
         except Exception as error:
-            log.warning(f"FT historical lookup failed for {fund_id}: {error}")
+            log.warning(f"FT historical lookup failed for {lookup_id}: {error}")
         price = scrape_price_with_common_settings(
-            browser.page(), FT_SUMMARY_PAGE.format(isin=fund_id), FT_SUMMARY_SELECTOR
+            browser.page(), FT_SUMMARY_PAGE.format(isin=lookup_id), FT_SUMMARY_SELECTOR
         )
-        return [Quote(now.date().isoformat(), normalize_price(price), "")]
+        return [Quote(now.date().isoformat(), normalise_price(price), "")]
 
-    raise ValueError(f"Unsupported source {source} for {fund_id}")
+    raise ValueError(f"Unsupported source {source} for {lookup_id}")
 
 
 def day_after(iso_date):
@@ -1200,13 +1200,13 @@ def day_after(iso_date):
     ).isoformat()
 
 
-def write_latest_price_file(fund_id, price, data_dir):
+def write_latest_price_file(identifier, price, data_dir):
     """Write a fund's single-value price file."""
-    with open_for_write(os.path.join(data_dir, f"latest_{fund_id}.price")) as f:
+    with open_for_write(os.path.join(data_dir, f"latest_{identifier}.price")) as f:
         f.write(price + "\n")
 
 
-def scrape_funds(funds, data_dir=None, now=None):
+def collect_prices(funds, data_dir=None, now=None):
     """Scrape a window of dated prices for each fund and return results.
 
     Writes nothing: the rows, the carried rows and the rows for each
@@ -1300,10 +1300,10 @@ class PriceRow(NamedTuple):
     currency: str  # "" for a row stored before the column existed
 
 
-HISTORY_HEADER = PriceRow.HEADER
+PRICE_HISTORY_HEADER = PriceRow.HEADER
 
 
-def read_history_rows(history_csv):
+def read_price_history(history_csv):
     """Read stored history as PriceRow keyed on (Fund, Date).
 
     A legacy row without a currency reads with an empty one; a row without a
@@ -1381,7 +1381,7 @@ def write_history_csv(rows, data_dir):
     """
     return write_sorted_csv(
         os.path.join(data_dir, "prices_history.csv"),
-        HISTORY_HEADER,
+        PRICE_HISTORY_HEADER,
         rows,
         key=lambda row: (row[1], row[0]),
     )
@@ -1394,7 +1394,7 @@ def write_history_files(rows, data_dir, latest=None, now=None):
     output for the same data.
 
     Args:
-        rows: Every [fund_id, date, price, currency] row to store
+        rows: Every PriceRow to store
         data_dir: Output directory
         latest: Optional fund -> row mapping for latest_prices.csv; computed
             from `rows` when omitted
@@ -1412,7 +1412,7 @@ def write_history_files(rows, data_dir, latest=None, now=None):
 
     with open_for_write(os.path.join(data_dir, "latest_prices.csv")) as file:
         writer = csv_writer(file)
-        writer.writerow(HISTORY_HEADER)
+        writer.writerow(PRICE_HISTORY_HEADER)
         writer.writerows(latest[fund] for fund in sorted(latest))
 
     now = utc_now(now)
@@ -1439,7 +1439,7 @@ def write_history_files(rows, data_dir, latest=None, now=None):
 
     with open_for_write(os.path.join(data_dir, "prices_history_90_days.csv")) as file:
         writer = csv_writer(file)
-        writer.writerow(HISTORY_HEADER)
+        writer.writerow(PRICE_HISTORY_HEADER)
         writer.writerows(rolling_rows)
 
 
@@ -1452,7 +1452,7 @@ def write_results(results, data_dir=None, now=None):
     repeated runs byte-identical.
 
     Args:
-        results: List of [fund_id, date, price, currency] rows; a
+        results: List of PriceRow rows; a
             ScrapeResults also brings its carried rows and, on `latest`, the
             rows whose latest_<id>.price files are written
         data_dir: Directory for output files (default: DATA_DIR)
@@ -1472,7 +1472,7 @@ def write_results(results, data_dir=None, now=None):
             incoming.append(PriceRow(fund, date_text, price, currency))
 
     stored = newest_stored_rows(data_dir)
-    history_rows = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
+    history_rows = read_price_history(os.path.join(data_dir, "prices_history.csv"))
     for row in incoming:
         history_rows[(row.fund, row.date)] = row
 
@@ -1649,7 +1649,7 @@ def fetch_fx_quotes(pair, start, end=None, now=None):
     return quotes
 
 
-def snap_fx_rates(pairs, data_dir=None, now=None):
+def collect_fx_rates(pairs, data_dir=None, now=None):
     """Fetch a window of dated rates for each pair.
 
     Failures are isolated per pair, so one dead pair does not cost the day's
@@ -1975,7 +1975,7 @@ def rebuild_price_rows(specs, start, stored, now=None):
         specs: FundSpec instances to rebuild
         start: Inclusive ISO start date
         stored: The stored history, keyed on (Fund, Date) as
-            read_history_rows returns it; not modified
+            read_price_history returns it; not modified
         now: Aware datetime the fetches judge sessions by (default: the
             current time)
 
@@ -2046,7 +2046,7 @@ def rebuild_price_rows(specs, start, stored, now=None):
     return rows, report
 
 
-def backfill_history(specs, start, data_dir=None, now=None):
+def backfill_prices(specs, start, data_dir=None, now=None):
     """Rebuild stored price history from `start` onwards and write it.
 
     Reads prices_history.csv, rebuilds it with rebuild_price_rows, and
@@ -2067,7 +2067,7 @@ def backfill_history(specs, start, data_dir=None, now=None):
         data_dir = DATA_DIR
 
     os.makedirs(data_dir, exist_ok=True)
-    stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
+    stored = read_price_history(os.path.join(data_dir, "prices_history.csv"))
     rows, report = rebuild_price_rows(specs, start, stored, now=now)
 
     # latest_prices.csv and the .price files describe what a fund is worth
@@ -2119,7 +2119,7 @@ def import_closed_holdings(holdings, data_dir=None, now=None):
         data_dir = DATA_DIR
 
     os.makedirs(data_dir, exist_ok=True)
-    stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
+    stored = read_price_history(os.path.join(data_dir, "prices_history.csv"))
     report = BackfillReport()
     browser = LazyBrowser()
 
@@ -4523,7 +4523,7 @@ def build_price_summary(history_rows, specs, failures, run_date):
 
     rows = []
     for entry in specs:
-        # Accept plain (source, identifier) pairs as scrape_funds() does.
+        # Accept plain (source, identifier) pairs as collect_prices() does.
         spec = as_fund_spec(entry)
         rows.append(
             summarise_series(
@@ -4602,7 +4602,7 @@ def build_dividend_summary(previous, upcoming, universe):
     return rows
 
 
-def _dividend_table(rows):
+def dividend_table(rows):
     """Render the Dividends section's lines: a table, or None when empty."""
     if not rows:
         return ["None"]
@@ -4629,7 +4629,7 @@ def display_name(name, aliases):
     return f"{name} ({', '.join(aliases)})" if aliases else name
 
 
-def _summary_table(rows, value_label, include_currency):
+def summary_table(rows, value_label, include_currency):
     """Render one Markdown table of summary rows."""
     columns = ["Name"]
     if include_currency:
@@ -4672,7 +4672,7 @@ def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
     lines = [f"# Daily Price Summary - {run_date}", ""]
 
     lines += ["## Prices", ""]
-    lines += _summary_table(price_rows, "Price", include_currency=True)
+    lines += summary_table(price_rows, "Price", include_currency=True)
 
     if fx_rows:
         lines += [
@@ -4680,11 +4680,11 @@ def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
             "## FX (GBP per 1 unit of foreign currency)",
             "",
         ]
-        lines += _summary_table(fx_rows, "Rate", include_currency=False)
+        lines += summary_table(fx_rows, "Rate", include_currency=False)
 
     if dividend_rows is not None:
         lines += ["", "## Dividends", ""]
-        lines += _dividend_table(dividend_rows)
+        lines += dividend_table(dividend_rows)
 
     attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
     lines += ["", "## Attention", ""]
@@ -4997,7 +4997,7 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=
     os.makedirs(data_dir, exist_ok=True)
     with open_for_write(path) as file:
         writer = csv_writer(file)
-        writer.writerow(HISTORY_HEADER)
+        writer.writerow(PRICE_HISTORY_HEADER)
         writer.writerows(report.rows)
 
     return report
@@ -5052,7 +5052,7 @@ def main(argv=None, now=None):
             raise SystemExit(2)
 
         specs = read_fund_specs(FUNDS_FILE)
-        report = backfill_history(specs, args.start, now=now)
+        report = backfill_prices(specs, args.start, now=now)
         # The rates are rebuilt from the same date, into the same report.
         pairs = read_fx_pairs()
         if pairs:
@@ -5115,7 +5115,7 @@ def main(argv=None, now=None):
     # non-zero only after everything obtainable has been written.
     results = ScrapeResults()
     try:
-        results = scrape_funds(funds, now=now)
+        results = collect_prices(funds, now=now)
         write_results(results, now=now)
     except Exception as error:
         results.failures.append(f"prices: {error}")
@@ -5128,7 +5128,7 @@ def main(argv=None, now=None):
     if pairs:
         fx_results = ScrapeResults()
         try:
-            fx_results = snap_fx_rates(pairs, now=now)
+            fx_results = collect_fx_rates(pairs, now=now)
             write_fx_results(fx_results)
         except Exception as error:
             fx_results.failures.append(f"fx: {error}")
@@ -5163,7 +5163,7 @@ def main(argv=None, now=None):
     # a day with failures is exactly when the summary is most useful.
     run_date = today.isoformat()
     history = list(
-        read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
+        read_price_history(os.path.join(DATA_DIR, "prices_history.csv")).values()
     )
     price_summary = build_price_summary(history, funds, results.failures, run_date)
     fx_summary = build_fx_summary(

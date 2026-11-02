@@ -21,11 +21,13 @@ from scrape_fund_price import (
     Quote,
     ScrapeResults,
     backfill_fx,
-    backfill_history,
+    backfill_prices,
     build_fx_summary,
     build_price_summary,
     canonical_source,
     check_quoting_unit,
+    collect_fx_rates,
+    collect_prices,
     fetch_ft_quotes,
     fetch_fx_quotes,
     fetch_historical_data,
@@ -40,11 +42,9 @@ from scrape_fund_price import (
     read_closed_holdings,
     read_fund_specs,
     read_fx_pairs,
-    read_history_rows,
+    read_price_history,
     render_summary_markdown,
     scrape_fund_quotes,
-    scrape_funds,
-    snap_fx_rates,
     validate_backfill_args,
     write_fx_files,
     write_fx_results,
@@ -257,9 +257,9 @@ class FakeCalendarTicker:
 
 DAILY_RUN_STUBS = (
     "read_distributions",
-    "scrape_funds",
+    "collect_prices",
     "write_results",
-    "snap_fx_rates",
+    "collect_fx_rates",
     "write_fx_results",
     "update_dividends",
     "write_summary",
@@ -278,9 +278,9 @@ def daily_run_stubs(test_dir=None, specs=(), pairs=(), **outcomes):
     """
     defaults = {
         "read_distributions": [],
-        "scrape_funds": ScrapeResults(),
+        "collect_prices": ScrapeResults(),
         "write_results": None,
-        "snap_fx_rates": ScrapeResults(),
+        "collect_fx_rates": ScrapeResults(),
         "write_fx_results": None,
         "update_dividends": scrape_fund_price.DividendResults(),
         "write_summary": None,
@@ -586,7 +586,9 @@ class TestSourceCodeCanonicalisation(DataDirCase):
     def test_deprecated_code_still_scrapes_correctly(self, mock_quotes, mock_pw):
         """Test an unmigrated funds.txt keeps producing prices."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        results = scrape_funds(read_fund_specs(self._write("GF,QQQ\n")), self.test_dir)
+        results = collect_prices(
+            read_fund_specs(self._write("GF,QQQ\n")), self.test_dir
+        )
         self.assertEqual(
             list(results),
             [scrape_fund_price.PriceRow("QQQ", "2026-09-18", "721.45", "USD")],
@@ -1880,12 +1882,12 @@ class TestFundPriceScraper(DataDirCase):
 
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_mock(self, mock_playwright, mock_ft):
+    def test_collect_prices_mock(self, mock_playwright, mock_ft):
         """Test the FT scraping fallback stores the page's price, dated today."""
         page = self._browser_page(mock_playwright)
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        results = scrape_funds([("FT", "IE0008368742")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("FT", "IE0008368742")], self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
 
         self.assertEqual(
@@ -1896,7 +1898,7 @@ class TestFundPriceScraper(DataDirCase):
     @patch("scrape_fund_price.yf.Ticker")
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_removes_commas_from_all_price_sources(
+    def test_collect_prices_removes_commas_from_all_price_sources(
         self, mock_playwright, mock_ft, mock_ticker
     ):
         """Test that every route stores prices without thousands separators."""
@@ -1907,7 +1909,7 @@ class TestFundPriceScraper(DataDirCase):
         # FT_FUND takes the scraping fallback; API_FUND the Yahoo route.
         test_funds = [("FT", "FT_FUND"), ("YA", "API_FUND")]
 
-        results = scrape_funds(test_funds, self.test_dir, now=RUN_NOW)
+        results = collect_prices(test_funds, self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
 
         self.assertEqual([row[2] for row in results], ["1234.56"] * 2)
@@ -2062,9 +2064,9 @@ class TestFundPriceScraper(DataDirCase):
             ],
         )
 
-    def test_scrape_funds_error_handling(self):
+    def test_collect_prices_error_handling(self):
         """Test an unsupported source is a failure for that fund, no browser."""
-        results = scrape_funds([("INVALID", "TEST123")], self.test_dir)
+        results = collect_prices([("INVALID", "TEST123")], self.test_dir)
 
         # An unsupported source yields no dated price, and is reported
         # rather than stored as a fabricated N/A row.
@@ -2073,11 +2075,11 @@ class TestFundPriceScraper(DataDirCase):
         self.assertIn("TEST123", results.failures[0])
 
     @patch("scrape_fund_price.yf.Ticker")
-    def test_scrape_funds_with_api_source(self, mock_ticker):
+    def test_collect_prices_with_api_source(self, mock_ticker):
         """Test the Yahoo API source stores the quote's own date, no browser."""
         fake_ticker(mock_ticker, [("2026-09-18", 150.25)], currency="USD")
 
-        results = scrape_funds([("YA", "AAPL")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "AAPL")], self.test_dir, now=RUN_NOW)
 
         self.assertEqual(
             list(results), [PriceRow("AAPL", "2026-09-18", "150.25", "USD")]
@@ -2085,12 +2087,12 @@ class TestFundPriceScraper(DataDirCase):
 
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_scraping_exception(self, mock_playwright, mock_ft):
+    def test_collect_prices_scraping_exception(self, mock_playwright, mock_ft):
         """Test error handling when the scraping fallback raises too."""
         page = self._browser_page(mock_playwright)
         page.goto.side_effect = Exception("Timeout")
 
-        results = scrape_funds([("FT", "TEST123")], self.test_dir)
+        results = collect_prices([("FT", "TEST123")], self.test_dir)
 
         # No price could be obtained, so no dated row is invented.
         self.assertEqual(list(results), [])
@@ -2100,13 +2102,15 @@ class TestFundPriceScraper(DataDirCase):
 
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_retries_timeout_and_succeeds(self, mock_playwright, mock_ft):
+    def test_collect_prices_retries_timeout_and_succeeds(
+        self, mock_playwright, mock_ft
+    ):
         """Test transient timeout errors are retried before writing a price."""
         page = self._browser_page(mock_playwright)
         page.goto.side_effect = [Exception(self.TIMEOUT), None]
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
 
         self.assertEqual(
@@ -2118,7 +2122,7 @@ class TestFundPriceScraper(DataDirCase):
 
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_uses_last_good_price_after_retry_failure(
+    def test_collect_prices_uses_last_good_price_after_retry_failure(
         self, mock_playwright, mock_ft
     ):
         """Test persistent timeout errors keep the last good stored price."""
@@ -2135,7 +2139,7 @@ class TestFundPriceScraper(DataDirCase):
         )
         self.write_text("latest_TEST123.price", f"Error: {self.TIMEOUT}\n")
 
-        results = scrape_funds([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("FT", "TEST123")], self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
 
         # No fabricated row for today; the real last price is carried instead,
@@ -2150,12 +2154,12 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(self.read_text("latest_TEST123.price").strip(), "111.11")
 
     @patch("scrape_fund_price.yf.Ticker")
-    def test_scrape_funds_retries_api_error_and_succeeds(self, mock_ticker):
+    def test_collect_prices_retries_api_error_and_succeeds(self, mock_ticker):
         """Test transient API errors are retried before writing a price."""
         inst = fake_ticker(mock_ticker, [("2026-09-18", 220.5)], currency="GBp")
         mock_ticker.side_effect = [Exception("curl: (28) Operation timed out"), inst]
 
-        results = scrape_funds([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
 
         self.assertEqual(
             list(results), [PriceRow("IWDG.L", "2026-09-18", "220.5", "GBp")]
@@ -2164,7 +2168,7 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(mock_ticker.call_count, 2)
 
     @patch("scrape_fund_price.yf.Ticker")
-    def test_scrape_funds_keeps_last_good_price_after_api_retry_failure(
+    def test_collect_prices_keeps_last_good_price_after_api_retry_failure(
         self, mock_ticker
     ):
         """Test persistent API errors keep the last good stored price."""
@@ -2175,7 +2179,7 @@ class TestFundPriceScraper(DataDirCase):
         )
 
         mock_ticker.side_effect = Exception("curl: (28) Operation timed out")
-        results = scrape_funds([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "IWDG.L")], self.test_dir, now=RUN_NOW)
 
         # The last good price is carried for reporting, against the date it
         # really belongs to, and is kept out of history.
@@ -2199,14 +2203,14 @@ class TestFundPriceScraper(DataDirCase):
 
 
 class TestWindowedScraping(DataDirCase):
-    """Test scrape_funds over dated windows, and lazy browser startup."""
+    """Test collect_prices over dated windows, and lazy browser startup."""
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_emits_a_row_per_quote_with_currency(self, mock_ticker):
         """Test every quote in the window becomes a dated result row."""
         bars = [("2026-09-17", 1.5), ("2026-09-18", 1.6)]
         fake_ticker(mock_ticker, bars, currency="GBp")
-        results = scrape_funds([("YA", "SGLN.L")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "SGLN.L")], self.test_dir, now=RUN_NOW)
         self.assertEqual(
             list(results),
             [
@@ -2223,14 +2227,14 @@ class TestWindowedScraping(DataDirCase):
         fake_ticker(mock_y, [("2026-09-18", 1.6)], currency="USD")
         mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
         funds = [("YA", "QQQ"), ("FT", "GB00B1FXTF86")]
-        scrape_funds(funds, self.test_dir, now=RUN_NOW)
+        collect_prices(funds, self.test_dir, now=RUN_NOW)
         mock_pw.assert_not_called()
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_total_failure_writes_no_history_row(self, mock_ticker):
         """Test a fund that cannot be fetched contributes no dated row."""
         mock_ticker.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         self.assertEqual(list(results), [])
         self.assertEqual(len(results.failures), 1)
         self.assertIn("QQQ", results.failures[0])
@@ -2240,7 +2244,7 @@ class TestWindowedScraping(DataDirCase):
         """Test the per-fund price file is not overwritten with an error."""
         self.write_text("latest_QQQ.price", "700.00\n")
         mock_ticker.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
         self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
 
@@ -2255,7 +2259,7 @@ class TestWindowedScraping(DataDirCase):
         """
         self.write_text("latest_QQQ.price", "700.00\n")
         mock_ticker.side_effect = Exception("Network error")
-        results = scrape_funds([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         write_results(results, self.test_dir)
         self.assertEqual(results.carried, [])
         self.assertEqual(len(results.failures), 1)
@@ -2268,7 +2272,7 @@ class TestWindowedScraping(DataDirCase):
         """Test an FT endpoint failure still yields a price, dated as today."""
         mock_ft.side_effect = ValueError("FT internal id not found")
         mock_scrape.return_value = "7.15"
-        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([("FT", "GB00B1FXTF86")], self.test_dir, now=RUN_NOW)
         self.assertEqual(
             list(results), [PriceRow("GB00B1FXTF86", "2026-10-19", "7.15", "")]
         )
@@ -2296,7 +2300,7 @@ class TestAliasPublishing(DataDirCase):
         fake_ticker(mock_ticker, [self.BAR], currency="USD")
         if error is not None:
             mock_ticker.side_effect = error
-        return scrape_funds(specs, self.test_dir, now=RUN_NOW)
+        return collect_prices(specs, self.test_dir, now=RUN_NOW)
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_price_is_fetched_once_for_all_identifiers(self, mock_ticker):
@@ -2391,14 +2395,14 @@ class TestScrapeLoopClock(DataDirCase):
     def test_the_window_runs_back_from_now(self, mock_ticker):
         """Test the snap window is the ten days before now's date."""
         inst = fake_swda_open_session(mock_ticker)
-        scrape_funds([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
+        collect_prices([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
         self.assertEqual(inst.history.call_args.kwargs["start"], "2026-10-09")
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_a_session_open_at_now_is_not_stored(self, mock_ticker):
         """Test the session is judged against now through the whole loop."""
         fake_swda_open_session(mock_ticker)
-        results = scrape_funds([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
+        results = collect_prices([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
         self.assertEqual([row[1] for row in results], ["2026-10-16"])
 
     @patch("scrape_fund_price.sync_playwright")
@@ -2406,14 +2410,14 @@ class TestScrapeLoopClock(DataDirCase):
     @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     def test_the_scraping_fallback_is_dated_by_now(self, _ft, _scrape, _pw):
         """Test the undated summary page's price takes now's date."""
-        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir, now=self.NOW)
+        results = collect_prices([("FT", "GB00B1FXTF86")], self.test_dir, now=self.NOW)
         self.assertEqual(
             list(results), [PriceRow("GB00B1FXTF86", "2026-10-19", "7.15", "")]
         )
 
 
 class TestScrapeReturnsItsPriceFiles(DataDirCase):
-    """Test scrape_funds computes the .price files and write_results writes them.
+    """Test collect_prices computes the .price files and write_results writes them.
 
     The scrape fetches and decides; it writes nothing (#120). What each
     published identifier's latest_<id>.price should hold comes back on
@@ -2427,7 +2431,7 @@ class TestScrapeReturnsItsPriceFiles(DataDirCase):
         fake_ticker(mock_ticker, bars, currency="USD")
         if error is not None:
             mock_ticker.side_effect = error
-        return scrape_funds([self.SPEC], self.test_dir, now=RUN_NOW)
+        return collect_prices([self.SPEC], self.test_dir, now=RUN_NOW)
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_the_scrape_writes_no_file(self, mock_ticker):
@@ -2612,7 +2616,7 @@ class TestHistoryUpsert(DataDirCase):
             "prices_history.csv",
             "Fund,Date,Price,Currency\nAAA,2026-09-17\nAAA,2026-09-18,1.50,GBP\n",
         )
-        self.assertEqual(list(read_history_rows(path)), [("AAA", "2026-09-18")])
+        self.assertEqual(list(read_price_history(path)), [("AAA", "2026-09-18")])
 
     def test_read_keyed_csv_pads_truncates_and_skips_what_the_key_rejects(self):
         """Test the reader every storage file shares (#112).
@@ -2764,7 +2768,7 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_latest_price_file("CNX1.L", "133800", self.test_dir)
         bars = [("2026-10-07", 135120.0), ("2026-10-08", 134720.0)]
         fake_ticker(mock_ticker, bars, currency="GBp")
-        results = scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        results = collect_prices([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
         write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
@@ -2774,7 +2778,7 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_results(list(self.THURSDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "134720", self.test_dir)
         fake_ticker(mock_ticker, [("2026-10-09", 133800.0)], currency="GBp")
-        results = scrape_funds([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
+        results = collect_prices([("YA", "CNX1.L")], self.test_dir, now=self.NOW)
         write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
@@ -2790,7 +2794,7 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         }
         mock_ticker.side_effect = tickers.get
         funds = [("YA", fund) for fund in tickers]
-        results = scrape_funds(funds, self.test_dir, now=self.NOW)
+        results = collect_prices(funds, self.test_dir, now=self.NOW)
         write_results(results, self.test_dir)
         self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
@@ -2815,21 +2819,21 @@ class TestTypedPriceRows(DataDirCase):
     QQQ = ("QQQ", "2026-09-18", "721.45", "USD")
 
     def test_a_price_row_names_its_columns_and_carries_the_header(self):
-        """Test the fields read by name and HISTORY_HEADER is PriceRow.HEADER."""
+        """Test the fields read by name and PRICE_HISTORY_HEADER is PriceRow.HEADER."""
         row = PriceRow(*self.QQQ)
         self.assertEqual((row.fund, row.date, row.price, row.currency), self.QQQ)
         self.assertEqual(PriceRow.HEADER, ["Fund", "Date", "Price", "Currency"])
-        self.assertIs(scrape_fund_price.HISTORY_HEADER, PriceRow.HEADER)
+        self.assertIs(scrape_fund_price.PRICE_HISTORY_HEADER, PriceRow.HEADER)
 
     def test_stored_history_reads_as_price_rows(self):
-        """Test read_history_rows builds PriceRow, a legacy row's currency empty."""
+        """Test read_price_history builds PriceRow, a legacy row's currency empty."""
         path = self.write_csv(
             "prices_history.csv",
             ["Fund", "Date", "Price"],
             [["OLD", "2026-09-01", "9.99"]],
         )
         self.assertEqual(
-            list(read_history_rows(path).values()),
+            list(read_price_history(path).values()),
             [PriceRow("OLD", "2026-09-01", "9.99", "")],
         )
 
@@ -2837,7 +2841,7 @@ class TestTypedPriceRows(DataDirCase):
     def test_the_scrape_returns_price_rows(self, mock_ticker):
         """Test the rows and the .price rows of a scrape are PriceRow."""
         fake_ticker(mock_ticker, [("2026-09-18", 721.45)], currency="USD")
-        results = scrape_funds([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         expected = [PriceRow(*self.QQQ)]
         self.assertEqual((list(results), results.latest), (expected, expected))
 
@@ -2845,10 +2849,10 @@ class TestTypedPriceRows(DataDirCase):
     def test_a_carried_row_is_a_price_row(self, mock_ticker):
         """Test a failed fund carries its stored row as a PriceRow."""
         self.write_csv(
-            "prices_history.csv", scrape_fund_price.HISTORY_HEADER, [self.QQQ]
+            "prices_history.csv", scrape_fund_price.PRICE_HISTORY_HEADER, [self.QQQ]
         )
         mock_ticker.side_effect = Exception("Network error")
-        results = scrape_funds([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        results = collect_prices([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
         expected = [PriceRow(*self.QQQ)]
         self.assertEqual((results.carried, results.latest), (expected, expected))
 
@@ -2992,12 +2996,12 @@ class TestDefaultDataDirectory(unittest.TestCase):
     def test_each_entry_point_writes_under_the_module_data_dir(self):
         """Test each default lands in DATA_DIR as patched, with nothing elsewhere."""
         calls = {
-            "scrape_funds": lambda: scrape_funds([]),
+            "collect_prices": lambda: collect_prices([]),
             "write_summary": lambda: write_summary([], [], "2026-11-02"),
-            "snap_fx_rates": lambda: snap_fx_rates([]),
+            "collect_fx_rates": lambda: collect_fx_rates([]),
             "write_fx_results": lambda: write_fx_results(ScrapeResults()),
             "backfill_fx": lambda: backfill_fx([], "2026-11-01"),
-            "backfill_history": lambda: backfill_history([], "2026-11-01"),
+            "backfill_prices": lambda: backfill_prices([], "2026-11-01"),
             "import_closed_holdings": lambda: import_closed_holdings([]),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -3088,7 +3092,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3106,7 +3110,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.side_effect = Exception("Network error")
 
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir
         )
 
@@ -3141,7 +3145,7 @@ class TestBackfillRebuild(DataDirCase):
 
         mock_quotes.side_effect = side_effect
 
-        backfill_history(
+        backfill_prices(
             [FundSpec("YA", "QQQ", ()), FundSpec("YA", "GRAB", ())],
             "2026-09-01",
             self.test_dir,
@@ -3168,7 +3172,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3191,7 +3195,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3206,7 +3210,7 @@ class TestBackfillRebuild(DataDirCase):
         """Test both identifiers get the same rebuilt series."""
         mock_quotes.return_value = [Quote("2026-09-17", "192.43", "USD")]
 
-        backfill_history(
+        backfill_prices(
             [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
             "2023-01-01",
             self.test_dir,
@@ -3230,9 +3234,9 @@ class TestBackfillRebuild(DataDirCase):
         ]
         specs = [FundSpec("YA", "0P00000YAN", ("JFM0003373",))]
 
-        backfill_history(specs, "2023-01-01", self.test_dir)
+        backfill_prices(specs, "2023-01-01", self.test_dir)
         first = self.read_text("prices_history.csv")
-        backfill_history(specs, "2023-01-01", self.test_dir)
+        backfill_prices(specs, "2023-01-01", self.test_dir)
 
         self.assertEqual(self.read_text("prices_history.csv"), first)
 
@@ -3244,7 +3248,7 @@ class TestBackfillRebuild(DataDirCase):
             Quote("2026-09-18", "192.43", "USD"),
         ]
 
-        backfill_history([FundSpec("YA", "AAA", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "AAA", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("latest_prices.csv"),
@@ -3262,7 +3266,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3282,7 +3286,7 @@ class TestBackfillRebuild(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3296,7 +3300,7 @@ class TestBackfillRebuild(DataDirCase):
             Quote("2026-09-18", "N/A", "USD"),
             Quote("2026-09-19", "721.45", "USD"),
         ]
-        backfill_history([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
         self.assertEqual(
             self.read_rows("prices_history.csv"),
             [["QQQ", "2026-09-19", "721.45", "USD"]],
@@ -3306,7 +3310,7 @@ class TestBackfillRebuild(DataDirCase):
     def test_the_rebuild_reads_the_time_from_now(self, mock_ticker):
         """Test a session still open at now is not stored by a rebuild (#120)."""
         fake_swda_open_session(mock_ticker)
-        backfill_history(
+        backfill_prices(
             [FundSpec("YA", "SWDA.L")], "2026-10-01", self.test_dir, now=SWDA_OPEN_NOW
         )
         self.assertEqual(
@@ -3331,7 +3335,7 @@ class TestBackfillReporting(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir
         )
 
@@ -3347,7 +3351,7 @@ class TestBackfillReporting(DataDirCase):
     def test_report_renders_a_markdown_table(self, mock_quotes):
         """Test the report can be dropped into the Actions job summary."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir
         )
         self.assertEqual(
@@ -3367,7 +3371,7 @@ class TestBackfillReporting(DataDirCase):
             Quote("2026-09-17", "5.06", "GBP"),
             Quote("2026-09-18", "506.00", "GBp"),
         ]
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("YA", "DPYG.L", ())], "2023-01-01", self.test_dir
         )
         self.assertTrue(any("DPYG.L" in w for w in report.warnings))
@@ -3379,7 +3383,7 @@ class TestBackfillReporting(DataDirCase):
             Quote("2026-09-17", "100.00", "USD"),
             Quote("2026-09-18", "112.00", "USD"),
         ]
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("YA", "AAA", ())], "2023-01-01", self.test_dir
         )
         self.assertEqual(report.warnings, [])
@@ -3427,7 +3431,7 @@ class TestBackfillPacing(DataDirCase):
         """Test consecutive FT fetches are spaced out: one pause after each FT
         fund but the last, of the configured length."""
         mock_quotes.return_value = [Quote("2026-09-18", "7.15", "GBP")]
-        backfill_history(
+        backfill_prices(
             [
                 FundSpec("FT", "ISIN1", ()),
                 FundSpec("FT", "ISIN2", ()),
@@ -3444,7 +3448,7 @@ class TestBackfillPacing(DataDirCase):
     def test_does_not_pause_for_api_funds(self, mock_quotes):
         """Test the API route is not slowed down unnecessarily."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        backfill_history(
+        backfill_prices(
             [FundSpec("YA", "QQQ", ()), FundSpec("YA", "GRAB", ())],
             "2023-01-01",
             self.test_dir,
@@ -3478,7 +3482,7 @@ class TestBackfillProtectsSourceDerivedRows(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
 
-        report = backfill_history(
+        report = backfill_prices(
             [FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir
         )
 
@@ -3500,7 +3504,7 @@ class TestBackfillProtectsSourceDerivedRows(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
 
-        backfill_history([FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3521,7 +3525,7 @@ class TestBackfillProtectsSourceDerivedRows(DataDirCase):
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
         self.assertEqual(
             self.read_rows("prices_history.csv"),
@@ -3540,7 +3544,7 @@ class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
         """Test rows for an unconfigured identifier are never deleted."""
         write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
         mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
-        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
         self.assertIn(
             ["BN4MYX3", "2024-01-04", "218.95", "GBX"], self._rows("prices_history.csv")
         )
@@ -3555,7 +3559,7 @@ class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
         """
         write_history_files([["BN4MYX3", "2024-01-04", "218.95", "GBX"]], self.test_dir)
         mock_quotes.return_value = [Quote("2024-01-04", "266.28", "USD")]
-        backfill_history([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
+        backfill_prices([FundSpec("YA", "QQQ")], "2023-01-01", self.test_dir)
         self.assertEqual([row[0] for row in self._rows("latest_prices.csv")], ["QQQ"])
         self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
 
@@ -3564,7 +3568,7 @@ class TestRebuildSteps(DataDirCase):
     """Test the two rebuilds compute apart from writing (#120).
 
     rebuild_price_rows and rebuild_fx_rows take the stored rows and return
-    the rows to store with the report; backfill_history and backfill_fx only
+    the rows to store with the report; backfill_prices and backfill_fx only
     read, call them and write.
     """
 
@@ -3626,7 +3630,7 @@ class TestRebuildSteps(DataDirCase):
 
     @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
     def test_the_price_rebuild_leaves_the_rates_alone(self, _quotes):
-        """Test backfill_history rebuilds prices only: main() runs the FX step."""
+        """Test backfill_prices rebuilds prices only: main() runs the FX step."""
         with ExitStack() as stack:
             for name in ("read_fx_pairs", "backfill_fx", "rebuild_fx_rows"):
                 stack.enter_context(
@@ -3635,7 +3639,7 @@ class TestRebuildSteps(DataDirCase):
                         side_effect=AssertionError(f"{name} was called"),
                     )
                 )
-            backfill_history([], "2026-09-01", self.test_dir, now=RUN_NOW)
+            backfill_prices([], "2026-09-01", self.test_dir, now=RUN_NOW)
         self.assertFalse(os.path.exists(self.path("fx_history.csv")))
 
 
@@ -3682,13 +3686,13 @@ class TestBackfillMainMode(DataDirCase):
             scrape_fund_price.BackfillEntry.failed("USDGBP", [("USDGBP", "2023-01-03")])
         )
         rates.failures.append("USDGBP: Error: Timeout")
-        outcomes = {"backfill_history": self.report_with_qqq(), "backfill_fx": rates}
+        outcomes = {"backfill_prices": self.report_with_qqq(), "backfill_fx": rates}
         specs = [FundSpec("YA", "QQQ")]
         with daily_run_stubs(specs=specs, pairs=["USDGBP"], **outcomes) as stubs:
             with self.assertRaises(SystemExit) as error:
                 main(["--backfill", "--from", "2023-01-01"], now=RUN_NOW)
         self.assertEqual(error.exception.code, 1)
-        stubs["backfill_history"].assert_called_once_with(
+        stubs["backfill_prices"].assert_called_once_with(
             specs, "2023-01-01", now=RUN_NOW
         )
         stubs["backfill_fx"].assert_called_once_with(
@@ -3705,14 +3709,14 @@ class TestBackfillMainMode(DataDirCase):
 
     def test_no_pairs_means_no_fx_rebuild(self):
         """Test an empty fx_pairs.txt skips the FX step."""
-        outcomes = {"backfill_history": BackfillReport(), "backfill_fx": {}}
+        outcomes = {"backfill_prices": BackfillReport(), "backfill_fx": {}}
         with daily_run_stubs(specs=[FundSpec("YA", "QQQ")], **outcomes) as stubs:
             main(["--backfill", "--from", "2023-01-01"], now=RUN_NOW)
         stubs["backfill_fx"].assert_not_called()
 
     @patch("builtins.print")
     @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
-    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.backfill_prices")
     @patch("scrape_fund_price.read_fund_specs")
     def test_successful_backfill_prints_the_report(
         self, mock_specs, mock_backfill, mock_print
@@ -3731,7 +3735,7 @@ class TestBackfillMainMode(DataDirCase):
 
     @patch("builtins.print")
     @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
-    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.backfill_prices")
     @patch("scrape_fund_price.read_fund_specs")
     def test_failures_exit_non_zero_after_writing(
         self, mock_specs, mock_backfill, mock_print
@@ -3752,7 +3756,7 @@ class TestBackfillMainMode(DataDirCase):
 
     @patch("builtins.print")
     @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
-    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.backfill_prices")
     @patch("scrape_fund_price.read_fund_specs")
     def test_report_is_added_to_the_actions_job_summary(
         self, mock_specs, mock_backfill, mock_print
@@ -3770,7 +3774,7 @@ class TestBackfillMainMode(DataDirCase):
 
     @patch("builtins.print")
     @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: [])
-    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.backfill_prices")
     @patch("scrape_fund_price.read_fund_specs")
     def test_no_summary_written_outside_actions(
         self, mock_specs, mock_backfill, mock_print
@@ -4054,7 +4058,7 @@ class TestClosedImportMainMode(DataDirCase):
 
     @patch("scrape_fund_price.import_closed_holdings")
     @patch("scrape_fund_price.read_closed_holdings")
-    @patch("scrape_fund_price.scrape_funds")
+    @patch("scrape_fund_price.collect_prices")
     def test_import_mode_skips_the_daily_run(self, mock_scrape, mock_read, mock_import):
         """Test importing never triggers a scrape or an FX snap."""
         mock_read.return_value = [
@@ -4387,7 +4391,7 @@ class TestFxFailureIsolation(DataDirCase):
             return [Quote("2026-09-18", "0.426700", pair)]
 
         mock_quotes.side_effect = side_effect
-        results = snap_fx_rates(["USDGBP", "NZDGBP"], self.test_dir)
+        results = collect_fx_rates(["USDGBP", "NZDGBP"], self.test_dir)
 
         self.assertEqual(list(results), [FxRow("NZDGBP", "2026-09-18", "0.426700")])
         self.assertEqual(len(results.failures), 1)
@@ -4400,7 +4404,7 @@ class TestFxFailureIsolation(DataDirCase):
             Exception("timeout"),
             [Quote("2026-09-18", "0.746700", "USDGBP")],
         ]
-        results = snap_fx_rates(["USDGBP"], self.test_dir)
+        results = collect_fx_rates(["USDGBP"], self.test_dir)
         self.assertEqual(list(results), [FxRow("USDGBP", "2026-09-18", "0.746700")])
         self.assertEqual(results.failures, [])
 
@@ -4450,7 +4454,7 @@ class TestTypedFxRows(DataDirCase):
     def test_the_snap_returns_fx_rows(self, mock_ticker):
         """Test the day's rates come back as FxRow."""
         fake_hourly_fx(mock_ticker)
-        results = snap_fx_rates(["USDGBP"], self.test_dir, now=utc(2026, 10, 19, 12))
+        results = collect_fx_rates(["USDGBP"], self.test_dir, now=utc(2026, 10, 19, 12))
         self.assertEqual(list(results), [FxRow("USDGBP", "2026-10-16", "0.750230")])
 
 
@@ -4463,7 +4467,7 @@ class TestFxClock(DataDirCase):
     def test_the_snap_reads_the_time_from_now(self, mock_ticker):
         """Test the window runs back from now and an unfinished day is left out."""
         inst = fake_hourly_fx(mock_ticker)
-        results = snap_fx_rates(["USDGBP"], self.test_dir, now=self.NOW)
+        results = collect_fx_rates(["USDGBP"], self.test_dir, now=self.NOW)
         self.assertEqual(inst.history.call_args.kwargs["start"], "2026-10-09")
         self.assertEqual(list(results), [FxRow("USDGBP", "2026-10-16", "0.750230")])
 
@@ -4562,7 +4566,7 @@ class TestFxInTheDailyRun(DataDirCase):
             self.test_dir,
             specs=[FundSpec("YA", "QQQ")],
             pairs=self.PAIRS,
-            snap_fx_rates=fx_results,
+            collect_fx_rates=fx_results,
         ) as stubs:
             try:
                 main([])
@@ -4577,7 +4581,7 @@ class TestFxInTheDailyRun(DataDirCase):
         """Test the snap gets the pairs and the write gets its rows."""
         rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
         ran = self._run(rates)
-        self.assertEqual(ran["snap_fx_rates"].call_args.args, (self.PAIRS,))
+        self.assertEqual(ran["collect_fx_rates"].call_args.args, (self.PAIRS,))
         ran["write_fx_results"].assert_called_once_with(rates)
         ran["write_summary"].assert_called_once()
         self.assertIsNone(ran["exit_code"])
@@ -6756,7 +6760,7 @@ class TestDividendsInTheDailyRun(DataDirCase):
             DISTRIBUTIONS_FILE={"new": self.distributions_file},
             read_distributions={"wraps": scrape_fund_price.read_distributions},
         ) as stubs:
-            self.scrape = stubs["scrape_funds"]
+            self.scrape = stubs["collect_prices"]
             self.summary = stubs["write_summary"]
             self.update = stubs["update_dividends"]
             self.printed = stubs["print"]
@@ -6837,7 +6841,7 @@ class TestDividendBackfillMainMode(DataDirCase):
     @patch("scrape_fund_price.backfill_dividends")
     @patch("scrape_fund_price.read_distributions", return_value=[])
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.scrape_funds")
+    @patch("scrape_fund_price.collect_prices")
     def test_rebuilds_from_the_start_date_and_prints_the_report(
         self, mock_scrape, mock_specs, _dists, mock_backfill, mock_print
     ):
@@ -8777,7 +8781,7 @@ class TestIssuerSourcesInMain(DataDirCase):
                     backfill_dividends=BackfillReport(),
                 )
             )
-            self.scrape = stubs["scrape_funds"]
+            self.scrape = stubs["collect_prices"]
             self.update = stubs["update_dividends"]
             self.rebuild = stubs["backfill_dividends"]
             main(self._argv(backfill))
@@ -9151,7 +9155,7 @@ class TestUkCpiInMain(unittest.TestCase):
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the ONS."""
         with daily_run_stubs(
-            backfill_history=BackfillReport(), update_uk_cpi={}
+            backfill_prices=BackfillReport(), update_uk_cpi={}
         ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
         stubs["update_uk_cpi"].assert_not_called()
@@ -9566,7 +9570,7 @@ class TestUkBankRateInMain(unittest.TestCase):
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the Bank's page."""
         with daily_run_stubs(
-            backfill_history=BackfillReport(), update_uk_bank_rate={}
+            backfill_prices=BackfillReport(), update_uk_bank_rate={}
         ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
         stubs["update_uk_bank_rate"].assert_not_called()
@@ -9728,7 +9732,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
             [["QQQ", "2026-09-18", "721.45", "USD"]],
             failures=["GRAB: Error: Timeout"],
         )
-        with daily_run_stubs(specs=self.SPECS, scrape_funds=results) as stubs:
+        with daily_run_stubs(specs=self.SPECS, collect_prices=results) as stubs:
             with self.assertRaises(SystemExit) as error:
                 main([])
 
@@ -9740,7 +9744,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     def test_clean_run_does_not_exit_non_zero(self):
         """Test a run with no failures completes normally."""
         results = ScrapeResults([["QQQ", "2026-09-18", "721.45", "USD"]])
-        with daily_run_stubs(specs=self.SPECS[:1], scrape_funds=results) as stubs:
+        with daily_run_stubs(specs=self.SPECS[:1], collect_prices=results) as stubs:
             main([])
         self.assertEqual(stubs["write_results"].call_args.args, (results,))
 
@@ -9771,14 +9775,14 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         then exits non-zero; the dividend, CPI and Bank Rate steps keep that
         promise, so the price step must too.
         """
-        ran = self._crashing_run("scrape_funds")
+        ran = self._crashing_run("collect_prices")
         ran["write_fx_results"].assert_called_once()
         ran["update_dividends"].assert_called_once()
         ran["update_uk_cpi"].assert_called_once()
         ran["update_uk_bank_rate"].assert_called_once()
         ran["write_summary"].assert_called_once()
         self.assertEqual(ran["exit_code"], 1)
-        self.assertIn("Error: prices: scrape_funds exploded", ran["printed"])
+        self.assertIn("Error: prices: collect_prices exploded", ran["printed"])
 
     def test_a_crash_writing_the_prices_is_a_price_failure_too(self):
         """Test the whole step is covered, not only the fetch."""
@@ -9789,14 +9793,14 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
 
     def test_a_crash_in_the_fx_step_does_not_cost_the_other_files(self):
         """Test the FX step is isolated the same way, as `fx: <error>`."""
-        ran = self._crashing_run("snap_fx_rates")
+        ran = self._crashing_run("collect_fx_rates")
         ran["write_results"].assert_called_once()
         ran["update_dividends"].assert_called_once()
         ran["update_uk_cpi"].assert_called_once()
         ran["update_uk_bank_rate"].assert_called_once()
         ran["write_summary"].assert_called_once()
         self.assertEqual(ran["exit_code"], 1)
-        self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
+        self.assertIn("Error: fx: collect_fx_rates exploded", ran["printed"])
 
 
 class TestMainReadsTheClockOnce(DataDirCase):
@@ -9809,18 +9813,18 @@ class TestMainReadsTheClockOnce(DataDirCase):
         """Test the scrape, the FX snap and the run date all use the one now."""
         with daily_run_stubs(self.test_dir, specs=self.SPECS, pairs=["USDGBP"]) as s:
             main([], now=self.NOW)
-        s["scrape_funds"].assert_called_once_with(self.SPECS, now=self.NOW)
+        s["collect_prices"].assert_called_once_with(self.SPECS, now=self.NOW)
         s["write_results"].assert_called_once_with(
-            s["scrape_funds"].return_value, now=self.NOW
+            s["collect_prices"].return_value, now=self.NOW
         )
-        s["snap_fx_rates"].assert_called_once_with(["USDGBP"], now=self.NOW)
+        s["collect_fx_rates"].assert_called_once_with(["USDGBP"], now=self.NOW)
         self.assertEqual(s["write_summary"].call_args.args[2], "2026-10-19")
 
     def test_the_rebuild_and_the_import_pass_now(self):
         """Test --backfill and --import-closed hand now to their step."""
         holdings = [ClosedHolding("X", "YA", "X.L", "USD", "2023-01-03", "2023-01-05")]
         outcomes = {
-            "backfill_history": BackfillReport(),
+            "backfill_prices": BackfillReport(),
             "backfill_fx": BackfillReport(),
             "import_closed_holdings": BackfillReport(),
             "read_closed_holdings": holdings,
@@ -9828,7 +9832,7 @@ class TestMainReadsTheClockOnce(DataDirCase):
         with daily_run_stubs(specs=self.SPECS, pairs=["USDGBP"], **outcomes) as s:
             main(["--backfill", "--from", "2026-10-01"], now=self.NOW)
             main(["--import-closed"], now=self.NOW)
-        s["backfill_history"].assert_called_once_with(
+        s["backfill_prices"].assert_called_once_with(
             self.SPECS, "2026-10-01", now=self.NOW
         )
         s["backfill_fx"].assert_called_once_with(["USDGBP"], "2026-10-01", now=self.NOW)
@@ -9895,7 +9899,7 @@ class TestOneModeAtATime(unittest.TestCase):
         "--history": ["--history", "AAPL", "--start", "2026-10-01"],
     }
     STEPS = (
-        "backfill_history",
+        "backfill_prices",
         "backfill_fx",
         "import_closed_holdings",
         "backfill_dividends",
@@ -9913,7 +9917,7 @@ class TestOneModeAtATime(unittest.TestCase):
                     with self.assertRaises(SystemExit) as error:
                         main(self.MODES[first] + self.MODES[second])
                 self.assertEqual(error.exception.code, 2)
-                for step in self.STEPS + ("scrape_funds",):
+                for step in self.STEPS + ("collect_prices",):
                     stubs[step].assert_not_called()
                 printed = stubs["print"].call_args.args[0]
                 self.assertIn("one mode at a time", printed)
@@ -10043,7 +10047,7 @@ class TestHistoricalData(DataDirCase):
         self.assertEqual(report.failures, [])
         with open(self.path(name), newline="") as f:
             header = next(csv.reader(f))
-        self.assertEqual(header, scrape_fund_price.HISTORY_HEADER)
+        self.assertEqual(header, scrape_fund_price.PRICE_HISTORY_HEADER)
         rows = [
             ["AAPL", "2026-10-01", "124.87", "USD"],
             ["AAPL", "2026-10-02", "126530.25", "USD"],
@@ -10190,7 +10194,7 @@ class TestCommittedConfiguration(unittest.TestCase):
         silently came back short: Yahoo treats the end date as exclusive and
         BKCH first imported 284 rows for a 285-day window.
         """
-        stored = read_history_rows(os.path.join(REPO, "data", "prices_history.csv"))
+        stored = read_price_history(os.path.join(REPO, "data", "prices_history.csv"))
         for holding in read_closed_holdings(os.path.join(REPO, "closed_holdings.txt")):
             dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
             self.assertTrue(dates, f"{holding.identifier} has no stored history")
@@ -10284,14 +10288,14 @@ class TestFunctionalScraping(DataDirCase):
 
     def test_functional_ft_scraping(self):
         """Functional test for FT prices (requires internet connection)."""
-        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
+        results = collect_prices([("FT", "IE0008368742")], self.test_dir)
         self.assertUsableQuotes(results, "IE0008368742")
         # FT reports the quoting currency alongside the price.
         self.assertTrue(all(row[3] for row in results))
 
     def test_functional_yahoo_api(self):
         """Functional test for the Yahoo Finance API (requires internet)."""
-        results = scrape_funds([("YA", "AAPL")], self.test_dir)
+        results = collect_prices([("YA", "AAPL")], self.test_dir)
         self.assertUsableQuotes(results, "AAPL")
         self.assertTrue(all(row[3] == "USD" for row in results))
 

@@ -174,7 +174,7 @@ def fetch_example_quotes(identifier, start, end=None):
     response = http_get(EXAMPLE_URL.format(id=identifier, start=start, end=end))
 
     quotes = [
-        Quote(row["date"], normalize_price(row["close"]), row["currency"])
+        Quote(row["date"], normalise_price(row["close"]), row["currency"])
         for row in response.json().get("rows") or []
     ]
     if not quotes:
@@ -202,10 +202,10 @@ from real closes.
 ### 2. New Data Fields
 
 Stored rows are `[fund, date, price, currency]`, written through `write_history_csv()`
-with `HISTORY_HEADER`. A new field is a new trailing column, as `Currency` was:
+with `PRICE_HISTORY_HEADER`. A new field is a new trailing column, as `Currency` was:
 
-- extend `Quote`, `HISTORY_HEADER` and the row built in `scrape_funds()`
-- make `read_history_rows()` tolerate rows written before the column existed
+- extend `Quote`, `PRICE_HISTORY_HEADER` and the row built in `collect_prices()`
+- make `read_price_history()` tolerate rows written before the column existed
 - keep the first columns in place, so positional readers are unaffected
 
 ### 3. New Output Formats
@@ -313,7 +313,7 @@ pip list --outdated
 
 ## Error Handling
 
-**Retry logic already exists - do not add your own.** `scrape_funds()` wraps every fetch in
+**Retry logic already exists - do not add your own.** `collect_prices()` wraps every fetch in
 `fetch_with_retries()` (up to `MAX_PRICE_ATTEMPTS`, default 3) and, when all attempts
 fail, carries the fund's last stored row forward under its original date. Nothing is
 invented for today and no error text is ever written to a data file:
@@ -332,7 +332,7 @@ if error:
 
 New fetchers raise on failure and let `fetch_with_retries()` do the rest. If you need to
 change retry behaviour, adjust `MAX_PRICE_ATTEMPTS` or `fetch_with_retries()` rather than
-wrapping `scrape_funds()`. See `api_reference.md` for the full contract.
+wrapping `collect_prices()`. See `api_reference.md` for the full contract.
 
 ## Contributing Guidelines
 

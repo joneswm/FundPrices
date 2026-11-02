@@ -183,7 +183,7 @@ is over.
 Starts Playwright on first use, so a configuration that needs no scraping never
 launches Chromium. `page()` returns a live page; `close()` is safe if unused.
 
-### `scrape_funds(funds, data_dir=None, now=None)`
+### `collect_prices(funds, data_dir=None, now=None)`
 
 Main function to scrape prices for a list of funds. Playwright starts only if an FT
 fetch falls back to scraping (see `LazyBrowser`). Writes no file (#120): what it fetched
@@ -212,7 +212,7 @@ and decided goes to `write_results()`.
 
 **Result Format:**
 ```python
-results = scrape_funds([FundSpec("YA", "AAPL"), FundSpec("FT", "GB00B1FXTF86")])
+results = collect_prices([FundSpec("YA", "AAPL"), FundSpec("FT", "GB00B1FXTF86")])
 # [PriceRow("AAPL", "2026-09-18", "150.25", "USD"), PriceRow("GB00B1FXTF86", ...), ...]
 results.failures
 # ["GB00B1FXTF86: Error: Timeout"]   (only for funds that failed all attempts)
@@ -341,7 +341,7 @@ Calls `fetch_price()` up to `attempts` times (default 3), retrying raised except
 
 - `is_error_price(price)` - True when a stored value is an `"Error: ..."` string left by
   an old run
-- `normalize_price(price)` - normalises a price value for storage
+- `normalise_price(price)` - normalises a price value for storage
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
 
 ## Closed Holdings
@@ -667,7 +667,7 @@ malformed `--from` and a date after `now`'s.
 
 Rebuilds every identifier in `specs` from `start`, and returns `(rows, report)`: every
 `PriceRow` with a usable price to store, and a `BackfillReport`. Fetches, but writes
-nothing; `stored` (as `read_history_rows()` returns it) is not modified.
+nothing; `stored` (as `read_price_history()` returns it) is not modified.
 
 - **Deletes rather than upserts**, because carry-forward rows sit on dates the sources
   never report and would otherwise survive.
@@ -676,7 +676,7 @@ nothing; `stored` (as `read_history_rows()` returns it) is not modified.
   holdings — are never touched.
 - FT requests are separated by `FT_BACKFILL_PAUSE_SECONDS`.
 
-### `backfill_history(specs, start, data_dir=None, now=None)`
+### `backfill_prices(specs, start, data_dir=None, now=None)`
 
 The writer around `rebuild_price_rows()`: reads `prices_history.csv`, rebuilds it, and
 writes it back in full, with `latest_prices.csv`, the rolling window and the `.price`
@@ -718,10 +718,10 @@ date order. Both take a `status` keyword for the import's `imported` and
 
 One row of the price files (`prices_history.csv`, `latest_prices.csv`, the rolling window
 and the `--history` export), a NamedTuple of the file's text. `PriceRow.HEADER` is the
-file header, `Fund,Date,Price,Currency`, and `HISTORY_HEADER` is the same list. `currency`
+file header, `Fund,Date,Price,Currency`, and `PRICE_HISTORY_HEADER` is the same list. `currency`
 is `""` for a row stored before the column existed.
 
-### `read_history_rows(history_csv)`
+### `read_price_history(history_csv)`
 
 Returns stored history as `{(fund, date): PriceRow}`, loading legacy three-column rows
 with an empty currency; a row without a price is skipped. A `read_keyed_csv()` wrapper
@@ -759,7 +759,7 @@ reads each instrument's currency from it.
 
 Returns `row`, or `stored[fund]` when that row has a **newer** date, printing a warning
 that names the fund and both dates (#78). The same date returns `row`, so corrections
-apply. Used by `write_results()` for `latest_prices.csv` and by `scrape_funds()` for the
+apply. Used by `write_results()` for `latest_prices.csv` and by `collect_prices()` for the
 `.price` rows on `results.latest`, so a stale fetch (Yahoo served no Friday close for
 London ETFs for hours) cannot step either back a day, and the 90-day window with it.
 
@@ -1004,7 +1004,7 @@ the job runs.
 One row of `fx_history.csv` and `latest_fx.csv`, a NamedTuple of the file's text.
 `FxRow.HEADER` is the file header, `Pair,Date,Rate`, and `FX_HEADER` is the same list.
 
-### `snap_fx_rates(pairs, data_dir=None, now=None)`
+### `collect_fx_rates(pairs, data_dir=None, now=None)`
 
 Fetches a window of rates per pair, isolating failures so one dead pair does not cost
 the others. The window runs back `SNAP_WINDOW_DAYS` from `now` (default: the current
@@ -1036,7 +1036,7 @@ precision.
 rebuild (a pair that fails keeps everything it had) and returns `(rows, report)` without
 writing; `stored` is not modified. `backfill_fx()` is its writer: it reads
 `fx_history.csv`, rebuilds it and writes the FX files through `write_fx_files()`,
-returning the `BackfillReport`. `main()` calls it after `backfill_history()` on
+returning the `BackfillReport`. `main()` calls it after `backfill_prices()` on
 `--backfill` when `fx_pairs.txt` lists pairs.
 
 ## Configuration Constants
@@ -1093,7 +1093,7 @@ returning the `BackfillReport`. `main()` calls it after `backfill_history()` on
 - `INVESTING_HISTORICAL_URL`, `INVESTING_HEADERS`
 
 ### File Headers
-- `HISTORY_HEADER`: `Fund,Date,Price,Currency`
+- `PRICE_HISTORY_HEADER`: `Fund,Date,Price,Currency`
 - `FX_HEADER`: `Pair,Date,Rate`
 - `DIVIDEND_HISTORY_HEADER`: `Fund,ExDate,PayDate,Amount,Currency,Source`
 - `DIVIDEND_UPCOMING_HEADER`: `Fund,ExDate,PayDate,Amount,Currency,Status,AsOf`
@@ -1114,19 +1114,19 @@ Inside a run these are caught per instrument and surface on `.failures` or in a
 
 ### Basic Usage
 ```python
-from scrape_fund_price import scrape_funds, read_fund_specs, write_results
+from scrape_fund_price import collect_prices, read_fund_specs, write_results
 
 # Read fund configuration
 funds = read_fund_specs("funds.txt")
 
 # Fetch dated quotes, then store them
-results = scrape_funds(funds)
+results = collect_prices(funds)
 write_results(results)
 ```
 
 ### Custom Data Directory
 ```python
-results = scrape_funds(funds, data_dir="custom_data")
+results = collect_prices(funds, data_dir="custom_data")
 write_results(results, data_dir="custom_data")
 ```
 
