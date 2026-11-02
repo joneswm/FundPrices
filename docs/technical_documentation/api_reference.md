@@ -632,7 +632,9 @@ Shared by the daily run and the rebuild so both produce byte-identical output.
 
 When `latest` is supplied it names the funds currently being priced, and the rolling
 window is limited to that set. When omitted, `latest` is derived from `rows` and the
-window covers every fund.
+window covers every fund. The window ends on the newest date in `latest` (today when
+there is none, or when that stored date does not parse) and runs back
+`ROLLING_HISTORY_DAYS` days inclusive; a row whose date does not parse is left out.
 
 ### `latest_rows_by_fund(rows)`
 

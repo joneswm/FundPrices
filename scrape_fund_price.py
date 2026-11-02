@@ -1288,6 +1288,9 @@ def write_history_files(rows, data_dir, latest=None):
         max((row[1] for row in latest.values()), default=None)
         or datetime.date.today().isoformat()
     )
+    # A carried row is a stored row, and a stored date that does not parse
+    # is tolerated per row below; tolerate it here too rather than lose the
+    # whole run's output to one bad row.
     try:
         reference = datetime.date.fromisoformat(reference_date)
     except ValueError:

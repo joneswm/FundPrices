@@ -1879,6 +1879,30 @@ class TestFundPriceScraper(DataDirCase):
             self.read_text("prices_history_90_days.csv"), "Fund,Date,Price,Currency\n"
         )
 
+    def test_rolling_window_survives_a_carried_row_with_an_unparseable_date(self):
+        """Test a carried row whose stored date is not ISO cannot lose the run.
+
+        No writer produces such a row (every date stored is one a source
+        reported), but the per-row filter tolerates one in history, and a
+        carried row is a stored row. The reference date must tolerate it as
+        well, falling back to today, or a failed fetch for that fund would
+        crash the write and lose every price the run obtained.
+        """
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        results = ScrapeResults(rows=[["QQQ", recent, "266.28", "USD"]])
+        results.carried.append(["BAD", "not-a-date", "1.00", ""])
+
+        write_results(results, self.test_dir)
+
+        self.assertEqual(
+            self.read_rows("prices_history_90_days.csv"),
+            [["QQQ", recent, "266.28", "USD"]],
+        )
+        self.assertEqual(
+            self.read_rows("latest_prices.csv"),
+            [["BAD", "not-a-date", "1.00", ""], ["QQQ", recent, "266.28", "USD"]],
+        )
+
     def test_write_results_append_history(self):
         """Test that history file appends new data."""
         write_results([["IE0008368742", "2025-01-20", "123.45", "USD"]], self.test_dir)
