@@ -35,6 +35,11 @@ UNTRADED_SPIKE_RATIO = 1.2
 LINE_ENDING = "\n"
 
 
+# ===========================================================================
+# Storage helpers
+# ===========================================================================
+
+
 def open_for_write(path, **kwargs):
     """Open a file for writing with LF line endings on every platform.
 
@@ -96,6 +101,11 @@ def write_sorted_csv(path, header, rows, key):
     return ordered
 
 
+# ===========================================================================
+# Models
+# ===========================================================================
+
+
 class Quote(NamedTuple):
     """A single dated price as reported by a source."""
 
@@ -134,10 +144,17 @@ class ScrapeResults(list):
         self.carried = carried or []
 
 
+# ===========================================================================
+# Configuration files
+# ===========================================================================
+
+
 # GF stood for Google Finance, which the project scraped for about eleven
 # minutes on 2025-10-19 before replacing it with the Yahoo API. It has meant
 # Yahoo ever since, so it is kept only as a deprecated spelling of YA.
 SOURCE_ALIASES = {"GF": "YA"}
+
+
 # The scraping sources retired in 2026-11 (#97). A configuration line naming
 # one is an error rather than an alias: reusing YH for the API would silently
 # change which handler a stale line selects, which is why the rename chose YA.
@@ -334,6 +351,8 @@ def read_closed_holdings(filename=None):
 
 
 DISTRIBUTIONS_FILE = "distributions.txt"
+
+
 # Payments a year for each frequency a distributions.txt line may name.
 DISTRIBUTION_FREQUENCIES = {"monthly": 12, "quarterly": 4, "semiannual": 2, "annual": 1}
 MAX_PAY_OFFSET_DAYS = 365
@@ -505,30 +524,195 @@ def as_fund_spec(entry):
     return FundSpec(SOURCE_ALIASES.get(source.upper(), source), lookup_id, aliases)
 
 
-def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for the scraping fallback.
+def configured_identifiers(specs, closed_file=None):
+    """Return every identifier a distributions.txt line may name.
 
-    Only FT has an entry, used when its HTTP endpoint fails. YA and IV fetch
-    rather than scrape. The YH and MS scrapers were removed in #110.
+    The identifiers funds.txt publishes under (lookup ids and aliases) and the
+    identifiers of closed_holdings.txt, which may have past dividends of their
+    own. A missing closed-holdings file adds nothing.
+    """
+    if closed_file is None:
+        closed_file = CLOSED_HOLDINGS_FILE
+
+    identifiers = {
+        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
+    }
+    if os.path.isfile(closed_file):
+        identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
+    return identifiers
+
+
+FX_PAIRS_FILE = "fx_pairs.txt"
+
+
+def read_fx_pairs(filename=None):
+    """Read currency pairs to snap from a pairs file.
+
+    One six-letter pair per line, e.g. `USDGBP`, meaning GBP per 1 USD. Blank
+    lines and `#` comments are ignored. A missing file returns no pairs, so FX
+    is optional rather than required.
+
+    The slash spelling is deliberately rejected: by market convention
+    `GBP/NZD` means NZD per GBP, the inverse of what these rates are for, and
+    accepting it would store plausible but wrong values.
+
+    Raises:
+        ValueError: naming the line, for a malformed or repeated pair.
+    """
+    if filename is None:
+        filename = FX_PAIRS_FILE
+
+    if not os.path.isfile(filename):
+        return []
+
+    pairs = []
+    seen = {}
+    for number, fields, error in config_lines(filename, "fx pairs file"):
+        pair = ",".join(fields)
+        if not re.match(r"^[A-Z]{6}$", pair):
+            raise error(
+                "expected six uppercase letters such as 'USDGBP' (GBP per 1 USD), "
+                f"got {pair!r}"
+            )
+        first_use(seen, "pair", pair, number, error)
+        pairs.append(pair)
+
+    return pairs
+
+
+DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
+
+
+# What each code's source-id must look like, and how the error names it.
+DIVIDEND_SOURCE_ID_RULES = {
+    "IS": (
+        r"[1-9][0-9]{0,8}",
+        "the product id from the fund's URL (1 to 9 digits)",
+    ),
+    "IV": (r"[0-9A-Z]{9}", "the fund's CUSIP (9 capitals or digits)"),
+    "SS": (r"[A-Z]{2}[0-9A-Z]{9}[0-9]", "the fund's ISIN (12 characters)"),
+    "Q4": (
+        r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}/[A-Z]{4}",
+        "the investor-relations host/MIC (ir.example.com/XNYS)",
+    ),
+    "ET": (
+        r"[1-9][0-9]{0,4}",
+        "the HK code without leading zeros (1 to 5 digits)",
+    ),
+}
+
+
+class DividendSource(NamedTuple):
+    """One instrument's issuer source for dividend dates (SPEC-011).
+
+    `source_id` is the issuer's own id for the instrument: for IS (iShares
+    UK) the product id in the fund page's URL, for IV (Invesco) the CUSIP, for
+    SS (SSGA) the ISIN, for Q4 (Q4 Inc) the IR host and exchange MIC, for ET
+    (etnet) the HK stock code. See DIVIDEND_SOURCE_ID_RULES.
+    """
+
+    identifier: str
+    source: str
+    source_id: str
+
+
+def read_dividend_sources(filename=None, specs=None):
+    """Read the issuer sources of dividend dates.
+
+    Each line is `<identifier>,<source>,<source-id>` with `#` comments and
+    blank lines ignored; see specs/011-pay-dates/spec.md. A missing file means
+    no entries, so the file is optional like distributions.txt.
 
     Args:
-        source: Two-character source code
-        fund_id: Fund identifier specific to the source
+        filename: Path to read (default: DIVIDEND_SOURCES_FILE)
+        specs: The funds.txt instruments; a line may name any identifier they
+            publish, and two lines may not name one instrument. None skips
+            those checks
 
-    Returns:
-        Tuple of (url, selector), or (None, None) for a source that is not scraped
+    Raises:
+        ValueError: naming the offending line, before any network call.
     """
-    source_configs = {
-        "FT": {
-            "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
-            "selector": ".mod-ui-data-list__value",
-        },
-    }
+    if filename is None:
+        filename = DIVIDEND_SOURCES_FILE
 
-    config = source_configs.get(source.upper())
-    if config:
-        return config["url"], config["selector"]
-    return None, None
+    if not os.path.isfile(filename):
+        return []
+
+    instrument_of = None
+    if specs is not None:
+        instrument_of = {
+            identifier: as_fund_spec(entry).lookup_id
+            for entry in specs
+            for identifier in as_fund_spec(entry).publish_ids
+        }
+
+    sources = []
+    seen = {}
+    instruments = {}
+    for number, fields, error in config_lines(filename, "dividend sources file"):
+        if len(fields) != 3 or not fields[0]:
+            raise error(
+                "expected '<identifier>,<source>,<source-id>', got "
+                f"{','.join(fields)!r}"
+            )
+
+        identifier, source, source_id = fields[0], fields[1].upper(), fields[2]
+        if source not in DIVIDEND_SOURCE_CODES:
+            raise error(
+                f"source {fields[1]!r} is not one of "
+                f"{', '.join(DIVIDEND_SOURCE_CODES)}"
+            )
+        pattern, meaning = DIVIDEND_SOURCE_ID_RULES[source]
+        if not re.fullmatch(pattern, source_id):
+            raise error(f"source id {source_id!r} must be {meaning}")
+        if instrument_of is not None and identifier not in instrument_of:
+            raise error(f"identifier {identifier!r} is not published by funds.txt")
+        first_use(seen, "identifier", identifier, number, error)
+        if instrument_of is not None:
+            instrument = instrument_of[identifier]
+            if instrument in instruments:
+                raise error(
+                    f"{identifier!r} is the same instrument as line "
+                    f"{instruments[instrument]}"
+                )
+            instruments[instrument] = number
+
+        sources.append(DividendSource(identifier, source, source_id))
+
+    return sources
+
+
+# ===========================================================================
+# HTTP
+# ===========================================================================
+
+
+# Every plain HTTP fetch shares one timeout, one browser identity and one call.
+HTTP_TIMEOUT = 30
+
+
+# A bare "Mozilla/5.0" is refused with a 403 by investing.com; the endpoints
+# that look at the header want a realistic browser string.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def http_get(url, *, headers=None, timeout=HTTP_TIMEOUT):
+    """GET `url` and return the response, raising on an HTTP error status.
+
+    Transport and status errors propagate so fetch_with_retries can retry
+    them. Calls requests.get, which the tests patch.
+    """
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response
+
+
+# ===========================================================================
+# Yahoo prices
+# ===========================================================================
 
 
 def fetch_yahoo_quotes(symbol, start, end=None, now=None):
@@ -660,174 +844,9 @@ def closing_price_from_metadata(ticker, bar_date):
         return None
 
 
-def fetch_yahoo_hourly(symbol, start, end=None):
-    """Fetch hourly bars for a symbol from Yahoo Finance.
-
-    Yahoo serves hourly bars for the last 730 days only; a range outside that
-    comes back empty.
-
-    Args:
-        symbol: Yahoo ticker (e.g. "USDGBP=X")
-        start: Inclusive ISO start date
-        end: Exclusive ISO end date, or None for up to the latest bar
-
-    Returns:
-        list of (bar start as an aware UTC datetime, close), oldest first. A
-        bar's close is the price at the end of its hour.
-    """
-    history = yf.Ticker(symbol).history(
-        start=start, end=end, interval="1h", auto_adjust=False
-    )
-    bars = []
-    for timestamp, close in history["Close"].items() if len(history) else []:
-        if close is None or (isinstance(close, float) and math.isnan(close)):
-            continue
-        bars.append(
-            (
-                timestamp.to_pydatetime().astimezone(datetime.timezone.utc),
-                float(close),
-            )
-        )
-    return bars
-
-
-class DividendEvent(NamedTuple):
-    """One dividend Yahoo reports: the ex-date and the gross amount per share."""
-
-    ex_date: str  # ISO YYYY-MM-DD
-    amount: str  # plain decimal text, in `currency`
-    currency: str  # the instrument's price currency; "" when Yahoo gives none
-
-
-class DeclaredDividend(NamedTuple):
-    """The next dividend that has been announced.
-
-    Yahoo gives the dates only; an issuer (SPEC-011) also states the amount.
-    """
-
-    ex_date: str
-    pay_date: str  # "" when the source gives none or it does not follow the ex-date
-    amount: str = ""  # "" when the source does not state it
-    currency: str = ""  # the price currency of `amount`
-
-
-def format_dividend_amount(value):
-    """Format a per-share amount as plain decimal text.
-
-    Yahoo holds dividends as float32 and the float64 it serves carries the
-    noise: FLOS.L's 12.35p arrives as 12.349999. Seven significant digits is
-    all a float32 holds, so rounding there recovers the published figure
-    without discarding any real precision; the Decimal then keeps a small value
-    out of exponent notation. (format_yahoo_price cannot be used: 12.349999 is
-    a different float32 from 12.35, so its round trip keeps the noise.)
-    """
-    return format(decimal.Decimal(f"{float(value):.7g}").normalize(), "f")
-
-
-def ticker_currency(ticker):
-    """Return the currency Yahoo quotes a ticker in, or "" when it will not say."""
-    try:
-        return ticker.fast_info["currency"] or ""
-    except Exception:
-        return ""
-
-
-def fetch_yahoo_dividends(symbol, start, end=None):
-    """Fetch the dividend events of a symbol from Yahoo Finance.
-
-    The same call as the daily bars with the corporate actions switched on:
-    the bar of an ex-date carries the gross amount per share in its Dividends
-    column. The amount is in the instrument's price currency, so a pence line
-    stays in GBp exactly as its prices do.
-
-    Args:
-        symbol: Yahoo ticker (e.g. "IGLS.L", "QQQ")
-        start: Inclusive ISO start date, or None for everything Yahoo has
-        end: Exclusive ISO end date, or None for the latest bar; ignored
-            when start is None
-
-    Returns:
-        list[DividendEvent], oldest first
-
-    Raises:
-        Exception: transport and API errors propagate so fetch_with_retries
-            can retry them
-    """
-    ticker = yf.Ticker(symbol)
-    if start is None:
-        history = ticker.history(period="max", auto_adjust=False, actions=True)
-    else:
-        history = ticker.history(start=start, end=end, auto_adjust=False, actions=True)
-
-    if "Dividends" not in history:
-        return []
-
-    currency = ticker_currency(ticker)
-    events = []
-    for timestamp, value in history["Dividends"].items():
-        if value is None or math.isnan(float(value)) or float(value) <= 0:
-            continue
-        events.append(
-            DividendEvent(
-                timestamp.date().isoformat(), format_dividend_amount(value), currency
-            )
-        )
-    return events
-
-
-def parse_yahoo_date(value):
-    """Return a date from the shapes Yahoo uses for one, or None.
-
-    The calendar holds dates, the info endpoint epoch seconds. Anything else,
-    including a value too large to be a time, is no date.
-    """
-    if isinstance(value, datetime.datetime):
-        return value.date()
-    if isinstance(value, datetime.date):
-        return value
-    try:
-        if isinstance(value, str):
-            return datetime.date.fromisoformat(value[:10])
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).date()
-    except (ValueError, OverflowError, OSError):
-        return None
-    return None
-
-
-def fetch_yahoo_declared(symbol, today=None):
-    """Return the next dividend Yahoo has announced, or None.
-
-    `Ticker.calendar` first, then `Ticker.info` (`exDividendDate`,
-    `dividendDate`) when the calendar has no ex-date still to come: Yahoo has
-    a calendar for stocks and rarely for ETFs, and it raises for some funds.
-    Only an ex-date today or later counts; the others are the last dividend,
-    which the history already holds. Neither endpoint carries the declared
-    amount.
-
-    Raises:
-        Exception: an info failure propagates so fetch_with_retries can retry
-            it; a calendar failure is not an error, because info is asked next
-    """
-    today = today or datetime.date.today()
-    ticker = yf.Ticker(symbol)
-    try:
-        calendar = ticker.calendar or {}
-    except Exception:
-        calendar = {}
-
-    ex_date = parse_yahoo_date(calendar.get("Ex-Dividend Date"))
-    pay_date = parse_yahoo_date(calendar.get("Dividend Date"))
-    if ex_date is None or ex_date < today:
-        info = ticker.info or {}
-        ex_date = parse_yahoo_date(info.get("exDividendDate"))
-        pay_date = parse_yahoo_date(info.get("dividendDate"))
-
-    if ex_date is None or ex_date < today:
-        return None
-    if pay_date is None or pay_date < ex_date:
-        return DeclaredDividend(ex_date.isoformat(), "")
-    return DeclaredDividend(ex_date.isoformat(), pay_date.isoformat())
+# ===========================================================================
+# Financial Times
+# ===========================================================================
 
 
 FT_HISTORICAL_PAGE = "https://markets.ft.com/data/funds/tearsheet/historical?s={isin}"
@@ -835,25 +854,6 @@ FT_HISTORICAL_AJAX = (
     "https://markets.ft.com/data/equities/ajax/get-historical-prices"
     "?startDate={start}&endDate={end}&symbol={xid}"
 )
-# Every plain HTTP fetch shares one timeout, one browser identity and one call.
-HTTP_TIMEOUT = 30
-# A bare "Mozilla/5.0" is refused with a 403 by investing.com; the endpoints
-# that look at the header want a realistic browser string.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
-
-
-def http_get(url, *, headers=None, timeout=HTTP_TIMEOUT):
-    """GET `url` and return the response, raising on an HTTP error status.
-
-    Transport and status errors propagate so fetch_with_retries can retry
-    them. Calls requests.get, which the tests patch.
-    """
-    response = requests.get(url, headers=headers, timeout=timeout)
-    response.raise_for_status()
-    return response
 
 
 # FT's dated endpoint returns a provisional row for the current day that moves
@@ -949,6 +949,51 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
     return quotes
 
 
+def scrape_price_with_common_settings(page, url, selector):
+    """Scrape price using common settings for all sources."""
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/115.0.0.0 Safari/537.36"
+    )
+    page.context.set_extra_http_headers({"User-Agent": user_agent})
+    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+    page.wait_for_selector(selector, timeout=60000)
+    return page.locator(selector).first.text_content().strip()
+
+
+class LazyBrowser:
+    """Start Playwright only if a fund actually needs scraping.
+
+    Most sources are now plain HTTP, so launching Chromium up front wastes
+    seconds on every run. The browser starts on first use and is reused.
+    """
+
+    def __init__(self):
+        self._context_manager = None
+        self._browser = None
+        self._page = None
+
+    def page(self):
+        if self._page is None:
+            self._context_manager = sync_playwright()
+            playwright = self._context_manager.__enter__()
+            self._browser = playwright.chromium.launch(headless=True)
+            self._page = self._browser.new_context().new_page()
+        return self._page
+
+    def close(self):
+        if self._browser is not None:
+            self._browser.close()
+        if self._context_manager is not None:
+            self._context_manager.__exit__(None, None, None)
+
+
+# ===========================================================================
+# investing.com
+# ===========================================================================
+
+
 INVESTING_HISTORICAL_URL = (
     "https://api.investing.com/api/financialdata/historical/{pair_id}"
     "?start-date={start}&end-date={end}&time-frame=Daily&add-missing-rows=false"
@@ -1012,17 +1057,35 @@ def fetch_investing_quotes(pair_id, start, end=None):
     return quotes
 
 
-def scrape_price_with_common_settings(page, url, selector):
-    """Scrape price using common settings for all sources."""
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/115.0.0.0 Safari/537.36"
-    )
-    page.context.set_extra_http_headers({"User-Agent": user_agent})
-    page.goto(url, timeout=30000, wait_until="domcontentloaded")
-    page.wait_for_selector(selector, timeout=60000)
-    return page.locator(selector).first.text_content().strip()
+# ===========================================================================
+# Prices: dispatch, retries and the daily scrape
+# ===========================================================================
+
+
+def get_source_config(source, fund_id):
+    """Get URL and CSS selector configuration for the scraping fallback.
+
+    Only FT has an entry, used when its HTTP endpoint fails. YA and IV fetch
+    rather than scrape. The YH and MS scrapers were removed in #110.
+
+    Args:
+        source: Two-character source code
+        fund_id: Fund identifier specific to the source
+
+    Returns:
+        Tuple of (url, selector), or (None, None) for a source that is not scraped
+    """
+    source_configs = {
+        "FT": {
+            "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
+            "selector": ".mod-ui-data-list__value",
+        },
+    }
+
+    config = source_configs.get(source.upper())
+    if config:
+        return config["url"], config["selector"]
+    return None, None
 
 
 def is_error_price(price):
@@ -1040,49 +1103,6 @@ def is_usable_price(price):
     return bool(price) and price != "N/A" and not is_error_price(price)
 
 
-def newest_stored_rows(data_dir):
-    """Return fund -> newest stored [fund, date, price, currency].
-
-    The floor for "latest" files: a fetch may not publish anything older.
-    """
-    newest = {}
-    for name in ("latest_prices.csv", "prices_history.csv"):
-        path = os.path.join(data_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, mode="r", newline="") as file:
-            for row in csv.DictReader(file):
-                fund = row.get("Fund")
-                if not fund or not is_usable_price(row.get("Price")):
-                    continue
-                current = newest.get(fund)
-                if current is None or row.get("Date", "") > current[1]:
-                    newest[fund] = [
-                        fund,
-                        row.get("Date", ""),
-                        row["Price"],
-                        row.get("Currency") or "",
-                    ]
-    return newest
-
-
-def keep_newer_stored_row(fund, row, stored):
-    """Return `row`, or the stored row when that one has a newer date.
-
-    A later run can fetch an older date than an earlier one stored (Yahoo
-    served no Friday close for London ETFs on 2026-10-10), and "latest" must
-    never go backwards. The same date still replaces, so corrections apply.
-    """
-    current = stored.get(fund)
-    if current is not None and current[1] > row[1]:
-        print(
-            f"Warning: {fund} fetched price dated {row[1]} is older than the "
-            f"stored {current[1]}; keeping the stored row"
-        )
-        return list(current)
-    return row
-
-
 def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
     """Fetch a price, retrying exceptions."""
     last_error = None
@@ -1094,33 +1114,6 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
             last_error = str(e)
 
     return None, last_error
-
-
-class LazyBrowser:
-    """Start Playwright only if a fund actually needs scraping.
-
-    Most sources are now plain HTTP, so launching Chromium up front wastes
-    seconds on every run. The browser starts on first use and is reused.
-    """
-
-    def __init__(self):
-        self._context_manager = None
-        self._browser = None
-        self._page = None
-
-    def page(self):
-        if self._page is None:
-            self._context_manager = sync_playwright()
-            playwright = self._context_manager.__enter__()
-            self._browser = playwright.chromium.launch(headless=True)
-            self._page = self._browser.new_context().new_page()
-        return self._page
-
-    def close(self):
-        if self._browser is not None:
-            self._browser.close()
-        if self._context_manager is not None:
-            self._context_manager.__exit__(None, None, None)
 
 
 def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
@@ -1228,6 +1221,14 @@ def scrape_funds(funds, data_dir=None):
     return results
 
 
+# ===========================================================================
+# Price storage
+# ===========================================================================
+
+
+HISTORY_HEADER = ["Fund", "Date", "Price", "Currency"]
+
+
 def read_history_rows(history_csv):
     """Read stored history keyed on (Fund, Date).
 
@@ -1239,9 +1240,6 @@ def read_history_rows(history_csv):
     )
 
 
-HISTORY_HEADER = ["Fund", "Date", "Price", "Currency"]
-
-
 def latest_rows_by_fund(rows):
     """Return each fund's row with the newest price date."""
     latest = {}
@@ -1250,6 +1248,49 @@ def latest_rows_by_fund(rows):
         if current is None or row[1] > current[1]:
             latest[row[0]] = list(row)
     return latest
+
+
+def newest_stored_rows(data_dir):
+    """Return fund -> newest stored [fund, date, price, currency].
+
+    The floor for "latest" files: a fetch may not publish anything older.
+    """
+    newest = {}
+    for name in ("latest_prices.csv", "prices_history.csv"):
+        path = os.path.join(data_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, mode="r", newline="") as file:
+            for row in csv.DictReader(file):
+                fund = row.get("Fund")
+                if not fund or not is_usable_price(row.get("Price")):
+                    continue
+                current = newest.get(fund)
+                if current is None or row.get("Date", "") > current[1]:
+                    newest[fund] = [
+                        fund,
+                        row.get("Date", ""),
+                        row["Price"],
+                        row.get("Currency") or "",
+                    ]
+    return newest
+
+
+def keep_newer_stored_row(fund, row, stored):
+    """Return `row`, or the stored row when that one has a newer date.
+
+    A later run can fetch an older date than an earlier one stored (Yahoo
+    served no Friday close for London ETFs on 2026-10-10), and "latest" must
+    never go backwards. The same date still replaces, so corrections apply.
+    """
+    current = stored.get(fund)
+    if current is not None and current[1] > row[1]:
+        print(
+            f"Warning: {fund} fetched price dated {row[1]} is older than the "
+            f"stored {current[1]}; keeping the stored row"
+        )
+        return list(current)
+    return row
 
 
 def write_history_csv(rows, data_dir):
@@ -1368,568 +1409,23 @@ def write_results(results, data_dir=None):
     write_history_files(list(history_rows.values()), data_dir, latest=latest)
 
 
-QUOTING_UNIT_FACTOR = 50
-FT_BACKFILL_PAUSE_SECONDS = 1
+# ===========================================================================
+# FX rates
+# ===========================================================================
 
 
-class BackfillEntry(NamedTuple):
-    """One identifier's line of a BackfillReport.
-
-    `failed` describes an identifier left exactly as it was; `rebuilt` one
-    whose rows from the start date were replaced by what its source reported.
-    """
-
-    identifier: str
-    before: int
-    deleted: int
-    retained: int
-    inserted: int
-    first: str
-    last: str
-    currency: str
-    status: str
-
-    @classmethod
-    def failed(cls, identifier, existing, status="failed, kept existing"):
-        """The entry for an identifier whose stored keys `existing` all stay."""
-        dates = [key[1] for key in existing]
-        return cls(
-            identifier=identifier,
-            before=len(existing),
-            deleted=0,
-            retained=len(existing),
-            inserted=0,
-            first=min(dates, default="-"),
-            last=max(dates, default="-"),
-            currency="-",
-            status=status,
-        )
-
-    @classmethod
-    def rebuilt(cls, identifier, before, deleted, retained, inserted, status="rebuilt"):
-        """The entry for an identifier given the dated rows `inserted`.
-
-        `inserted` is the new rows' (date, currency) pairs in date order; the
-        currency reported is the first row's.
-        """
-        return cls(
-            identifier=identifier,
-            before=before,
-            deleted=deleted,
-            retained=retained,
-            inserted=len(inserted),
-            first=inserted[0][0] if inserted else "-",
-            last=inserted[-1][0] if inserted else "-",
-            currency=inserted[0][1] if inserted else "-",
-            status=status,
-        )
-
-
-class BackfillReport:
-    """Reconciliation of what a rebuild changed, per identifier."""
-
-    def __init__(self):
-        self.entries = []
-        self.failures = []
-        self.warnings = []
-
-    def to_markdown(self):
-        """Render the report for stdout and the Actions job summary."""
-        lines = [
-            "| Identifier | Before | Deleted | Kept | Inserted | First | Last "
-            "| Ccy | Status |",
-            "|---|---:|---:|---:|---:|---|---|---|---|",
-        ]
-        for entry in self.entries:
-            lines.append(
-                "| {e.identifier} | {e.before} | {e.deleted} | {e.retained} "
-                "| {e.inserted} | {e.first} | {e.last} | {e.currency} "
-                "| {e.status} |".format(e=entry)
-            )
-
-        if self.warnings:
-            lines += ["", "**Warnings**", ""]
-            lines += [f"- {warning}" for warning in self.warnings]
-
-        if self.failures:
-            lines += ["", "**Failures**", ""]
-            lines += [f"- {failure}" for failure in self.failures]
-
-        return "\n".join(lines)
-
-
-STALE_AFTER_DAYS = 4
-SUMMARY_HEADER = [
-    "Name",
-    "Aliases",
-    "Currency",
-    "NewDate",
-    "New",
-    "OldDate",
-    "Old",
-    "Delta",
-    "PctDelta",
-    "AgeDays",
-    "Stale",
-    "Failed",
-]
-
-
-class SummaryRow(NamedTuple):
-    """One instrument's or pair's movement for the day."""
-
-    name: str
-    aliases: tuple
-    currency: str
-    new_date: str
-    new: str
-    old_date: str
-    old: str
-    delta: str
-    pct_delta: str
-    age_days: int
-    stale: bool
-    failed: bool
-
-
-def format_decimal(value, places=None):
-    """Render a Decimal without exponent notation or trailing noise."""
-    if places is not None:
-        text = f"{value:.{places}f}"
-    else:
-        text = format(value.normalize(), "f")
-    return text
-
-
-def compare_values(new_text, old_text, places=None):
-    """Return (delta, percent delta) as strings for two stored values.
-
-    Uses Decimal so that 7.15 - 7.09 is exactly 0.06 rather than the binary
-    float 0.0600000000000005. An old value of zero yields no percentage
-    instead of a division error, and a stored value that is not a number (the
-    files once recorded "N/A") yields neither, since the summary reads the
-    history as stored.
-    """
-    try:
-        new_value = decimal.Decimal(new_text)
-        old_value = decimal.Decimal(old_text)
-    except decimal.InvalidOperation:
-        return "", ""
-
-    delta = new_value - old_value
-    delta_text = format_decimal(delta, places)
-
-    if old_value == 0:
-        return delta_text, ""
-
-    percent = (delta / old_value) * 100
-    return delta_text, f"{percent:+.2f}"
-
-
-def summarise_series(name, aliases, rows, failures, run_date, places=None):
-    """Build one SummaryRow from an instrument's dated rows.
-
-    `old` is the price on the previous **distinct** price date, never the
-    calendar day before: funds, LSE, US and HK instruments keep different
-    calendars, and fund NAVs arrive a day later than exchange prices.
-    """
-    failed = any(name in failure for failure in failures)
-    ordered = sorted(rows, key=lambda row: row[1])
-
-    if not ordered:
-        return SummaryRow(name, aliases, "", "", "", "", "", "", "", 0, False, True)
-
-    newest = ordered[-1]
-    previous = ordered[-2] if len(ordered) > 1 else None
-    currency = newest[3] if len(newest) > 3 else ""
-
-    delta, pct_delta = ("", "")
-    if previous is not None:
-        delta, pct_delta = compare_values(newest[2], previous[2], places)
-
-    age_days = (
-        datetime.date.fromisoformat(run_date) - datetime.date.fromisoformat(newest[1])
-    ).days
-
-    return SummaryRow(
-        name=name,
-        aliases=aliases,
-        currency=currency,
-        new_date=newest[1],
-        new=newest[2],
-        old_date=previous[1] if previous is not None else "",
-        old=previous[2] if previous is not None else "",
-        delta=delta,
-        pct_delta=pct_delta,
-        age_days=age_days,
-        stale=age_days > STALE_AFTER_DAYS,
-        failed=failed,
-    )
-
-
-def group_by_name(rows):
-    """Group stored rows by their first cell, the fund or pair, in file order."""
-    groups = {}
-    for row in rows:
-        groups.setdefault(row[0], []).append(row)
-    return groups
-
-
-def build_price_summary(history_rows, specs, failures, run_date):
-    """Summarise each configured instrument's latest movement.
-
-    An aliased instrument is reported once, under its lookup identifier, since
-    its aliases carry an identical series by construction.
-    """
-    by_fund = group_by_name(history_rows)
-
-    rows = []
-    for entry in specs:
-        # Accept plain (source, identifier) pairs as scrape_funds() does.
-        spec = as_fund_spec(entry)
-        rows.append(
-            summarise_series(
-                spec.lookup_id,
-                tuple(spec.aliases),
-                by_fund.get(spec.lookup_id, []),
-                failures,
-                run_date,
-            )
-        )
-    return rows
-
-
-def build_fx_summary(fx_rows, pairs, failures, run_date):
-    """Summarise each currency pair's latest movement."""
-    by_pair = group_by_name(fx_rows)
-
-    return [
-        summarise_series(
-            pair,
-            (),
-            by_pair.get(pair, []),
-            failures,
-            run_date,
-            places=FX_RATE_DECIMALS,
-        )
-        for pair in pairs
-    ]
-
-
-class DividendSummaryRow(NamedTuple):
-    """One dividend that is new, or newly dated, in today's run."""
-
-    name: str
-    aliases: tuple
-    ex_date: str
-    pay_date: str
-    amount: str
-    currency: str
-    status: str
-
-
-def build_dividend_summary(previous, upcoming, specs):
-    """List the upcoming dividends that are news today (SPEC-010).
-
-    A row is news when its (Fund, ExDate) was not in the previous file or its
-    pay date or status changed: a new ex-date, a pay date appearing, an
-    estimate turning into a declared dividend. A different amount alone is
-    not. An aliased instrument is reported once, under its lookup identifier,
-    as in the price table.
-
-    Args:
-        previous: The previous run's dividends_upcoming.csv rows
-        upcoming: Today's rows
-        specs: FundSpec instances, or plain (source, identifier) pairs
-    """
-    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
-    rows = []
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        for row in sorted(upcoming, key=lambda row: row[1]):
-            if row[0] != spec.lookup_id:
-                continue
-            if before.get((row[0], row[1])) == (row[2], row[5]):
-                continue
-            rows.append(
-                DividendSummaryRow(
-                    spec.lookup_id,
-                    tuple(spec.aliases),
-                    row[1],
-                    row[2],
-                    row[3],
-                    row[4],
-                    row[5],
-                )
-            )
-    return rows
-
-
-def _dividend_table(rows):
-    """Render the Dividends section's lines: a table, or None when empty."""
-    if not rows:
-        return ["None"]
-
-    lines = [
-        "| Name | Ex-date | Pay date | Amount | Ccy | Status |",
-        "|---|---|---|---|---|---|",
-    ]
-    for row in rows:
-        cells = [
-            display_name(row.name, row.aliases),
-            row.ex_date,
-            row.pay_date or "-",
-            row.amount or "-",
-            row.currency or "-",
-            row.status,
-        ]
-        lines.append("| " + " | ".join(cells) + " |")
-    return lines
-
-
-def display_name(name, aliases):
-    """Return an instrument's name with its aliases, as the tables show it."""
-    return f"{name} ({', '.join(aliases)})" if aliases else name
-
-
-def _summary_table(rows, value_label, include_currency):
-    """Render one Markdown table of summary rows."""
-    columns = ["Name"]
-    if include_currency:
-        columns.append("Ccy")
-    columns += [f"{value_label} date", "New", "Old", "Delta", "% Delta"]
-
-    lines = [
-        "| " + " | ".join(columns) + " |",
-        "|" + "|".join(["---"] * len(columns)) + "|",
-    ]
-
-    for row in rows:
-        name = display_name(row.name, row.aliases)
-        if row.failed:
-            name += " !"
-        elif row.stale:
-            name += " ~"
-
-        cells = [name]
-        if include_currency:
-            cells.append(row.currency or "-")
-        cells += [
-            row.new_date or "-",
-            row.new or "-",
-            row.old or "-",
-            row.delta or "-",
-            row.pct_delta or "-",
-        ]
-        lines.append("| " + " | ".join(cells) + " |")
-
-    return lines
-
-
-def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
-    """Render the day's movements for reading directly on GitHub.
-
-    `dividend_rows` (DividendSummaryRow, possibly none) adds a Dividends
-    section; without it the output is what it was before dividends existed.
-    """
-    lines = [f"# Daily Price Summary - {run_date}", ""]
-
-    lines += ["## Prices", ""]
-    lines += _summary_table(price_rows, "Price", include_currency=True)
-
-    if fx_rows:
-        lines += [
-            "",
-            "## FX (GBP per 1 unit of foreign currency)",
-            "",
-        ]
-        lines += _summary_table(fx_rows, "Rate", include_currency=False)
-
-    if dividend_rows is not None:
-        lines += ["", "## Dividends", ""]
-        lines += _dividend_table(dividend_rows)
-
-    attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
-    lines += ["", "## Attention", ""]
-    if attention:
-        for row in attention:
-            reason = (
-                "no price obtained this run"
-                if row.failed
-                else (f"stale: last price {row.age_days} days ago")
-            )
-            lines.append(f"- **{row.name}**: {reason}")
-    else:
-        lines.append("None")
-
-    movers = [
-        row
-        for row in price_rows + fx_rows
-        if row.pct_delta and not row.stale and not row.failed
-    ]
-    movers.sort(key=lambda row: abs(decimal.Decimal(row.pct_delta)), reverse=True)
-    lines += ["", "## Biggest movers", ""]
-    if movers:
-        for row in movers[:5]:
-            lines.append(f"- **{row.name}**: {row.pct_delta}%")
-    else:
-        lines.append("None")
-
-    lines.append("")
-    lines.append(
-        "Legend: `!` no price this run, `~` stale. "
-        "Percent changes are unit-independent; absolute deltas are in the "
-        "instrument's own currency."
-    )
-    return "\n".join(lines) + "\n"
-
-
-def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=None):
-    """Write the daily summary as CSV and Markdown.
-
-    The CSV has one row per instrument and a header consumers read, so the
-    Dividends section goes in the Markdown only.
-
-    Past summaries stay recoverable from git history and can be recomputed
-    from prices_history.csv, so no dated archive is kept.
-    """
-    if data_dir is None:
-        data_dir = DATA_DIR
-
-    os.makedirs(data_dir, exist_ok=True)
-
-    # A SummaryRow is a tuple in SUMMARY_HEADER's order; only the aliases
-    # need rendering, as the identifiers joined by ";".
-    with open_for_write(os.path.join(data_dir, "daily_summary.csv")) as file:
-        writer = csv_writer(file)
-        writer.writerow(SUMMARY_HEADER)
-        for row in price_rows + fx_rows:
-            writer.writerow(row._replace(aliases=";".join(row.aliases)))
-
-    markdown = render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows)
-    with open_for_write(
-        os.path.join(data_dir, "daily_summary.md"), encoding="utf-8"
-    ) as file:
-        file.write(markdown)
-
-    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if step_summary:
-        with open(step_summary, "a", encoding="utf-8") as file:
-            file.write(markdown)
-
-
-def validate_iso_date(value, flag):
-    """Return an error message when `value` is not a YYYY-MM-DD date, else None."""
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
-        try:
-            datetime.date.fromisoformat(value)
-            return None
-        except ValueError:
-            pass
-
-    return f"Invalid {flag} date format. Use YYYY-MM-DD"
-
-
-def validate_start_date(value, flag="--from"):
-    """Return an error message for an unusable start date, else None.
-
-    `flag` names the option in the message: the rebuilds take --from, the
-    history export --start (the two are one argument).
-    """
-    error = validate_iso_date(value, flag)
-    if error:
-        return error
-
-    if datetime.date.fromisoformat(value) > datetime.date.today():
-        return f"{flag} date is in the future"
-
-    return None
-
-
-def validate_backfill_args(args):
-    """Return an error message for an invalid backfill invocation, else None."""
-    if not args.backfill:
-        return None
-
-    if args.history:
-        return "--backfill cannot be combined with --history"
-
-    if not args.start:
-        return "--from is required when using --backfill"
-
-    return validate_start_date(args.start)
-
-
-def check_quoting_unit(identifier, quotes):
-    """Return a warning when a series looks like it changed quoting unit.
-
-    A switch between pence and pounds is a factor of 100. Flagging anything
-    above 50 catches it without firing on genuine daily moves, which do not
-    come close.
-    """
-    previous = None
-    for quote in quotes:
-        try:
-            value = float(quote.price)
-        except ValueError:
-            continue
-        if (
-            previous
-            and value
-            and max(previous, value) / min(previous, value) > (QUOTING_UNIT_FACTOR)
-        ):
-            return (
-                f"{identifier}: price moved from {previous} to {value} on "
-                f"{quote.date}; check for a quoting unit change"
-            )
-        previous = value or previous
-    return None
-
-
-FX_PAIRS_FILE = "fx_pairs.txt"
 FX_RATE_DECIMALS = 6
 FX_HEADER = ["Pair", "Date", "Rate"]
+
+
 # A day's FX rate is the New York close, 17:00 in New York (#80). Yahoo's daily
 # FX bar is no use for this: its Close is the rate at the start of the day.
 FX_CLOSE_ZONE = ZoneInfo("America/New_York")
 FX_CLOSE_HOUR = 17
+
+
 # Yahoo keeps hourly bars for 730 days; one day's margin keeps a request in range.
 FX_HOURLY_HISTORY_DAYS = 729
-
-
-def read_fx_pairs(filename=None):
-    """Read currency pairs to snap from a pairs file.
-
-    One six-letter pair per line, e.g. `USDGBP`, meaning GBP per 1 USD. Blank
-    lines and `#` comments are ignored. A missing file returns no pairs, so FX
-    is optional rather than required.
-
-    The slash spelling is deliberately rejected: by market convention
-    `GBP/NZD` means NZD per GBP, the inverse of what these rates are for, and
-    accepting it would store plausible but wrong values.
-
-    Raises:
-        ValueError: naming the line, for a malformed or repeated pair.
-    """
-    if filename is None:
-        filename = FX_PAIRS_FILE
-
-    if not os.path.isfile(filename):
-        return []
-
-    pairs = []
-    seen = {}
-    for number, fields, error in config_lines(filename, "fx pairs file"):
-        pair = ",".join(fields)
-        if not re.match(r"^[A-Z]{6}$", pair):
-            raise error(
-                "expected six uppercase letters such as 'USDGBP' (GBP per 1 USD), "
-                f"got {pair!r}"
-            )
-        first_use(seen, "pair", pair, number, error)
-        pairs.append(pair)
-
-    return pairs
 
 
 def format_fx_rate(value):
@@ -1939,6 +1435,37 @@ def format_fx_rate(value):
     width: HKDGBP is about 0.0951, where 4dp would lose roughly 0.1%.
     """
     return f"{float(value):.{FX_RATE_DECIMALS}f}"
+
+
+def fetch_yahoo_hourly(symbol, start, end=None):
+    """Fetch hourly bars for a symbol from Yahoo Finance.
+
+    Yahoo serves hourly bars for the last 730 days only; a range outside that
+    comes back empty.
+
+    Args:
+        symbol: Yahoo ticker (e.g. "USDGBP=X")
+        start: Inclusive ISO start date
+        end: Exclusive ISO end date, or None for up to the latest bar
+
+    Returns:
+        list of (bar start as an aware UTC datetime, close), oldest first. A
+        bar's close is the price at the end of its hour.
+    """
+    history = yf.Ticker(symbol).history(
+        start=start, end=end, interval="1h", auto_adjust=False
+    )
+    bars = []
+    for timestamp, close in history["Close"].items() if len(history) else []:
+        if close is None or (isinstance(close, float) and math.isnan(close)):
+            continue
+        bars.append(
+            (
+                timestamp.to_pydatetime().astimezone(datetime.timezone.utc),
+                float(close),
+            )
+        )
+    return bars
 
 
 def new_york_fx_closes(bars, now=None):
@@ -2103,6 +1630,154 @@ def write_fx_results(results, data_dir=None):
     write_fx_files(list(stored.values()), data_dir)
 
 
+# ===========================================================================
+# Backfill and the closed-holdings import
+# ===========================================================================
+
+
+QUOTING_UNIT_FACTOR = 50
+FT_BACKFILL_PAUSE_SECONDS = 1
+
+
+class BackfillEntry(NamedTuple):
+    """One identifier's line of a BackfillReport.
+
+    `failed` describes an identifier left exactly as it was; `rebuilt` one
+    whose rows from the start date were replaced by what its source reported.
+    """
+
+    identifier: str
+    before: int
+    deleted: int
+    retained: int
+    inserted: int
+    first: str
+    last: str
+    currency: str
+    status: str
+
+    @classmethod
+    def failed(cls, identifier, existing, status="failed, kept existing"):
+        """The entry for an identifier whose stored keys `existing` all stay."""
+        dates = [key[1] for key in existing]
+        return cls(
+            identifier=identifier,
+            before=len(existing),
+            deleted=0,
+            retained=len(existing),
+            inserted=0,
+            first=min(dates, default="-"),
+            last=max(dates, default="-"),
+            currency="-",
+            status=status,
+        )
+
+    @classmethod
+    def rebuilt(cls, identifier, before, deleted, retained, inserted, status="rebuilt"):
+        """The entry for an identifier given the dated rows `inserted`.
+
+        `inserted` is the new rows' (date, currency) pairs in date order; the
+        currency reported is the first row's.
+        """
+        return cls(
+            identifier=identifier,
+            before=before,
+            deleted=deleted,
+            retained=retained,
+            inserted=len(inserted),
+            first=inserted[0][0] if inserted else "-",
+            last=inserted[-1][0] if inserted else "-",
+            currency=inserted[0][1] if inserted else "-",
+            status=status,
+        )
+
+
+class BackfillReport:
+    """Reconciliation of what a rebuild changed, per identifier."""
+
+    def __init__(self):
+        self.entries = []
+        self.failures = []
+        self.warnings = []
+
+    def to_markdown(self):
+        """Render the report for stdout and the Actions job summary."""
+        lines = [
+            "| Identifier | Before | Deleted | Kept | Inserted | First | Last "
+            "| Ccy | Status |",
+            "|---|---:|---:|---:|---:|---|---|---|---|",
+        ]
+        for entry in self.entries:
+            lines.append(
+                "| {e.identifier} | {e.before} | {e.deleted} | {e.retained} "
+                "| {e.inserted} | {e.first} | {e.last} | {e.currency} "
+                "| {e.status} |".format(e=entry)
+            )
+
+        if self.warnings:
+            lines += ["", "**Warnings**", ""]
+            lines += [f"- {warning}" for warning in self.warnings]
+
+        if self.failures:
+            lines += ["", "**Failures**", ""]
+            lines += [f"- {failure}" for failure in self.failures]
+
+        return "\n".join(lines)
+
+
+def check_quoting_unit(identifier, quotes):
+    """Return a warning when a series looks like it changed quoting unit.
+
+    A switch between pence and pounds is a factor of 100. Flagging anything
+    above 50 catches it without firing on genuine daily moves, which do not
+    come close.
+    """
+    previous = None
+    for quote in quotes:
+        try:
+            value = float(quote.price)
+        except ValueError:
+            continue
+        if (
+            previous
+            and value
+            and max(previous, value) / min(previous, value) > (QUOTING_UNIT_FACTOR)
+        ):
+            return (
+                f"{identifier}: price moved from {previous} to {value} on "
+                f"{quote.date}; check for a quoting unit change"
+            )
+        previous = value or previous
+    return None
+
+
+def is_removable_row(row):
+    """Return True when a stored row may be deleted during a rebuild.
+
+    A rebuild replaces what the source reports, but sources are not perfectly
+    reliable: FT's historical endpoint intermittently omits a row or two from
+    an identical request (893 vs 895 rows, observed against the live endpoint,
+    with a narrow-window query confirming the omitted days are real). Deleting
+    every row the source did not return this time would silently lose real
+    trading days.
+
+    A row that already carries a currency came from a dated source fetch, so it
+    is kept when the source omits it. Rows with no currency predate the
+    currency column and are exactly the scrape-dated, carry-forward data the
+    rebuild exists to remove. A weekend row is never legitimate for these
+    sources, so it is always removable.
+
+    Every writer of the history stamps ISO dates, so a date that does not
+    parse is a damaged file, and the ValueError stops the rebuild rather than
+    deleting the row under a "rebuilt" status.
+    """
+    row_date = row[1]
+    currency = row[3] if len(row) > 3 else ""
+    if datetime.date.fromisoformat(row_date).weekday() >= 5:
+        return True
+    return not currency
+
+
 def backfill_fx(pairs, start, data_dir=None, report=None):
     """Rebuild stored FX rates from source data, from `start` onwards.
 
@@ -2154,33 +1829,6 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
 
     write_fx_files(list(stored.values()), data_dir)
     return report
-
-
-def is_removable_row(row):
-    """Return True when a stored row may be deleted during a rebuild.
-
-    A rebuild replaces what the source reports, but sources are not perfectly
-    reliable: FT's historical endpoint intermittently omits a row or two from
-    an identical request (893 vs 895 rows, observed against the live endpoint,
-    with a narrow-window query confirming the omitted days are real). Deleting
-    every row the source did not return this time would silently lose real
-    trading days.
-
-    A row that already carries a currency came from a dated source fetch, so it
-    is kept when the source omits it. Rows with no currency predate the
-    currency column and are exactly the scrape-dated, carry-forward data the
-    rebuild exists to remove. A weekend row is never legitimate for these
-    sources, so it is always removable.
-
-    Every writer of the history stamps ISO dates, so a date that does not
-    parse is a damaged file, and the ValueError stops the rebuild rather than
-    deleting the row under a "rebuilt" status.
-    """
-    row_date = row[1]
-    currency = row[3] if len(row) > 3 else ""
-    if datetime.date.fromisoformat(row_date).weekday() >= 5:
-        return True
-    return not currency
 
 
 def backfill_history(specs, start, data_dir=None, pairs=None):
@@ -2418,6 +2066,155 @@ def import_closed_holdings(holdings, data_dir=None):
     return report
 
 
+# ===========================================================================
+# Dividends: Yahoo events
+# ===========================================================================
+
+
+class DividendEvent(NamedTuple):
+    """One dividend Yahoo reports: the ex-date and the gross amount per share."""
+
+    ex_date: str  # ISO YYYY-MM-DD
+    amount: str  # plain decimal text, in `currency`
+    currency: str  # the instrument's price currency; "" when Yahoo gives none
+
+
+class DeclaredDividend(NamedTuple):
+    """The next dividend that has been announced.
+
+    Yahoo gives the dates only; an issuer (SPEC-011) also states the amount.
+    """
+
+    ex_date: str
+    pay_date: str  # "" when the source gives none or it does not follow the ex-date
+    amount: str = ""  # "" when the source does not state it
+    currency: str = ""  # the price currency of `amount`
+
+
+def format_dividend_amount(value):
+    """Format a per-share amount as plain decimal text.
+
+    Yahoo holds dividends as float32 and the float64 it serves carries the
+    noise: FLOS.L's 12.35p arrives as 12.349999. Seven significant digits is
+    all a float32 holds, so rounding there recovers the published figure
+    without discarding any real precision; the Decimal then keeps a small value
+    out of exponent notation. (format_yahoo_price cannot be used: 12.349999 is
+    a different float32 from 12.35, so its round trip keeps the noise.)
+    """
+    return format(decimal.Decimal(f"{float(value):.7g}").normalize(), "f")
+
+
+def ticker_currency(ticker):
+    """Return the currency Yahoo quotes a ticker in, or "" when it will not say."""
+    try:
+        return ticker.fast_info["currency"] or ""
+    except Exception:
+        return ""
+
+
+def fetch_yahoo_dividends(symbol, start, end=None):
+    """Fetch the dividend events of a symbol from Yahoo Finance.
+
+    The same call as the daily bars with the corporate actions switched on:
+    the bar of an ex-date carries the gross amount per share in its Dividends
+    column. The amount is in the instrument's price currency, so a pence line
+    stays in GBp exactly as its prices do.
+
+    Args:
+        symbol: Yahoo ticker (e.g. "IGLS.L", "QQQ")
+        start: Inclusive ISO start date, or None for everything Yahoo has
+        end: Exclusive ISO end date, or None for the latest bar; ignored
+            when start is None
+
+    Returns:
+        list[DividendEvent], oldest first
+
+    Raises:
+        Exception: transport and API errors propagate so fetch_with_retries
+            can retry them
+    """
+    ticker = yf.Ticker(symbol)
+    if start is None:
+        history = ticker.history(period="max", auto_adjust=False, actions=True)
+    else:
+        history = ticker.history(start=start, end=end, auto_adjust=False, actions=True)
+
+    if "Dividends" not in history:
+        return []
+
+    currency = ticker_currency(ticker)
+    events = []
+    for timestamp, value in history["Dividends"].items():
+        if value is None or math.isnan(float(value)) or float(value) <= 0:
+            continue
+        events.append(
+            DividendEvent(
+                timestamp.date().isoformat(), format_dividend_amount(value), currency
+            )
+        )
+    return events
+
+
+def parse_yahoo_date(value):
+    """Return a date from the shapes Yahoo uses for one, or None.
+
+    The calendar holds dates, the info endpoint epoch seconds. Anything else,
+    including a value too large to be a time, is no date.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        if isinstance(value, str):
+            return datetime.date.fromisoformat(value[:10])
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).date()
+    except (ValueError, OverflowError, OSError):
+        return None
+    return None
+
+
+def fetch_yahoo_declared(symbol, today=None):
+    """Return the next dividend Yahoo has announced, or None.
+
+    `Ticker.calendar` first, then `Ticker.info` (`exDividendDate`,
+    `dividendDate`) when the calendar has no ex-date still to come: Yahoo has
+    a calendar for stocks and rarely for ETFs, and it raises for some funds.
+    Only an ex-date today or later counts; the others are the last dividend,
+    which the history already holds. Neither endpoint carries the declared
+    amount.
+
+    Raises:
+        Exception: an info failure propagates so fetch_with_retries can retry
+            it; a calendar failure is not an error, because info is asked next
+    """
+    today = today or datetime.date.today()
+    ticker = yf.Ticker(symbol)
+    try:
+        calendar = ticker.calendar or {}
+    except Exception:
+        calendar = {}
+
+    ex_date = parse_yahoo_date(calendar.get("Ex-Dividend Date"))
+    pay_date = parse_yahoo_date(calendar.get("Dividend Date"))
+    if ex_date is None or ex_date < today:
+        info = ticker.info or {}
+        ex_date = parse_yahoo_date(info.get("exDividendDate"))
+        pay_date = parse_yahoo_date(info.get("dividendDate"))
+
+    if ex_date is None or ex_date < today:
+        return None
+    if pay_date is None or pay_date < ex_date:
+        return DeclaredDividend(ex_date.isoformat(), "")
+    return DeclaredDividend(ex_date.isoformat(), pay_date.isoformat())
+
+
+# ===========================================================================
+# Dividends: storage and merge
+# ===========================================================================
+
+
 DIVIDENDS_HISTORY_FILE = "dividends_history.csv"
 DIVIDENDS_UPCOMING_FILE = "dividends_upcoming.csv"
 DIVIDEND_HISTORY_HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
@@ -2430,6 +2227,8 @@ DIVIDEND_UPCOMING_HEADER = [
     "Status",
     "AsOf",
 ]
+
+
 # The daily run re-reads this many days of Yahoo's dividend events; the whole
 # history is read only when there is no dividends_history.csv yet.
 DIVIDEND_WINDOW_DAYS = 400
@@ -2557,122 +2356,51 @@ def collect_dividends(specs, today, start=None):
     return results
 
 
-DIVIDEND_SOURCES_FILE = "dividend_sources.txt"
-# Source codes a dividend_sources.txt line may name (SPEC-011, SPEC-012): the
-# issuer or its exchange partner that states the pay date, each with the fetch
-# of its table for a DividendSource. The fetchers are looked up when called, so
-# a test can patch one by name.
-ISSUER_FETCHERS = {
-    "IS": lambda source: fetch_ishares_distributions(source.source_id),
-    "IV": lambda source: fetch_invesco_distributions(source.source_id),
-    "SS": lambda source: fetch_ssga_distributions(source.source_id),
-    "Q4": lambda source: fetch_q4_distributions(source.source_id, source.identifier),
-    "ET": lambda source: fetch_etnet_distributions(source.source_id),
-}
-DIVIDEND_SOURCE_CODES = tuple(ISSUER_FETCHERS)
-# What each code's source-id must look like, and how the error names it.
-DIVIDEND_SOURCE_ID_RULES = {
-    "IS": (
-        r"[1-9][0-9]{0,8}",
-        "the product id from the fund's URL (1 to 9 digits)",
-    ),
-    "IV": (r"[0-9A-Z]{9}", "the fund's CUSIP (9 capitals or digits)"),
-    "SS": (r"[A-Z]{2}[0-9A-Z]{9}[0-9]", "the fund's ISIN (12 characters)"),
-    "Q4": (
-        r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}/[A-Z]{4}",
-        "the investor-relations host/MIC (ir.example.com/XNYS)",
-    ),
-    "ET": (
-        r"[1-9][0-9]{0,4}",
-        "the HK code without leading zeros (1 to 5 digits)",
-    ),
-}
+# A row stays in dividends_upcoming.csv this many days past its ex-date once it
+# is in the history (the downstream matches a receipt against it), and for
+# this many days whether or not it ever arrives (a "missing" dividend is
+# visible for a month, not for ever).
+UPCOMING_GRACE_DAYS = 7
+UPCOMING_MAX_AGE_DAYS = 30
 
 
-class DividendSource(NamedTuple):
-    """One instrument's issuer source for dividend dates (SPEC-011).
+def read_dividend_upcoming(data_dir):
+    """Read dividends_upcoming.csv as a list of rows.
 
-    `source_id` is the issuer's own id for the instrument: for IS (iShares
-    UK) the product id in the fund page's URL, for IV (Invesco) the CUSIP, for
-    SS (SSGA) the ISIN, for Q4 (Q4 Inc) the IR host and exchange MIC, for ET
-    (etnet) the HK stock code. See DIVIDEND_SOURCE_ID_RULES.
+    A missing file has no rows, and a row without a fund or an ex-date is
+    skipped rather than stopping the run.
     """
+    rows = read_keyed_csv(
+        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
+        DIVIDEND_UPCOMING_HEADER,
+        fund_and_ex_date,
+    )
+    return list(rows.values())
 
-    identifier: str
-    source: str
-    source_id: str
+
+def write_dividend_upcoming(rows, data_dir):
+    """Write dividends_upcoming.csv sorted by ex-date then fund."""
+    write_sorted_csv(
+        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
+        DIVIDEND_UPCOMING_HEADER,
+        rows,
+        key=lambda row: (row[1], row[0]),
+    )
 
 
-def read_dividend_sources(filename=None, specs=None):
-    """Read the issuer sources of dividend dates.
-
-    Each line is `<identifier>,<source>,<source-id>` with `#` comments and
-    blank lines ignored; see specs/011-pay-dates/spec.md. A missing file means
-    no entries, so the file is optional like distributions.txt.
-
-    Args:
-        filename: Path to read (default: DIVIDEND_SOURCES_FILE)
-        specs: The funds.txt instruments; a line may name any identifier they
-            publish, and two lines may not name one instrument. None skips
-            those checks
-
-    Raises:
-        ValueError: naming the offending line, before any network call.
-    """
-    if filename is None:
-        filename = DIVIDEND_SOURCES_FILE
-
-    if not os.path.isfile(filename):
-        return []
-
-    instrument_of = None
-    if specs is not None:
-        instrument_of = {
-            identifier: as_fund_spec(entry).lookup_id
-            for entry in specs
-            for identifier in as_fund_spec(entry).publish_ids
-        }
-
-    sources = []
-    seen = {}
-    instruments = {}
-    for number, fields, error in config_lines(filename, "dividend sources file"):
-        if len(fields) != 3 or not fields[0]:
-            raise error(
-                "expected '<identifier>,<source>,<source-id>', got "
-                f"{','.join(fields)!r}"
-            )
-
-        identifier, source, source_id = fields[0], fields[1].upper(), fields[2]
-        if source not in DIVIDEND_SOURCE_CODES:
-            raise error(
-                f"source {fields[1]!r} is not one of "
-                f"{', '.join(DIVIDEND_SOURCE_CODES)}"
-            )
-        pattern, meaning = DIVIDEND_SOURCE_ID_RULES[source]
-        if not re.fullmatch(pattern, source_id):
-            raise error(f"source id {source_id!r} must be {meaning}")
-        if instrument_of is not None and identifier not in instrument_of:
-            raise error(f"identifier {identifier!r} is not published by funds.txt")
-        first_use(seen, "identifier", identifier, number, error)
-        if instrument_of is not None:
-            instrument = instrument_of[identifier]
-            if instrument in instruments:
-                raise error(
-                    f"{identifier!r} is the same instrument as line "
-                    f"{instruments[instrument]}"
-                )
-            instruments[instrument] = number
-
-        sources.append(DividendSource(identifier, source, source_id))
-
-    return sources
+# ===========================================================================
+# Dividends: issuer sources
+# ===========================================================================
 
 
 ISHARES_PRODUCT_URL = "https://www.ishares.com/uk/individual/en/products/{product_id}"
+
+
 # The page embeds its data model entity-escaped inside attributes; the
 # distributions section is this container (SPEC-011).
 ISHARES_TABLE_MARKER = "&quot;performance.distributions.table&quot;"
+
+
 # How much of the page after the marker is unescaped and decoded: the table
 # is a few kilobytes, the page megabytes.
 ISHARES_TABLE_SPAN = 400_000
@@ -3197,6 +2925,20 @@ def fetch_ssga_distributions(isin):
     return parse_ssga_distributions(_ssga_workbook["content"], isin)
 
 
+# Source codes a dividend_sources.txt line may name (SPEC-011, SPEC-012): the
+# issuer or its exchange partner that states the pay date, each with the fetch
+# of its table for a DividendSource. The fetchers are looked up when called, so
+# a test can patch one by name.
+ISSUER_FETCHERS = {
+    "IS": lambda source: fetch_ishares_distributions(source.source_id),
+    "IV": lambda source: fetch_invesco_distributions(source.source_id),
+    "SS": lambda source: fetch_ssga_distributions(source.source_id),
+    "Q4": lambda source: fetch_q4_distributions(source.source_id, source.identifier),
+    "ET": lambda source: fetch_etnet_distributions(source.source_id),
+}
+DIVIDEND_SOURCE_CODES = tuple(ISSUER_FETCHERS)
+
+
 def fetch_issuer_table(source):
     """Fetch the distribution table of a configured DividendSource."""
     fetch = ISSUER_FETCHERS.get(source.source)
@@ -3439,11 +3181,20 @@ def merge_issuer_tables(history, specs, tables, currencies, today, start=None):
     return declared
 
 
+# ===========================================================================
+# Dividends: estimates and the upcoming file
+# ===========================================================================
+
+
 # The frequency and the next dividend are read from the twelve months of
 # ex-dates up to the last one (SPEC-010).
 ESTIMATE_WINDOW_DAYS = 365
+
+
 # A payer silent for a whole period plus this many days has stopped paying.
 ESTIMATE_STOP_MARGIN_DAYS = 45
+
+
 # Median gap between ex-dates, in days, up to which a frequency applies, as
 # (limit, months in the period). Anything longer is annual.
 FREQUENCY_BANDS = ((45, 1), (135, 3), (270, 6))
@@ -3607,38 +3358,6 @@ def distribution_history_rows(dist, currency, today):
             ]
         )
     return rows
-
-
-# A row stays in dividends_upcoming.csv this many days past its ex-date once it
-# is in the history (the downstream matches a receipt against it), and for
-# this many days whether or not it ever arrives (a "missing" dividend is
-# visible for a month, not for ever).
-UPCOMING_GRACE_DAYS = 7
-UPCOMING_MAX_AGE_DAYS = 30
-
-
-def read_dividend_upcoming(data_dir):
-    """Read dividends_upcoming.csv as a list of rows.
-
-    A missing file has no rows, and a row without a fund or an ex-date is
-    skipped rather than stopping the run.
-    """
-    rows = read_keyed_csv(
-        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
-        fund_and_ex_date,
-    )
-    return list(rows.values())
-
-
-def write_dividend_upcoming(rows, data_dir):
-    """Write dividends_upcoming.csv sorted by ex-date then fund."""
-    write_sorted_csv(
-        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
-        rows,
-        key=lambda row: (row[1], row[0]),
-    )
 
 
 def upcoming_rows_for(
@@ -3844,6 +3563,11 @@ def publish_upcoming(specs, distributions, history, declared, data_dir, today):
     )
     write_dividend_upcoming(upcoming, data_dir)
     return previous, upcoming
+
+
+# ===========================================================================
+# Dividends: the daily update and the rebuild
+# ===========================================================================
 
 
 def update_dividends(specs, distributions, data_dir=None, today=None, sources=()):
@@ -4054,6 +3778,11 @@ def backfill_dividends(
     return report
 
 
+# ===========================================================================
+# UK CPI
+# ===========================================================================
+
+
 # SPEC-013 (#91): the UK consumer price index, published beside the prices so
 # Portfolio Tracker can show real returns. One ONS series, one request a run.
 UK_CPI_FILE = "uk_cpi.csv"
@@ -4217,6 +3946,11 @@ def update_uk_cpi(data_dir=None, today=None):
             rows[month] = [month, value, UK_CPI_SERIES, today.isoformat()]
     write_uk_cpi(list(rows.values()), data_dir)
     return UkCpiResults()
+
+
+# ===========================================================================
+# UK Bank Rate
+# ===========================================================================
 
 
 # SPEC-014 (#93): the Bank of England Bank Rate, published beside the UK CPI as
@@ -4431,22 +4165,416 @@ def update_uk_bank_rate(data_dir=None, today=None):
     return UkBankRateResults()
 
 
-def configured_identifiers(specs, closed_file=None):
-    """Return every identifier a distributions.txt line may name.
+# ===========================================================================
+# Daily summary
+# ===========================================================================
 
-    The identifiers funds.txt publishes under (lookup ids and aliases) and the
-    identifiers of closed_holdings.txt, which may have past dividends of their
-    own. A missing closed-holdings file adds nothing.
+
+STALE_AFTER_DAYS = 4
+SUMMARY_HEADER = [
+    "Name",
+    "Aliases",
+    "Currency",
+    "NewDate",
+    "New",
+    "OldDate",
+    "Old",
+    "Delta",
+    "PctDelta",
+    "AgeDays",
+    "Stale",
+    "Failed",
+]
+
+
+class SummaryRow(NamedTuple):
+    """One instrument's or pair's movement for the day."""
+
+    name: str
+    aliases: tuple
+    currency: str
+    new_date: str
+    new: str
+    old_date: str
+    old: str
+    delta: str
+    pct_delta: str
+    age_days: int
+    stale: bool
+    failed: bool
+
+
+def format_decimal(value, places=None):
+    """Render a Decimal without exponent notation or trailing noise."""
+    if places is not None:
+        text = f"{value:.{places}f}"
+    else:
+        text = format(value.normalize(), "f")
+    return text
+
+
+def compare_values(new_text, old_text, places=None):
+    """Return (delta, percent delta) as strings for two stored values.
+
+    Uses Decimal so that 7.15 - 7.09 is exactly 0.06 rather than the binary
+    float 0.0600000000000005. An old value of zero yields no percentage
+    instead of a division error, and a stored value that is not a number (the
+    files once recorded "N/A") yields neither, since the summary reads the
+    history as stored.
     """
-    if closed_file is None:
-        closed_file = CLOSED_HOLDINGS_FILE
+    try:
+        new_value = decimal.Decimal(new_text)
+        old_value = decimal.Decimal(old_text)
+    except decimal.InvalidOperation:
+        return "", ""
 
-    identifiers = {
-        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
-    }
-    if os.path.isfile(closed_file):
-        identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
-    return identifiers
+    delta = new_value - old_value
+    delta_text = format_decimal(delta, places)
+
+    if old_value == 0:
+        return delta_text, ""
+
+    percent = (delta / old_value) * 100
+    return delta_text, f"{percent:+.2f}"
+
+
+def summarise_series(name, aliases, rows, failures, run_date, places=None):
+    """Build one SummaryRow from an instrument's dated rows.
+
+    `old` is the price on the previous **distinct** price date, never the
+    calendar day before: funds, LSE, US and HK instruments keep different
+    calendars, and fund NAVs arrive a day later than exchange prices.
+    """
+    failed = any(name in failure for failure in failures)
+    ordered = sorted(rows, key=lambda row: row[1])
+
+    if not ordered:
+        return SummaryRow(name, aliases, "", "", "", "", "", "", "", 0, False, True)
+
+    newest = ordered[-1]
+    previous = ordered[-2] if len(ordered) > 1 else None
+    currency = newest[3] if len(newest) > 3 else ""
+
+    delta, pct_delta = ("", "")
+    if previous is not None:
+        delta, pct_delta = compare_values(newest[2], previous[2], places)
+
+    age_days = (
+        datetime.date.fromisoformat(run_date) - datetime.date.fromisoformat(newest[1])
+    ).days
+
+    return SummaryRow(
+        name=name,
+        aliases=aliases,
+        currency=currency,
+        new_date=newest[1],
+        new=newest[2],
+        old_date=previous[1] if previous is not None else "",
+        old=previous[2] if previous is not None else "",
+        delta=delta,
+        pct_delta=pct_delta,
+        age_days=age_days,
+        stale=age_days > STALE_AFTER_DAYS,
+        failed=failed,
+    )
+
+
+def group_by_name(rows):
+    """Group stored rows by their first cell, the fund or pair, in file order."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[0], []).append(row)
+    return groups
+
+
+def build_price_summary(history_rows, specs, failures, run_date):
+    """Summarise each configured instrument's latest movement.
+
+    An aliased instrument is reported once, under its lookup identifier, since
+    its aliases carry an identical series by construction.
+    """
+    by_fund = group_by_name(history_rows)
+
+    rows = []
+    for entry in specs:
+        # Accept plain (source, identifier) pairs as scrape_funds() does.
+        spec = as_fund_spec(entry)
+        rows.append(
+            summarise_series(
+                spec.lookup_id,
+                tuple(spec.aliases),
+                by_fund.get(spec.lookup_id, []),
+                failures,
+                run_date,
+            )
+        )
+    return rows
+
+
+def build_fx_summary(fx_rows, pairs, failures, run_date):
+    """Summarise each currency pair's latest movement."""
+    by_pair = group_by_name(fx_rows)
+
+    return [
+        summarise_series(
+            pair,
+            (),
+            by_pair.get(pair, []),
+            failures,
+            run_date,
+            places=FX_RATE_DECIMALS,
+        )
+        for pair in pairs
+    ]
+
+
+class DividendSummaryRow(NamedTuple):
+    """One dividend that is new, or newly dated, in today's run."""
+
+    name: str
+    aliases: tuple
+    ex_date: str
+    pay_date: str
+    amount: str
+    currency: str
+    status: str
+
+
+def build_dividend_summary(previous, upcoming, specs):
+    """List the upcoming dividends that are news today (SPEC-010).
+
+    A row is news when its (Fund, ExDate) was not in the previous file or its
+    pay date or status changed: a new ex-date, a pay date appearing, an
+    estimate turning into a declared dividend. A different amount alone is
+    not. An aliased instrument is reported once, under its lookup identifier,
+    as in the price table.
+
+    Args:
+        previous: The previous run's dividends_upcoming.csv rows
+        upcoming: Today's rows
+        specs: FundSpec instances, or plain (source, identifier) pairs
+    """
+    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
+    rows = []
+    for entry in specs:
+        spec = as_fund_spec(entry)
+        for row in sorted(upcoming, key=lambda row: row[1]):
+            if row[0] != spec.lookup_id:
+                continue
+            if before.get((row[0], row[1])) == (row[2], row[5]):
+                continue
+            rows.append(
+                DividendSummaryRow(
+                    spec.lookup_id,
+                    tuple(spec.aliases),
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                )
+            )
+    return rows
+
+
+def _dividend_table(rows):
+    """Render the Dividends section's lines: a table, or None when empty."""
+    if not rows:
+        return ["None"]
+
+    lines = [
+        "| Name | Ex-date | Pay date | Amount | Ccy | Status |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        cells = [
+            display_name(row.name, row.aliases),
+            row.ex_date,
+            row.pay_date or "-",
+            row.amount or "-",
+            row.currency or "-",
+            row.status,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+def display_name(name, aliases):
+    """Return an instrument's name with its aliases, as the tables show it."""
+    return f"{name} ({', '.join(aliases)})" if aliases else name
+
+
+def _summary_table(rows, value_label, include_currency):
+    """Render one Markdown table of summary rows."""
+    columns = ["Name"]
+    if include_currency:
+        columns.append("Ccy")
+    columns += [f"{value_label} date", "New", "Old", "Delta", "% Delta"]
+
+    lines = [
+        "| " + " | ".join(columns) + " |",
+        "|" + "|".join(["---"] * len(columns)) + "|",
+    ]
+
+    for row in rows:
+        name = display_name(row.name, row.aliases)
+        if row.failed:
+            name += " !"
+        elif row.stale:
+            name += " ~"
+
+        cells = [name]
+        if include_currency:
+            cells.append(row.currency or "-")
+        cells += [
+            row.new_date or "-",
+            row.new or "-",
+            row.old or "-",
+            row.delta or "-",
+            row.pct_delta or "-",
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+
+    return lines
+
+
+def render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows=None):
+    """Render the day's movements for reading directly on GitHub.
+
+    `dividend_rows` (DividendSummaryRow, possibly none) adds a Dividends
+    section; without it the output is what it was before dividends existed.
+    """
+    lines = [f"# Daily Price Summary - {run_date}", ""]
+
+    lines += ["## Prices", ""]
+    lines += _summary_table(price_rows, "Price", include_currency=True)
+
+    if fx_rows:
+        lines += [
+            "",
+            "## FX (GBP per 1 unit of foreign currency)",
+            "",
+        ]
+        lines += _summary_table(fx_rows, "Rate", include_currency=False)
+
+    if dividend_rows is not None:
+        lines += ["", "## Dividends", ""]
+        lines += _dividend_table(dividend_rows)
+
+    attention = [row for row in price_rows + fx_rows if row.stale or row.failed]
+    lines += ["", "## Attention", ""]
+    if attention:
+        for row in attention:
+            reason = (
+                "no price obtained this run"
+                if row.failed
+                else (f"stale: last price {row.age_days} days ago")
+            )
+            lines.append(f"- **{row.name}**: {reason}")
+    else:
+        lines.append("None")
+
+    movers = [
+        row
+        for row in price_rows + fx_rows
+        if row.pct_delta and not row.stale and not row.failed
+    ]
+    movers.sort(key=lambda row: abs(decimal.Decimal(row.pct_delta)), reverse=True)
+    lines += ["", "## Biggest movers", ""]
+    if movers:
+        for row in movers[:5]:
+            lines.append(f"- **{row.name}**: {row.pct_delta}%")
+    else:
+        lines.append("None")
+
+    lines.append("")
+    lines.append(
+        "Legend: `!` no price this run, `~` stale. "
+        "Percent changes are unit-independent; absolute deltas are in the "
+        "instrument's own currency."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=None):
+    """Write the daily summary as CSV and Markdown.
+
+    The CSV has one row per instrument and a header consumers read, so the
+    Dividends section goes in the Markdown only.
+
+    Past summaries stay recoverable from git history and can be recomputed
+    from prices_history.csv, so no dated archive is kept.
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    os.makedirs(data_dir, exist_ok=True)
+
+    # A SummaryRow is a tuple in SUMMARY_HEADER's order; only the aliases
+    # need rendering, as the identifiers joined by ";".
+    with open_for_write(os.path.join(data_dir, "daily_summary.csv")) as file:
+        writer = csv_writer(file)
+        writer.writerow(SUMMARY_HEADER)
+        for row in price_rows + fx_rows:
+            writer.writerow(row._replace(aliases=";".join(row.aliases)))
+
+    markdown = render_summary_markdown(price_rows, fx_rows, run_date, dividend_rows)
+    with open_for_write(
+        os.path.join(data_dir, "daily_summary.md"), encoding="utf-8"
+    ) as file:
+        file.write(markdown)
+
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as file:
+            file.write(markdown)
+
+
+# ===========================================================================
+# Command line
+# ===========================================================================
+
+
+def validate_iso_date(value, flag):
+    """Return an error message when `value` is not a YYYY-MM-DD date, else None."""
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        try:
+            datetime.date.fromisoformat(value)
+            return None
+        except ValueError:
+            pass
+
+    return f"Invalid {flag} date format. Use YYYY-MM-DD"
+
+
+def validate_start_date(value, flag="--from"):
+    """Return an error message for an unusable start date, else None.
+
+    `flag` names the option in the message: the rebuilds take --from, the
+    history export --start (the two are one argument).
+    """
+    error = validate_iso_date(value, flag)
+    if error:
+        return error
+
+    if datetime.date.fromisoformat(value) > datetime.date.today():
+        return f"{flag} date is in the future"
+
+    return None
+
+
+def validate_backfill_args(args):
+    """Return an error message for an invalid backfill invocation, else None."""
+    if not args.backfill:
+        return None
+
+    if args.history:
+        return "--backfill cannot be combined with --history"
+
+    if not args.start:
+        return "--from is required when using --backfill"
+
+    return validate_start_date(args.start)
 
 
 def validate_dividend_backfill_args(args):
