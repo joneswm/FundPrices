@@ -93,13 +93,19 @@ class ScrapeResults(list):
 # minutes on 2025-10-19 before replacing it with the Yahoo API. It has meant
 # Yahoo ever since, so it is kept only as a deprecated spelling of YA.
 SOURCE_ALIASES = {"GF": "YA"}
+# The scraping sources retired in 2026-11 (#97). A configuration line naming
+# one is an error rather than an alias: reusing YH for the API would silently
+# change which handler a stale line selects, which is why the rename chose YA.
+RETIRED_SOURCES = {"YH": "Yahoo Finance scraping", "MS": "Morningstar scraping"}
 
 
 def canonical_source(code, line_number=None):
     """Return the current name for a source code, warning on a deprecated one.
 
     Canonicalising at the parser means every other call site knows exactly one
-    spelling, rather than each having to remember the alias.
+    spelling, rather than each having to remember the alias. A retired code
+    (RETIRED_SOURCES) passes through unchanged; the configuration readers
+    reject it, naming the line.
     """
     upper = code.upper()
     canonical = SOURCE_ALIASES.get(upper)
@@ -163,6 +169,11 @@ def read_fund_specs(filename):
                 )
 
             source = canonical_source(fields[0], number)
+            if source in RETIRED_SOURCES:
+                raise ValueError(
+                    f"funds file line {number}: source {fields[0]!r} "
+                    f"({RETIRED_SOURCES[source]}) was retired; use YA or FT"
+                )
             lookup_id = fields[1]
             aliases = []
             if len(fields) > 2 and fields[2]:
@@ -261,6 +272,12 @@ def read_closed_holdings(filename=None):
                 )
 
             identifier, source, lookup_id, currency, start, end = fields
+            source = canonical_source(source, number)
+            if source in RETIRED_SOURCES:
+                raise ValueError(
+                    f"closed holdings line {number}: source {fields[1]!r} "
+                    f"({RETIRED_SOURCES[source]}) was retired; use YA, FT or IV"
+                )
 
             for label, value in (("start", start), ("end", end)):
                 try:
@@ -285,14 +302,7 @@ def read_closed_holdings(filename=None):
             seen[identifier] = number
 
             holdings.append(
-                ClosedHolding(
-                    identifier,
-                    canonical_source(source, number),
-                    lookup_id,
-                    currency,
-                    start,
-                    end,
-                )
+                ClosedHolding(identifier, source, lookup_id, currency, start, end)
             )
 
     return holdings

@@ -1798,14 +1798,14 @@ class TestFundPriceScraper(DataDirCase):
         """Test reading fund IDs from a file."""
         funds_file = self.write_text(
             "test_funds.txt",
-            "FT,IE0008368742\nYH,IDTG.L\nMS,JFM0003373\n  \nFT,GB00B1FXTF86\n",
+            "FT,IE0008368742\nYA,IDTG.L\nFT,JFM0003373\n  \nFT,GB00B1FXTF86\n",
         )
         self.assertEqual(
             read_fund_ids(funds_file),
             [
                 ("FT", "IE0008368742"),
-                ("YH", "IDTG.L"),
-                ("MS", "JFM0003373"),
+                ("YA", "IDTG.L"),
+                ("FT", "JFM0003373"),
                 ("FT", "GB00B1FXTF86"),
             ],
         )
