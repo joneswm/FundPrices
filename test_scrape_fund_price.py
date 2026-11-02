@@ -317,6 +317,19 @@ class BackfillCase(DataDirCase):
         self.addCleanup(no_pairs.stop)
 
 
+def dividend_run(specs=(), currencies=None, today=date(2026, 10, 26), data_dir=None):
+    """A DividendRun for calling one dividend step on its own.
+
+    `currencies` stands for the stored price currencies, so no file is read.
+    """
+    return scrape_fund_price.DividendRun(
+        today,
+        scrape_fund_price.Universe.from_specs(specs),
+        dict(currencies or {}),
+        data_dir,
+    )
+
+
 class DividendRunCase(DataDirCase):
     """Shared scaffolding for the dividend tests (SPEC-010).
 
@@ -584,8 +597,7 @@ class TestSourceCodeCanonicalisation(DataDirCase):
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
             ):
                 results = scrape_fund_price.collect_dividends(
-                    scrape_fund_price.Universe.from_specs([FundSpec("GF", "QQQ")]),
-                    date(2026, 10, 26),
+                    dividend_run([FundSpec("GF", "QQQ")])
                 )
         self.assertEqual(len(results), 1)
 
@@ -4887,7 +4899,7 @@ class TestDividendCollection(unittest.TestCase):
         with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
             with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
                 return scrape_fund_price.collect_dividends(
-                    scrape_fund_price.Universe.from_specs(specs), self.TODAY, start
+                    dividend_run(specs, today=self.TODAY), start
                 )
 
     def test_rows_are_published_under_every_alias(self):
@@ -4926,9 +4938,7 @@ class TestDividendCollection(unittest.TestCase):
             with patch.object(
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
-                scrape_fund_price.collect_dividends(
-                    scrape_fund_price.Universe.from_specs(specs), self.TODAY
-                )
+                scrape_fund_price.collect_dividends(dividend_run(specs))
         self.assertEqual(calls, ["QQQ"])
 
     def test_the_window_start_is_passed_to_the_fetch(self):
@@ -4943,9 +4953,9 @@ class TestDividendCollection(unittest.TestCase):
             with patch.object(
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
-                qqq = scrape_fund_price.Universe.from_specs([FundSpec("YA", "QQQ")])
-                scrape_fund_price.collect_dividends(qqq, self.TODAY, "2025-09-01")
-                scrape_fund_price.collect_dividends(qqq, self.TODAY)
+                qqq = dividend_run([FundSpec("YA", "QQQ")], today=self.TODAY)
+                scrape_fund_price.collect_dividends(qqq, "2025-09-01")
+                scrape_fund_price.collect_dividends(qqq)
         self.assertEqual(seen, ["2025-09-01", None])
 
     def test_events_after_today_are_ignored(self):
@@ -4983,10 +4993,7 @@ class TestDividendCollection(unittest.TestCase):
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
                 results = scrape_fund_price.collect_dividends(
-                    scrape_fund_price.Universe.from_specs(
-                        [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")]
-                    ),
-                    self.TODAY,
+                    dividend_run([FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")])
                 )
         self.assertEqual(attempts.count("BAD"), scrape_fund_price.MAX_PRICE_ATTEMPTS)
         self.assertEqual(results.failures, ["BAD: dividends: Network error"])
@@ -5360,13 +5367,13 @@ class TestUpcomingRowsForOneInstrument(DividendRunCase):
         estimate=None,
     ):
         return scrape_fund_price.upcoming_rows_for(
+            dividend_run(today=self.TODAY),
             "IGLS.L",
             [list(row) for row in stored],
             set(history_dates),
             last_paid,
-            declared,
-            estimate,
-            self.TODAY,
+            declared=declared,
+            estimate=estimate,
         )
 
     ESTIMATE = scrape_fund_price.EstimatedDividend("2026-12-17", "", "0.33", "GBP")
@@ -5491,13 +5498,13 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
 
     def _rows(self, declared, estimate=None, stored=()):
         return scrape_fund_price.upcoming_rows_for(
+            dividend_run(today=self.TODAY),
             "IGLS.L",
             [list(row) for row in stored],
             set(),
             ("0.33", "GBP"),
-            declared,
-            estimate,
-            self.TODAY,
+            declared=declared,
+            estimate=estimate,
         )
 
     def test_the_stated_amount_replaces_the_last_paid(self):
@@ -5561,13 +5568,11 @@ class TestBuildDividendUpcoming(DividendRunCase):
         currencies=None,
     ):
         return scrape_fund_price.build_dividend_upcoming(
-            scrape_fund_price.Universe.from_specs(specs),
+            dividend_run(specs, currencies, self.TODAY),
             list(distributions),
             history or {},
             [list(row) for row in stored],
             declared or {},
-            self.TODAY,
-            currencies or {},
         )
 
     def test_a_pattern_estimate_is_published_under_every_alias(self):
@@ -7298,21 +7303,37 @@ class TestApplyIssuerTable(unittest.TestCase):
     TODAY = date(2026, 10, 26)
 
     def _apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
+        """Apply `table` as the run would for an instrument priced in `currency`."""
+        run = dividend_run([FundSpec("YA", identifier)], {identifier: currency})
         return scrape_fund_price.apply_issuer_table(
-            history, identifier, table, currency, self.TODAY, start
+            run, history, identifier, table, start
         )
 
     @staticmethod
     def _keyed(*rows):
         return {(row[0], row[1]): list(row) for row in rows}
 
+    def test_the_history_given_is_left_alone(self):
+        """Test the merged history is returned, not written into the argument."""
+        history = self._keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
+        before = {key: list(row) for key, row in history.items()}
+        merged = self._apply(
+            history,
+            issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
+            identifier="FLOS.L",
+        )
+        self.assertEqual(history, before)
+        self.assertEqual(
+            merged,
+            self._keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
+        )
+
     def test_a_yahoo_row_gains_its_pay_date(self):
         """Test the point of the spec."""
         history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
-        written = self._apply(
+        history = self._apply(
             history, issuer_table(("2026-07-16", "2026-07-17", "2026-07-29", "2.4146"))
         )
-        self.assertEqual(written, 1)
         self.assertEqual(
             history[("IGLS.L", "2026-07-16")],
             ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
@@ -7321,7 +7342,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_yahoos_amount_is_kept_when_they_agree(self):
         """Test the more precise figure stays."""
         history = self._keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2017-07-13", "", "2017-07-27", "0.0128")),
             identifier="IWDG.L",
@@ -7334,7 +7355,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_the_issuers_amount_wins_when_they_differ(self):
         """Test IWDG.L 2020-01-16: Yahoo 1.77p, the issuer 1.75p."""
         history = self._keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2020-01-16", "", "2020-01-30", "0.0175")),
             identifier="IWDG.L",
@@ -7345,7 +7366,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_an_amount_in_another_currency_is_left_alone(self):
         """Test the dates are taken and the figure that cannot be compared stays."""
         history = self._keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2026-07-16", "", "2026-07-29", "1.9")),
             identifier="X",
@@ -7358,7 +7379,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_a_zero_issuer_amount_leaves_the_stored_amount(self):
         """Test IDTG.L 2019-12-12: Yahoo 0.0037, the issuer 0.0."""
         history = self._keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2019-12-12", "", "2019-12-30", "0.0")),
             identifier="IDTG.L",
@@ -7370,13 +7391,13 @@ class TestApplyIssuerTable(unittest.TestCase):
         history = self._keyed(
             ["IGLS.L", "2026-07-16", "2026-07-30", "2.4146", "GBP", "YA"]
         )
-        self._apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
+        history = self._apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
         self.assertEqual(history[("IGLS.L", "2026-07-16")][2], "2026-07-30")
 
     def test_a_row_yahoo_lacks_is_inserted_in_the_price_currency(self):
         """Test the gaps in Yahoo's history (INXG.L lacks 18)."""
         history = {}
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2026-05-21", "2026-05-22", "2026-05-29", "0.0991")),
             currency="GBp",
@@ -7390,7 +7411,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_an_inserted_row_without_a_price_currency_takes_the_issuers(self):
         """Test an instrument with no stored price."""
         history = {}
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
             currency="",
@@ -7400,8 +7421,10 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_nothing_is_inserted_without_a_usable_amount(self):
         """Test a zero, or an amount that cannot be put in the currency."""
         history = {}
-        self._apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
-        self._apply(
+        history = self._apply(
+            history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0"))
+        )
+        history = self._apply(
             history,
             issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
         )
@@ -7410,18 +7433,19 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_a_blank_stored_currency_is_filled(self):
         """Test Yahoo gave none."""
         history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        )
         self.assertEqual(history[("IGLS.L", "2026-07-16")][4], "GBP")
 
     def test_a_date_a_day_out_is_one_dividend(self):
         """Test FLOS.L and IUAG.L 2021: Yahoo 11-12, the issuer 11-11."""
         history = self._keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
-        written = self._apply(
+        history = self._apply(
             history,
             issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
             identifier="FLOS.L",
         )
-        self.assertEqual(written, 2)  # the new row, and the twin removed
         self.assertEqual(
             history,
             self._keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
@@ -7433,7 +7457,7 @@ class TestApplyIssuerTable(unittest.TestCase):
             ["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"],
             ["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"],
         )
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(("2021-11-11", "", "2021-11-25", "0.071")),
             identifier="FLOS.L",
@@ -7443,14 +7467,16 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_a_near_row_with_another_amount_is_a_different_dividend(self):
         """Test a special dividend two days away stays."""
         history = self._keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        )
         self.assertIn(("IGLS.L", "2026-07-18"), history)
         self.assertIn(("IGLS.L", "2026-07-16"), history)
 
     def test_a_near_row_that_is_itself_an_issuer_date_stays(self):
         """Test a monthly payer's neighbours are not twins."""
         history = self._keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(
                 ("2026-06-02", "", "2026-06-20", "1.0"),
@@ -7466,7 +7492,9 @@ class TestApplyIssuerTable(unittest.TestCase):
             ["OTHER", "2026-07-17", "", "2.4146", "GBP", "YA"],
             ["IGLS.L", "2026-07-17", "2026-07-30", "2.4146", "GBP", "config"],
         )
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        )
         self.assertIn(("OTHER", "2026-07-17"), history)
         self.assertIn(("IGLS.L", "2026-07-17"), history)
 
@@ -7475,7 +7503,9 @@ class TestApplyIssuerTable(unittest.TestCase):
         history = self._keyed(
             ["IGLS.L", "2026-07-16", "2026-07-30", "2.4", "GBP", "config"]
         )
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        )
         self.assertEqual(
             history[("IGLS.L", "2026-07-16")],
             ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
@@ -7484,21 +7514,23 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_future_rows_are_not_history(self):
         """Test a declared dividend belongs to the upcoming file."""
         history = {}
-        written = self._apply(
+        history = self._apply(
             history, issuer_table(("2026-10-27", "", "2026-11-10", "2.4146"))
         )
-        self.assertEqual((written, history), (0, {}))
+        self.assertEqual(history, {})
 
     def test_today_is_history(self):
         """Test the boundary matches Yahoo's."""
         history = {}
-        self._apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146"))
+        )
         self.assertIn(("IGLS.L", "2026-10-26"), history)
 
     def test_rows_before_the_start_date_are_not_touched(self):
         """Test a rebuild from a date."""
         history = {}
-        self._apply(
+        history = self._apply(
             history,
             issuer_table(
                 ("2025-07-17", "", "2025-07-30", "2.4917"),
@@ -7512,15 +7544,15 @@ class TestApplyIssuerTable(unittest.TestCase):
         """Test idempotence."""
         history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
         table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
-        self._apply(history, table)
-        before = {key: list(row) for key, row in history.items()}
-        self.assertEqual(self._apply(history, table), 0)
-        self.assertEqual(history, before)
+        history = self._apply(history, table)
+        self.assertEqual(self._apply(history, table), history)
 
     def test_a_damaged_history_row_is_skipped_not_fatal(self):
         """Test an unreadable ex-date among the neighbours."""
         history = self._keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
-        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._apply(
+            history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
+        )
         self.assertIn(("IGLS.L", "soon"), history)
         self.assertIn(("IGLS.L", "2026-07-16"), history)
 
@@ -7533,7 +7565,7 @@ class TestApplyIssuerTable(unittest.TestCase):
         table = scrape_fund_price.parse_ishares_distributions(
             fixture_text("ishares_251804_igls.html"), "251804"
         )
-        self._apply(history, table)
+        history = self._apply(history, table)
         self.assertEqual(len(history), 36)
         self.assertEqual(
             history[("IGLS.L", "2026-01-15")],
@@ -8058,8 +8090,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
                 fetch.return_value = scrape_fund_price.IssuerTable("USD", (), "IS")
                 scrape_fund_price.collect_issuer_tables(
-                    [self.QQQ],
-                    scrape_fund_price.Universe.from_specs([FundSpec("YA", "QQQ")]),
+                    dividend_run([FundSpec("YA", "QQQ")]), [self.QQQ]
                 )
         clear.assert_called_once_with()
 
@@ -8084,18 +8115,19 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             ],
         }
         table = self._table("IV", ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143"))
-        scrape_fund_price.apply_issuer_table(
-            history, "QQQ", table, "USD", date(2026, 10, 26)
+        history = scrape_fund_price.apply_issuer_table(
+            dividend_run([FundSpec("YA", "QQQ")], {"QQQ": "USD"}), history, "QQQ", table
         )
         self.assertEqual(history[("QQQ", "2026-09-21")][5], "IV")
         self.assertEqual(history[("QQQ", "2026-09-21")][2], "2026-10-08")
 
 
 class TestOneUniversePerRun(IssuerRunCase):
-    """Test the instrument map is built once per dividend run (#121).
+    """Test what a dividend run settles once, at its start (#121).
 
     Every step used to rebuild the lookup-to-publish map from the specs; now
     the run builds a Universe once, so the specs are canonicalised once each.
+    The stored price currencies are read once too, not by each step.
     """
 
     SPECS = [
@@ -8119,7 +8151,11 @@ class TestOneUniversePerRun(IssuerRunCase):
             universe, "from_specs", wraps=universe.from_specs
         ) as built, patch.object(
             scrape_fund_price, "as_fund_spec", wraps=scrape_fund_price.as_fund_spec
-        ) as canonical:
+        ) as canonical, patch.object(
+            scrape_fund_price,
+            "stored_currencies",
+            wraps=scrape_fund_price.stored_currencies,
+        ) as currencies:
             self._issuer_run(
                 self.SPECS,
                 self.SOURCES,
@@ -8130,6 +8166,33 @@ class TestOneUniversePerRun(IssuerRunCase):
             )
         built.assert_called_once_with(self.SPECS)
         self.assertEqual(canonical.call_count, len(self.SPECS))
+        currencies.assert_called_once_with(self.test_dir)
+
+    def test_a_run_is_prepared_from_the_specs_and_the_stored_prices(self):
+        """Test DividendRun.prepare: the date, the map, the currencies, the folder."""
+        self.write_csv(
+            "latest_prices.csv",
+            ["Fund", "Date", "Price", "Currency"],
+            [["IGLS.L", "2026-10-23", "51.2", "GBP"]],
+        )
+        run = scrape_fund_price.DividendRun.prepare(
+            self.SPECS, self.test_dir, self.TODAY
+        )
+        self.assertEqual(run.today, self.TODAY)
+        self.assertEqual(
+            run.universe, scrape_fund_price.Universe.from_specs(self.SPECS)
+        )
+        self.assertEqual(run.currencies, {"IGLS.L": "GBP"})
+        self.assertEqual(run.data_dir, self.test_dir)
+        self.assertEqual(run.price_currency("IGLS.L"), "GBP")
+        self.assertEqual(run.price_currency("IDBZ"), "")
+
+    def test_a_run_defaults_to_today_and_the_data_folder(self):
+        """Test the clock and DATA_DIR are read only when nothing is given."""
+        with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
+            run = scrape_fund_price.DividendRun.prepare(self.SPECS)
+        self.assertEqual(run.today, date.today())
+        self.assertEqual(run.data_dir, self.test_dir)
 
     def test_the_daily_update_builds_the_map_once(self):
         """Test update_dividends."""
