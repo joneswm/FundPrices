@@ -3549,16 +3549,50 @@ class TestClosedHoldingImport(DataDirCase):
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_a_failed_fetch_is_reported_and_isolated(self, mock_quotes):
         """Test one dead source does not cost the other holdings their import."""
-        mock_quotes.side_effect = [
-            ValueError("no rows"),
-            [Quote("2023-01-03", "849.00", "GBX")],
-        ]
+
+        def side_effect(source, lookup_id, start, end=None, browser=None):
+            if lookup_id == "BKCH.L":
+                raise ValueError("no rows")
+            return [Quote("2023-01-03", "849.00", "GBX")]
+
+        mock_quotes.side_effect = side_effect
         other = ClosedHolding(
             "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
         )
         report = import_closed_holdings([self.holding, other], self.test_dir)
         self.assertEqual([row[0] for row in self._history()], ["BMV7ZZ3"])
-        self.assertTrue(report.failures)
+        self.assertEqual(report.failures, ["BKCH: no rows"])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_transient_failure_is_retried(self, mock_quotes):
+        """Test the import fetches through fetch_with_retries like every run.
+
+        A one-off import is the fetch least able to afford a dropped
+        connection: nothing comes back for the holding until someone notices
+        and runs it again.
+        """
+        mock_quotes.side_effect = [
+            ConnectionError("reset"),
+            [Quote("2023-01-03", "2.4705", "USD")],
+        ]
+        report = import_closed_holdings([self.holding], self.test_dir)
+        self.assertEqual(self._history(), [["BKCH", "2023-01-03", "2.4705", "USD"]])
+        self.assertEqual(report.failures, [])
+        self.assertEqual(mock_quotes.call_count, 2)
+
+    @patch("scrape_fund_price.LazyBrowser")
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_fetch_is_given_a_browser_and_it_is_closed(self, mock_quotes, mock_lb):
+        """Test an FT fallback to scraping has a page to scrape with.
+
+        Without one, scrape_fund_quotes reaches browser.page() on None and
+        the holding fails with "'NoneType' object has no attribute 'page'"
+        instead of the FT error that caused the fallback.
+        """
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        import_closed_holdings([self.holding], self.test_dir)
+        self.assertIs(mock_quotes.call_args.kwargs["browser"], mock_lb.return_value)
+        mock_lb.return_value.close.assert_called_once_with()
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_report_counts_what_was_imported(self, mock_quotes):
