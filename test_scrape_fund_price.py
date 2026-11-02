@@ -2380,29 +2380,20 @@ class TestBackfillProtectsSourceDerivedRows(BackfillCase):
         )
 
 
-class TestFxPairConfiguration(unittest.TestCase):
+class TestFxPairConfiguration(DataDirCase):
     """Test fx_pairs.txt parsing and validation."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _write(self, text):
-        path = os.path.join(self.test_dir, "fx_pairs.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+    def pairs(self, text):
+        return read_fx_pairs(self.write_text("fx_pairs.txt", text))
 
     def test_reads_one_pair_per_line(self):
         """Test the configured pairs are read in order."""
-        pairs = read_fx_pairs(self._write("NZDGBP\nSGDGBP\nUSDGBP\nHKDGBP\n"))
+        pairs = self.pairs("NZDGBP\nSGDGBP\nUSDGBP\nHKDGBP\n")
         self.assertEqual(pairs, ["NZDGBP", "SGDGBP", "USDGBP", "HKDGBP"])
 
     def test_ignores_comments_and_blank_lines(self):
         """Test the file can be annotated."""
-        pairs = read_fx_pairs(self._write("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n"))
+        pairs = self.pairs("# GBP per 1 unit\n\nUSDGBP   # dollar\n\n")
         self.assertEqual(pairs, ["USDGBP"])
 
     def test_rejects_a_slash_separated_pair(self):
@@ -2412,24 +2403,26 @@ class TestFxPairConfiguration(unittest.TestCase):
         wanted, so accepting it would store plausible but wrong values.
         """
         with self.assertRaises(ValueError) as error:
-            read_fx_pairs(self._write("GBP/NZD\n"))
+            self.pairs("GBP/NZD\n")
         self.assertIn("line 1", str(error.exception))
 
     def test_rejects_lowercase_and_wrong_length(self):
         """Test only six uppercase letters are accepted."""
         for bad in ("usdgbp", "USDGB", "USDGBPX"):
-            with self.assertRaises(ValueError):
-                read_fx_pairs(self._write(bad + "\n"))
+            with self.subTest(pair=bad):
+                with self.assertRaises(ValueError) as error:
+                    self.pairs(bad + "\n")
+                self.assertIn("line 1", str(error.exception))
 
     def test_rejects_duplicate_pairs(self):
         """Test a repeated pair cannot produce duplicate rows."""
         with self.assertRaises(ValueError) as error:
-            read_fx_pairs(self._write("USDGBP\nSGDGBP\nUSDGBP\n"))
+            self.pairs("USDGBP\nSGDGBP\nUSDGBP\n")
         self.assertIn("line 3", str(error.exception))
 
     def test_missing_file_means_no_fx(self):
         """Test FX is optional, so an absent file is not an error."""
-        self.assertEqual(read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), [])
+        self.assertEqual(read_fx_pairs(self.path("absent.txt")), [])
 
 
 class TestNewYorkFxCloses(unittest.TestCase):
@@ -2604,54 +2597,40 @@ class TestYahooHourly(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_asks_for_hourly_bars_and_skips_gaps(self, mock_ticker):
         """Test interval=1h is requested, bars are UTC and NaN closes dropped."""
-        import pandas as pd
-
-        index = pd.DatetimeIndex(
-            ["2026-10-16 20:00", "2026-10-16 21:00"], tz="Europe/London"
-        )
-        mock_ticker.return_value.history.return_value = pd.DataFrame(
-            {"Close": [0.75023, float("nan")]}, index=index
+        inst = fake_ticker(
+            mock_ticker,
+            [("2026-10-16 20:00", 0.75023), ("2026-10-16 21:00", float("nan"))],
+            tz="Europe/London",
         )
         bars = fetch_yahoo_hourly("USDGBP=X", "2026-10-16")
-        kwargs = mock_ticker.return_value.history.call_args.kwargs
+        kwargs = inst.history.call_args.kwargs
         self.assertEqual((kwargs["interval"], kwargs["start"]), ("1h", "2026-10-16"))
         self.assertEqual(bars, [(utc(2026, 10, 16, 19), 0.75023)])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_no_bars_is_an_empty_list(self, mock_ticker):
         """Test an empty history (e.g. beyond Yahoo's 730 days) is no bars."""
-        import pandas as pd
-
-        mock_ticker.return_value.history.return_value = pd.DataFrame()
+        fake_ticker(mock_ticker, [])
         self.assertEqual(fetch_yahoo_hourly("USDGBP=X", "2024-01-01"), [])
 
 
-class TestFxStorage(unittest.TestCase):
+class TestFxStorage(DataDirCase):
     """Test FX output files."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.history = os.path.join(self.test_dir, "fx_history.csv")
-        self.latest = os.path.join(self.test_dir, "latest_fx.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _rows(self, path):
-        with open(path, newline="") as f:
-            return list(csv.reader(f))
 
     def test_history_header_names_the_rate(self):
         """Test the header does not use an ambiguous GBP/xxx label."""
         write_fx_results([["USDGBP", "2026-09-18", "0.746700"]], self.test_dir)
-        self.assertEqual(self._rows(self.history)[0], ["Pair", "Date", "Rate"])
+        self.assertEqual(
+            self.read_text("fx_history.csv"),
+            "Pair,Date,Rate\nUSDGBP,2026-09-18,0.746700\n",
+        )
 
     def test_same_pair_and_date_is_replaced(self):
         """Test a provisional rate is overwritten once the day completes."""
         write_fx_results([["USDGBP", "2026-09-18", "0.746000"]], self.test_dir)
         write_fx_results([["USDGBP", "2026-09-18", "0.746700"]], self.test_dir)
         self.assertEqual(
-            self._rows(self.history)[1:], [["USDGBP", "2026-09-18", "0.746700"]]
+            self.read_rows("fx_history.csv"), [["USDGBP", "2026-09-18", "0.746700"]]
         )
 
     def test_rows_are_sorted_by_date_then_pair(self):
@@ -2665,7 +2644,7 @@ class TestFxStorage(unittest.TestCase):
             self.test_dir,
         )
         self.assertEqual(
-            [(r[0], r[1]) for r in self._rows(self.history)[1:]],
+            [(r[0], r[1]) for r in self.read_rows("fx_history.csv")],
             [
                 ("USDGBP", "2026-09-17"),
                 ("HKDGBP", "2026-09-18"),
@@ -2677,9 +2656,9 @@ class TestFxStorage(unittest.TestCase):
         """Test the FX run is idempotent."""
         rows = [["USDGBP", "2026-09-18", "0.746700"]]
         write_fx_results(rows, self.test_dir)
-        first = open(self.history, "rb").read()
+        first = self.read_text("fx_history.csv")
         write_fx_results(rows, self.test_dir)
-        self.assertEqual(open(self.history, "rb").read(), first)
+        self.assertEqual(self.read_text("fx_history.csv"), first)
 
     def test_latest_fx_takes_the_newest_date_per_pair(self):
         """Test latest_fx.csv reports the most recent rate."""
@@ -2691,18 +2670,12 @@ class TestFxStorage(unittest.TestCase):
             self.test_dir,
         )
         self.assertEqual(
-            self._rows(self.latest)[1:], [["USDGBP", "2026-09-18", "0.746700"]]
+            self.read_rows("latest_fx.csv"), [["USDGBP", "2026-09-18", "0.746700"]]
         )
 
 
-class TestFxFailureIsolation(unittest.TestCase):
+class TestFxFailureIsolation(DataDirCase):
     """Test FX and price failures do not block each other."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     @patch("scrape_fund_price.fetch_fx_quotes")
     def test_one_failing_pair_does_not_block_the_others(self, mock_quotes):
@@ -2732,19 +2705,10 @@ class TestFxFailureIsolation(unittest.TestCase):
         self.assertEqual(results.failures, [])
 
 
-class TestFxBackfill(unittest.TestCase):
+class TestFxBackfill(DataDirCase):
     """Test FX history is rebuilt by the same rule as prices."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.history = os.path.join(self.test_dir, "fx_history.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _rows(self):
-        with open(self.history, newline="") as f:
-            return [r for r in csv.reader(f)][1:]
+    HEADER = ["Pair", "Date", "Rate"]
 
     @patch("scrape_fund_price.fetch_fx_quotes")
     def test_rebuilds_rates_from_the_start_date(self, mock_quotes):
@@ -2754,36 +2718,47 @@ class TestFxBackfill(unittest.TestCase):
             Quote("2026-09-18", "0.746700", "USDGBP"),
         ]
         report = backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
-        self.assertEqual(len(self._rows()), 2)
+        self.assertEqual(
+            self.read_rows("fx_history.csv"),
+            [
+                ["USDGBP", "2023-01-03", "0.830000"],
+                ["USDGBP", "2026-09-18", "0.746700"],
+            ],
+        )
         entry = next(e for e in report.entries if e["identifier"] == "USDGBP")
         self.assertEqual(entry["inserted"], 2)
 
     @patch("scrape_fund_price.fetch_fx_quotes")
     def test_stale_rows_in_range_are_removed(self, mock_quotes):
         """Test a rate the source no longer reports does not linger."""
-        with open(self.history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Pair", "Date", "Rate"])
-            writer.writerow(["USDGBP", "2026-09-19", "0.999999"])  # Saturday
+        self.write_csv(
+            "fx_history.csv",
+            self.HEADER,
+            [["USDGBP", "2026-09-19", "0.999999"]],  # Saturday
+        )
         mock_quotes.return_value = [Quote("2026-09-18", "0.746700", "USDGBP")]
 
         backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["USDGBP", "2026-09-18", "0.746700"]])
+        self.assertEqual(
+            self.read_rows("fx_history.csv"), [["USDGBP", "2026-09-18", "0.746700"]]
+        )
 
     @patch("scrape_fund_price.fetch_fx_quotes")
     def test_failed_pair_keeps_its_rows(self, mock_quotes):
         """Test a failed fetch never destroys stored rates."""
-        with open(self.history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Pair", "Date", "Rate"])
-            writer.writerow(["USDGBP", "2026-09-18", "0.746700"])
+        self.write_csv(
+            "fx_history.csv", self.HEADER, [["USDGBP", "2026-09-18", "0.746700"]]
+        )
         mock_quotes.side_effect = Exception("Network error")
 
         report = backfill_fx(["USDGBP"], "2023-01-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["USDGBP", "2026-09-18", "0.746700"]])
+        self.assertEqual(
+            self.read_rows("fx_history.csv"), [["USDGBP", "2026-09-18", "0.746700"]]
+        )
         self.assertEqual(len(report.failures), 1)
+        self.assertIn("USDGBP", report.failures[0])
 
 
 class TestPriceSummary(unittest.TestCase):
