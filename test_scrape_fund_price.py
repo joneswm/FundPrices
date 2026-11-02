@@ -2,7 +2,7 @@ import unittest
 import tempfile
 import os
 import shutil
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch, MagicMock
 import csv
 import decimal
@@ -72,10 +72,10 @@ _SUITE_DATA_DIR = None
 _REAL_DIVIDEND_SOURCES_FILE = scrape_fund_price.DIVIDEND_SOURCES_FILE
 # And the CPI update (SPEC-013): the daily run ends by fetching the ONS, so every
 # other main() test gets a stub and the UK CPI tests keep the real function.
-REAL_UPDATE_UK_CPI = getattr(scrape_fund_price, "update_uk_cpi", None)
+REAL_UPDATE_UK_CPI = scrape_fund_price.update_uk_cpi
 _UK_CPI_PATCH = None
 # And the Bank Rate update (SPEC-014), stubbed the same way.
-REAL_UPDATE_UK_BANK_RATE = getattr(scrape_fund_price, "update_uk_bank_rate", None)
+REAL_UPDATE_UK_BANK_RATE = scrape_fund_price.update_uk_bank_rate
 _UK_BANK_RATE_PATCH = None
 
 
@@ -89,13 +89,11 @@ def setUpModule():
     _UK_CPI_PATCH = patch(
         "scrape_fund_price.update_uk_cpi",
         return_value=MagicMock(failures=[]),
-        create=True,
     )
     _UK_CPI_PATCH.start()
     _UK_BANK_RATE_PATCH = patch(
         "scrape_fund_price.update_uk_bank_rate",
         return_value=MagicMock(failures=[]),
-        create=True,
     )
     _UK_BANK_RATE_PATCH.start()
 
@@ -107,6 +105,205 @@ def tearDownModule():
     scrape_fund_price.DIVIDEND_SOURCES_FILE = _REAL_DIVIDEND_SOURCES_FILE
     if _SUITE_DATA_DIR:
         shutil.rmtree(_SUITE_DATA_DIR, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Shared test support (Bundle 2 of #97).
+#
+# DataDirCase gives a test its own scratch directory and file helpers, and
+# stubs the pacing sleeps. fake_ticker and history_metadata stand in for
+# yf.Ticker, daily_run_stubs for the daily run's collaborators in main() tests.
+# ---------------------------------------------------------------------------
+
+FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def fixture_text(name):
+    """Return a page recorded from the live site (see fixtures/)."""
+    with open(os.path.join(FIXTURE_DIR, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def fixture_bytes(name):
+    """Return a file recorded from the live site, as bytes (see fixtures/)."""
+    with open(os.path.join(FIXTURE_DIR, name), "rb") as f:
+        return f.read()
+
+
+def utc(year, month, day, hour):
+    """A timezone-aware UTC datetime, the shape the hourly bars take."""
+    return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc)
+
+
+def epoch(text):
+    """Midnight UTC of an ISO date, as Yahoo's info endpoint reports dates."""
+    day = datetime.date.fromisoformat(text)
+    midnight = datetime.datetime.combine(day, datetime.time(), datetime.timezone.utc)
+    return int(midnight.timestamp())
+
+
+class DataDirCase(unittest.TestCase):
+    """A scratch directory per test, removed afterwards, with file helpers.
+
+    The backfill and issuer pacing pauses (`time.sleep`) are stubbed for the
+    whole test; the seconds asked for are recorded on `self.sleeps`.
+    """
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.test_dir, ignore_errors=True)
+        self.sleeps = []
+        sleeper = patch.object(scrape_fund_price.time, "sleep", self.sleeps.append)
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def path(self, name):
+        return os.path.join(self.test_dir, name)
+
+    def read_text(self, name):
+        with open(self.path(name), newline="") as f:
+            return f.read()
+
+    def read_rows(self, name):
+        """The CSV's rows without its header; a missing file is no rows."""
+        if not os.path.exists(self.path(name)):
+            return []
+        with open(self.path(name), newline="") as f:
+            return list(csv.reader(f))[1:]
+
+    def write_text(self, name, text):
+        with open(self.path(name), "w", newline="") as f:
+            f.write(text)
+        return self.path(name)
+
+    def write_csv(self, name, header, rows):
+        with open(self.path(name), "w", newline="") as f:
+            writer = csv.writer(f, lineterminator="\n")
+            writer.writerow(header)
+            writer.writerows(rows)
+        return self.path(name)
+
+
+def fake_ticker(
+    mock_ticker,
+    bars=(),
+    currency="GBP",
+    volumes=None,
+    dividends=None,
+    tz=None,
+    meta=None,
+    index=None,
+):
+    """Make a patched `yf.Ticker` serve one history frame; returns the instance.
+
+    `bars` is [(date text, close)]; `volumes` and `dividends` are lists aligned
+    with it and add the Volume and Dividends columns; `tz` names the index's
+    zone (naive when None); `index` replaces the dates (hourly bars); `meta`
+    is what get_history_metadata returns, or an exception it raises.
+    """
+    import pandas as pd
+
+    if index is None:
+        dates = [day for day, _ in bars]
+        if tz:
+            index = pd.DatetimeIndex([pd.Timestamp(day, tz=tz) for day in dates])
+        else:
+            index = pd.to_datetime(dates)
+    columns = {"Close": [close for _, close in bars]}
+    if volumes is not None:
+        columns["Volume"] = volumes
+    if dividends is not None:
+        columns["Dividends"] = dividends
+    inst = MagicMock()
+    inst.history.return_value = pd.DataFrame(columns, index=index)
+    inst.fast_info = {"currency": currency}
+    if isinstance(meta, Exception):
+        inst.get_history_metadata.side_effect = meta
+    elif meta is not None:
+        inst.get_history_metadata.return_value = meta
+    mock_ticker.return_value = inst
+    return inst
+
+
+def history_metadata(price, traded, end, tz="Europe/London"):
+    """What yf.Ticker.get_history_metadata reports for a finished session."""
+    import pandas as pd
+
+    def stamp(text):
+        return pd.Timestamp(text, tz=tz)
+
+    return {
+        "regularMarketPrice": price,
+        "regularMarketTime": stamp(traded),
+        "exchangeTimezoneName": tz,
+        "currentTradingPeriod": {"regular": {"end": stamp(end)}},
+    }
+
+
+class FakeCalendarTicker:
+    """A stand-in for yf.Ticker exposing only calendar and info."""
+
+    def __init__(self, calendar=None, info=None, calendar_error=None, info_error=None):
+        self._calendar, self._info = calendar, info
+        self._calendar_error, self._info_error = calendar_error, info_error
+
+    @property
+    def calendar(self):
+        if self._calendar_error:
+            raise self._calendar_error
+        return self._calendar
+
+    @property
+    def info(self):
+        if self._info_error:
+            raise self._info_error
+        return self._info
+
+
+DAILY_RUN_STUBS = (
+    "scrape_funds",
+    "write_results",
+    "snap_fx_rates",
+    "write_fx_results",
+    "update_dividends",
+    "write_summary",
+)
+
+
+@contextmanager
+def daily_run_stubs(test_dir=None, specs=(), pairs=(), **outcomes):
+    """Patch the daily run's collaborators around a `main([])` call.
+
+    Yields the stubs by name (plus "print"). Each name in DAILY_RUN_STUBS is
+    stubbed with an empty result unless `outcomes` gives it a return value, an
+    exception to raise, or a dict of patch keyword arguments; any other module
+    name in `outcomes` is patched the same way.
+    """
+    defaults = {
+        "scrape_funds": ScrapeResults(),
+        "write_results": None,
+        "snap_fx_rates": ScrapeResults(),
+        "write_fx_results": None,
+        "update_dividends": scrape_fund_price.DividendResults(),
+        "write_summary": None,
+    }
+    stubs = {}
+    with ExitStack() as stack:
+        enter = stack.enter_context
+        if test_dir is not None:
+            enter(patch("scrape_fund_price.DATA_DIR", test_dir))
+        enter(patch("scrape_fund_price.read_fund_specs", return_value=list(specs)))
+        enter(patch("scrape_fund_price.read_fx_pairs", return_value=list(pairs)))
+        for name, value in {**defaults, **outcomes}.items():
+            if isinstance(value, dict):
+                kwargs = value
+            elif isinstance(value, BaseException):
+                kwargs = {"side_effect": value}
+            else:
+                kwargs = {"return_value": value}
+            stubs[name] = enter(patch(f"scrape_fund_price.{name}", **kwargs))
+        stubs["print"] = enter(patch("builtins.print"))
+        yield stubs
 
 
 class TestFundPriceScraper(unittest.TestCase):
@@ -2603,11 +2800,6 @@ class TestFxPairConfiguration(unittest.TestCase):
         self.assertEqual(read_fx_pairs(os.path.join(self.test_dir, "absent.txt")), [])
 
 
-def utc(year, month, day, hour):
-    """A timezone-aware UTC datetime, the shape the hourly bars take."""
-    return datetime.datetime(year, month, day, hour, tzinfo=datetime.timezone.utc)
-
-
 class TestNewYorkFxCloses(unittest.TestCase):
     """Test a day's FX rate is the 17:00 New York close (#80)."""
 
@@ -4788,33 +4980,6 @@ class TestYahooDividendEvents(unittest.TestCase):
             scrape_fund_price.fetch_yahoo_dividends("QQQ", "2026-09-01")
 
 
-class FakeCalendarTicker:
-    """A stand-in for yf.Ticker exposing only calendar and info."""
-
-    def __init__(self, calendar=None, info=None, calendar_error=None, info_error=None):
-        self._calendar, self._info = calendar, info
-        self._calendar_error, self._info_error = calendar_error, info_error
-
-    @property
-    def calendar(self):
-        if self._calendar_error:
-            raise self._calendar_error
-        return self._calendar
-
-    @property
-    def info(self):
-        if self._info_error:
-            raise self._info_error
-        return self._info
-
-
-def epoch(text):
-    """Midnight UTC of an ISO date, as Yahoo's info endpoint reports dates."""
-    day = datetime.date.fromisoformat(text)
-    midnight = datetime.datetime.combine(day, datetime.time(), datetime.timezone.utc)
-    return int(midnight.timestamp())
-
-
 class TestYahooDeclaredDividends(unittest.TestCase):
     """Test the next declared ex-date and pay date from Yahoo (SPEC-010, #85)."""
 
@@ -5877,31 +6042,22 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         self.assertEqual(len(self._build([("GF", "QQQ")], history)), 1)
 
 
-class DividendRunCase(unittest.TestCase):
+class DividendRunCase(DataDirCase):
     """Shared scaffolding for tests that run the dividend update end to end."""
 
     TODAY = date(2026, 10, 26)
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _file(self, name):
-        return os.path.join(self.test_dir, name)
+        return self.path(name)
 
     def _text(self, name):
-        with open(self._file(name), newline="") as f:
-            return f.read()
+        return self.read_text(name)
 
     def _read(self, name):
-        with open(self._file(name), newline="") as f:
-            return list(csv.reader(f))[1:]
+        return self.read_rows(name)
 
     def _write(self, name, text):
-        with open(self._file(name), "w", newline="") as f:
-            f.write(text)
+        self.write_text(name, text)
 
     def _dists(self, *lines):
         path = self._file("distributions.txt")
@@ -6825,15 +6981,6 @@ class TestDividendSourceConfiguration(unittest.TestCase):
         self.assertTrue(
             all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
         )
-
-
-FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
-
-
-def fixture_text(name):
-    """Return a page recorded from the live site (see fixtures/)."""
-    with open(os.path.join(FIXTURE_DIR, name), encoding="utf-8") as f:
-        return f.read()
 
 
 def embedded(value):
@@ -7970,12 +8117,6 @@ class TestIssuerSourcesInMain(unittest.TestCase):
 # SPEC-012: pay-date sources IV (Invesco), SS (SSGA), Q4 (Q4 Inc IR) and ET
 # (etnet), each one canned response recorded once from the live site (#89).
 # ---------------------------------------------------------------------------
-
-
-def fixture_bytes(name):
-    """Return a file recorded from the live site, as bytes (see fixtures/)."""
-    with open(os.path.join(FIXTURE_DIR, name), "rb") as f:
-        return f.read()
 
 
 def make_xlsx(rows, sheet_name="Open Fund", inline=False):
