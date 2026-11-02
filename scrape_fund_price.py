@@ -537,6 +537,45 @@ def as_fund_spec(entry):
     return FundSpec(SOURCE_ALIASES.get(source.upper(), source), lookup_id, aliases)
 
 
+class Universe(NamedTuple):
+    """The configured instruments and their identifiers, mapped once per run.
+
+    An instrument is fetched under its lookup id and published under every
+    identifier in its spec's `publish_ids`; `lookup_of` maps each published
+    identifier to the lookup id, and `publish_ids_of` each lookup id back to
+    the identifiers, lookup id first.
+    """
+
+    specs: tuple  # canonical FundSpec instances, in configuration order
+    lookup_of: dict
+    publish_ids_of: dict
+    all_identifiers: frozenset
+
+    @classmethod
+    def from_specs(cls, specs):
+        """Build the map from FundSpec instances (or (source, id) pairs)."""
+        specs = tuple(as_fund_spec(entry) for entry in specs)
+        lookup_of = {
+            identifier: spec.lookup_id
+            for spec in specs
+            for identifier in spec.publish_ids
+        }
+        publish_ids_of = {spec.lookup_id: spec.publish_ids for spec in specs}
+        return cls(specs, lookup_of, publish_ids_of, frozenset(lookup_of))
+
+    def published(self, identifier):
+        """Return every identifier the instrument behind `identifier` is published under.
+
+        A line in distributions.txt may use the lookup id or an alias; either
+        way the rows go out under all of them. An identifier funds.txt does
+        not publish (a closed holding) has only itself.
+        """
+        lookup_id = self.lookup_of.get(identifier)
+        if lookup_id is None:
+            return (identifier,)
+        return self.publish_ids_of[lookup_id]
+
+
 def configured_identifiers(specs, closed_file=None):
     """Return every identifier a distributions.txt line may name.
 
@@ -547,9 +586,7 @@ def configured_identifiers(specs, closed_file=None):
     if closed_file is None:
         closed_file = CLOSED_HOLDINGS_FILE
 
-    identifiers = {
-        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
-    }
+    identifiers = set(Universe.from_specs(specs).all_identifiers)
     if os.path.isfile(closed_file):
         identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
     return identifiers
@@ -653,11 +690,7 @@ def read_dividend_sources(filename=None, specs=None):
 
     instrument_of = None
     if specs is not None:
-        instrument_of = {
-            identifier: as_fund_spec(entry).lookup_id
-            for entry in specs
-            for identifier in as_fund_spec(entry).publish_ids
-        }
+        instrument_of = Universe.from_specs(specs).lookup_of
 
     sources = []
     seen = {}
@@ -2331,16 +2364,46 @@ def fetch_yahoo_declared(symbol, today=None):
 
 DIVIDENDS_HISTORY_FILE = "dividends_history.csv"
 DIVIDENDS_UPCOMING_FILE = "dividends_upcoming.csv"
-DIVIDEND_HISTORY_HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
-DIVIDEND_UPCOMING_HEADER = [
-    "Fund",
-    "ExDate",
-    "PayDate",
-    "Amount",
-    "Currency",
-    "Status",
-    "AsOf",
-]
+
+
+class DividendRow(NamedTuple):
+    """One row of dividends_history.csv: a dividend paid, from one source.
+
+    `source` is `YA`, an issuer code (DIVIDEND_SOURCE_CODES) or `config`
+    (distributions.txt); see SOURCE_AUTHORITY. Fields are the file's text.
+    """
+
+    HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+
+    fund: str
+    ex_date: str
+    pay_date: str  # "" when no source gives one
+    amount: str
+    currency: str
+    source: str
+
+
+class UpcomingRow(NamedTuple):
+    """One row of dividends_upcoming.csv: a dividend expected, not yet paid.
+
+    `status` is `declared` (a source announced it) or `estimated` (projected
+    from the history or distributions.txt); `as_of` is the run that last
+    produced or confirmed the row. Fields are the file's text.
+    """
+
+    HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Status", "AsOf"]
+
+    fund: str
+    ex_date: str
+    pay_date: str  # "" when not known
+    amount: str  # "" when not known
+    currency: str
+    status: str
+    as_of: str
+
+
+DIVIDEND_HISTORY_HEADER = DividendRow.HEADER
+DIVIDEND_UPCOMING_HEADER = UpcomingRow.HEADER
 
 
 # The daily run re-reads this many days of Yahoo's dividend events; the whole
@@ -2348,10 +2411,49 @@ DIVIDEND_UPCOMING_HEADER = [
 DIVIDEND_WINDOW_DAYS = 400
 
 
+class DividendRun(NamedTuple):
+    """What every step of one dividend run shares, settled once at its start.
+
+    `currencies` maps an identifier to the currency of its newest stored
+    price: the price files are read for it once per run (stored_currencies).
+    """
+
+    today: datetime.date
+    universe: Universe
+    currencies: dict
+    data_dir: str
+
+    @classmethod
+    def prepare(cls, specs, data_dir=None, today=None):
+        """Settle a run: its date, the instrument map and the stored currencies.
+
+        Args:
+            specs: FundSpec instances from funds.txt
+            data_dir: Directory of the data files (default: DATA_DIR)
+            today: The run date (default: today)
+        """
+        if data_dir is None:
+            data_dir = DATA_DIR
+        return cls(
+            today or datetime.date.today(),
+            Universe.from_specs(specs),
+            stored_currencies(data_dir),
+            data_dir,
+        )
+
+    def price_currency(self, identifier):
+        """Return the price currency of the instrument behind `identifier`.
+
+        The first identifier it is published under that has a stored price
+        gives it; "" when none has.
+        """
+        return first_currency(self.universe.published(identifier), self.currencies)
+
+
 class DividendResults(list):
     """The day's dividend fetch: history rows plus what else Yahoo said.
 
-    Rows are [identifier, ex_date, pay_date, amount, currency, source].
+    Rows are DividendRow.
     `declared` maps a lookup identifier to its announced next dividend and
     `fetched` holds the lookup identifiers whose events were read, so a
     failed instrument can be told from one that simply pays nothing.
@@ -2366,30 +2468,31 @@ class DividendResults(list):
 
 
 def read_dividend_history(data_dir):
-    """Read dividends_history.csv keyed on (Fund, ExDate).
+    """Read dividends_history.csv as DividendRow keyed on (Fund, ExDate).
 
     A missing file is an empty history, and a row without a fund or an
     ex-date cannot be keyed, so it is skipped rather than stopping the run.
     """
     return read_keyed_csv(
         os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
-        DIVIDEND_HISTORY_HEADER,
+        DividendRow.HEADER,
         fund_and_ex_date,
+        row=DividendRow._make,
     )
 
 
 def fund_and_ex_date(row):
     """The (Fund, ExDate) key of a dividend row, or None when it has neither."""
-    return (row[0], row[1]) if row[0] and row[1] else None
+    return (row.fund, row.ex_date) if row.fund and row.ex_date else None
 
 
 def write_dividend_history(rows, data_dir):
-    """Write dividends_history.csv sorted by ex-date then fund."""
+    """Write dividends_history.csv (DividendRow) sorted by ex-date then fund."""
     write_sorted_csv(
         os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
-        DIVIDEND_HISTORY_HEADER,
+        DividendRow.HEADER,
         rows,
-        key=lambda row: (row[1], row[0]),
+        key=lambda row: (row.ex_date, row.fund),
     )
 
 
@@ -2401,7 +2504,7 @@ SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2, "IV": 2, "SS": 2, "Q4": 2, "E
 
 def source_authority(row):
     """Return how much a history row's source knows; an unknown source counts as YA."""
-    return SOURCE_AUTHORITY.get(row[5], 1)
+    return SOURCE_AUTHORITY.get(row.source, 1)
 
 
 def merge_dividend_rows(stored, incoming):
@@ -2413,14 +2516,14 @@ def merge_dividend_rows(stored, incoming):
     (SOURCE_AUTHORITY), so the owner's `config` row gives way to Yahoo's, and
     Yahoo's daily upsert cannot blank the pay date the issuer supplied.
     """
-    for row in incoming:
-        current = stored.get((row[0], row[1]))
+    for row in map(DividendRow._make, incoming):
+        current = stored.get((row.fund, row.ex_date))
         if current is not None and source_authority(row) < source_authority(current):
             continue
-        stored[(row[0], row[1])] = list(row)
+        stored[(row.fund, row.ex_date)] = row
 
 
-def collect_dividends(specs, today, start=None):
+def collect_dividends(run, start=None):
     """Fetch Yahoo's dividend events and declared dividends for each YA fund.
 
     One fetch per instrument, published under every alias. Only YA has a
@@ -2430,14 +2533,12 @@ def collect_dividends(specs, today, start=None):
     failing the run every day for an optional fact would hide real failures.
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
-        today: The run date; events dated after it are ignored
+        run: The DividendRun; events dated after its day are ignored
         start: Inclusive ISO start of the events window, None for all of them
     """
     results = DividendResults()
 
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in run.universe.specs:
         if spec.source != "YA":
             continue
 
@@ -2450,15 +2551,22 @@ def collect_dividends(specs, today, start=None):
         results.fetched.add(spec.lookup_id)
 
         for event in events:
-            if event.ex_date > today.isoformat():
+            if event.ex_date > run.today.isoformat():
                 continue
             for identifier in spec.publish_ids:
                 results.append(
-                    [identifier, event.ex_date, "", event.amount, event.currency, "YA"]
+                    DividendRow(
+                        identifier,
+                        event.ex_date,
+                        "",
+                        event.amount,
+                        event.currency,
+                        "YA",
+                    )
                 )
 
         declared, error = fetch_with_retries(
-            lambda: fetch_yahoo_declared(spec.lookup_id, today)
+            lambda: fetch_yahoo_declared(spec.lookup_id, run.today)
         )
         if error:
             log.warning(f"{spec.lookup_id}: declared dividend lookup failed: {error}")
@@ -2477,26 +2585,27 @@ UPCOMING_MAX_AGE_DAYS = 30
 
 
 def read_dividend_upcoming(data_dir):
-    """Read dividends_upcoming.csv as a list of rows.
+    """Read dividends_upcoming.csv as a list of UpcomingRow.
 
     A missing file has no rows, and a row without a fund or an ex-date is
     skipped rather than stopping the run.
     """
     rows = read_keyed_csv(
         os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
+        UpcomingRow.HEADER,
         fund_and_ex_date,
+        row=UpcomingRow._make,
     )
     return list(rows.values())
 
 
 def write_dividend_upcoming(rows, data_dir):
-    """Write dividends_upcoming.csv sorted by ex-date then fund."""
+    """Write dividends_upcoming.csv (UpcomingRow) sorted by ex-date then fund."""
     write_sorted_csv(
         os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
-        DIVIDEND_UPCOMING_HEADER,
+        UpcomingRow.HEADER,
         rows,
-        key=lambda row: (row[1], row[0]),
+        key=lambda row: (row.ex_date, row.fund),
     )
 
 
@@ -3144,7 +3253,7 @@ def issuer_declared(table, price_currency, today):
     return DeclaredDividend(row.ex_date, row.pay_date, amount.text, amount.currency)
 
 
-def apply_issuer_table(history, identifier, table, price_currency, today, start=None):
+def apply_issuer_table(run, history, identifier, table, start=None):
     """Merge an issuer's past distributions into one identifier's history rows.
 
     Each distribution dated today or earlier (and on or after `start`) becomes
@@ -3158,65 +3267,68 @@ def apply_issuer_table(history, identifier, table, price_currency, today, start=
     be written again from Yahoo's window tomorrow.
 
     Args:
-        history: dividends_history rows keyed on (Fund, ExDate), changed in place
+        run: The DividendRun; distributions after its day are not history, and
+            a row inserted takes the instrument's price currency
+        history: dividends_history rows keyed on (Fund, ExDate)
         identifier: The Fund value the rows are stored under
         table: IssuerTable from the issuer's page
-        price_currency: The instrument's price currency, for rows it inserts
-        today: The run date; later distributions are not history
         start: Inclusive ISO date to apply from, None for all of them
 
     Returns:
-        The number of rows added, changed or removed
+        The merged history, a new dict; `history` is left as it was
     """
+    price_currency = run.price_currency(identifier)
     issuer_dates = {row.ex_date for row in table.rows}
-    changed = 0
+    history = dict(history)
 
     for row in table.rows:
-        if row.ex_date > today.isoformat() or row.ex_date < (start or ""):
+        if row.ex_date > run.today.isoformat() or row.ex_date < (start or ""):
             continue
 
         current = history.get((identifier, row.ex_date))
         twins = []
         for (fund, ex_date), stored in history.items():
-            if fund != identifier or stored[5] != "YA" or ex_date in issuer_dates:
+            if fund != identifier or stored.source != "YA" or ex_date in issuer_dates:
                 continue
             gap = day_gap(ex_date, row.ex_date)
             if gap is None or gap > ISSUER_TWIN_DAYS:
                 continue
             amount = issuer_amount(
-                row.amount, table.currency, stored[4] or price_currency
+                row.amount, table.currency, stored.currency or price_currency
             )
-            if amount is not None and amounts_agree(stored[3], amount):
+            if amount is not None and amounts_agree(stored.amount, amount):
                 twins.append((gap, ex_date))
         twins.sort()
         base = current or (history[(identifier, twins[0][1])] if twins else None)
 
         amount = issuer_amount(
-            row.amount, table.currency, (base[4] if base else "") or price_currency
+            row.amount,
+            table.currency,
+            (base.currency if base else "") or price_currency,
         )
-        if amount is not None and (base is None or not amounts_agree(base[3], amount)):
+        if amount is not None and (
+            base is None or not amounts_agree(base.amount, amount)
+        ):
             text, currency = amount.text, amount.currency
         elif base is not None:
-            text, currency = base[3], base[4] or (amount.currency if amount else "")
+            text = base.amount
+            currency = base.currency or (amount.currency if amount else "")
         else:
             continue
 
-        merged = [
+        merged = DividendRow(
             identifier,
             row.ex_date,
-            row.pay_date or (base[2] if base else ""),
+            row.pay_date or (base.pay_date if base else ""),
             text,
             currency,
             table.source,
-        ]
+        )
         for _, ex_date in twins:
             del history[(identifier, ex_date)]
-            changed += 1
-        if merged != current:
-            history[(identifier, row.ex_date)] = merged
-            changed += 1
+        history[(identifier, row.ex_date)] = merged
 
-    return changed
+    return history
 
 
 # Pause between two issuer pages: they are 1.5 to 3 MB each (SPEC-011).
@@ -3238,26 +3350,20 @@ class IssuerResults:
         self.failures = []
 
 
-def collect_issuer_tables(sources, specs):
+def collect_issuer_tables(run, sources):
     """Fetch each configured instrument's distribution table, once.
 
     Retried by `fetch_with_retries()` and paced; one instrument failing, by
     network, status or a page that has changed, never stops the others.
 
     Args:
+        run: The DividendRun
         sources: DividendSource lines from dividend_sources.txt
-        specs: FundSpec instances, or plain (source, identifier) pairs
     """
-    instrument_of = {}
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        for identifier in spec.publish_ids:
-            instrument_of[identifier] = spec.lookup_id
-
     results = IssuerResults()
     clear_issuer_caches()
     for index, source in enumerate(sources):
-        lookup_id = instrument_of[source.identifier]
+        lookup_id = run.universe.lookup_of[source.identifier]
         results.requested.add(lookup_id)
         if index:
             time.sleep(ISSUER_PAUSE_SECONDS)
@@ -3270,27 +3376,32 @@ def collect_issuer_tables(sources, specs):
     return results
 
 
-def merge_issuer_tables(history, specs, tables, currencies, today, start=None):
+def merge_issuer_tables(run, history, tables, start=None):
     """Apply each fetched table to its instrument's rows under every alias.
 
+    Args:
+        run: The DividendRun
+        history: dividends_history rows keyed on (Fund, ExDate)
+        tables: Lookup identifier -> IssuerTable
+        start: Inclusive ISO date to apply from, None for all of them
+
     Returns:
-        Lookup identifier -> the DeclaredDividend the issuer announced, for
-        the instruments that have one
+        (the merged history, lookup identifier -> the DeclaredDividend the
+        issuer announced, for the instruments that have one)
     """
     declared = {}
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in run.universe.specs:
         table = tables.get(spec.lookup_id)
         if table is None:
             continue
 
-        price_currency = first_currency(spec.publish_ids, currencies)
         for identifier in spec.publish_ids:
-            apply_issuer_table(history, identifier, table, price_currency, today, start)
-        announced = issuer_declared(table, price_currency, today)
+            history = apply_issuer_table(run, history, identifier, table, start)
+        price_currency = run.price_currency(spec.lookup_id)
+        announced = issuer_declared(table, price_currency, run.today)
         if announced is not None:
             declared[spec.lookup_id] = announced
-    return declared
+    return history, declared
 
 
 # ===========================================================================
@@ -3377,8 +3488,7 @@ def estimate_next_dividend(rows, today):
     estimate. A pay date is projected only when the last row has one.
 
     Args:
-        rows: One instrument's [fund, ex_date, pay_date, amount, currency,
-            source] history rows, in any order
+        rows: One instrument's DividendRow history rows, in any order
         today: The run date
 
     Returns:
@@ -3387,7 +3497,7 @@ def estimate_next_dividend(rows, today):
     dated = []
     for row in rows:
         try:
-            ex_date = datetime.date.fromisoformat(row[1])
+            ex_date = datetime.date.fromisoformat(row.ex_date)
         except ValueError:
             continue
         if ex_date <= today:
@@ -3406,13 +3516,15 @@ def estimate_next_dividend(rows, today):
 
     pay_date = ""
     try:
-        lag = datetime.date.fromisoformat(last_row[2]) - last_ex
+        lag = datetime.date.fromisoformat(last_row.pay_date) - last_ex
     except ValueError:
         lag = None
     if lag is not None and lag.days >= 0:
         pay_date = (next_ex + lag).isoformat()
 
-    return EstimatedDividend(next_ex.isoformat(), pay_date, last_row[3], last_row[4])
+    return EstimatedDividend(
+        next_ex.isoformat(), pay_date, last_row.amount, last_row.currency
+    )
 
 
 def slot_date(month, day, year):
@@ -3460,20 +3572,20 @@ def distribution_history_rows(dist, currency, today):
             ex_date = slot_date(month, day, limit.year - 1)
         pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
         rows.append(
-            [
+            DividendRow(
                 dist.identifier,
                 ex_date.isoformat(),
                 pay_date.isoformat(),
                 amount,
                 currency,
                 "config",
-            ]
+            )
         )
     return rows
 
 
 def upcoming_rows_for(
-    identifier, stored, history_dates, last_paid, declared, estimate, today
+    run, identifier, stored, history_dates, last_paid, *, declared=None, estimate=None
 ):
     """Return one instrument's upcoming rows, oldest ex-date first.
 
@@ -3486,36 +3598,36 @@ def upcoming_rows_for(
     the period: no estimate is written beside it.
 
     Args:
+        run: The DividendRun; its day is also the rows' AsOf
         identifier: The Fund value of the rows
-        stored: The instrument's rows from the previous run
+        stored: The instrument's UpcomingRows from the previous run
         history_dates: Its ex-dates in dividends_history.csv
         last_paid: (amount, currency) of its latest history row
         declared: Today's DeclaredDividend, or None
         estimate: Today's EstimatedDividend, or None
-        today: The run date, which is also the rows' AsOf
     """
-    as_of = today.isoformat()
+    as_of = run.today.isoformat()
     rows = {}
 
     for row in stored:
         try:
-            age = (today - datetime.date.fromisoformat(row[1])).days
+            age = (run.today - datetime.date.fromisoformat(row.ex_date)).days
         except ValueError:
             continue
         if age <= 0:
-            if row[5] == "estimated" or declared is not None:
+            if row.status == "estimated" or declared is not None:
                 continue
         elif age > UPCOMING_MAX_AGE_DAYS:
             continue
-        elif age > UPCOMING_GRACE_DAYS and row[1] in history_dates:
+        elif age > UPCOMING_GRACE_DAYS and row.ex_date in history_dates:
             continue
-        rows[row[1]] = [identifier] + row[1:7]
+        rows[row.ex_date] = row._replace(fund=identifier)
 
     if declared is not None:
         amount, currency = last_paid
         if declared.amount:
             amount, currency = declared.amount, declared.currency
-        rows[declared.ex_date] = [
+        rows[declared.ex_date] = UpcomingRow(
             identifier,
             declared.ex_date,
             declared.pay_date,
@@ -3523,14 +3635,16 @@ def upcoming_rows_for(
             currency,
             "declared",
             as_of,
-        ]
+        )
 
     pending = any(
-        row[5] == "declared" and row[1] >= as_of and row[1] not in history_dates
+        row.status == "declared"
+        and row.ex_date >= as_of
+        and row.ex_date not in history_dates
         for row in rows.values()
     )
     if estimate is not None and not pending:
-        rows[estimate.ex_date] = [
+        rows[estimate.ex_date] = UpcomingRow(
             identifier,
             estimate.ex_date,
             estimate.pay_date,
@@ -3538,7 +3652,7 @@ def upcoming_rows_for(
             estimate.currency,
             "estimated",
             as_of,
-        ]
+        )
 
     return [rows[ex_date] for ex_date in sorted(rows)]
 
@@ -3556,9 +3670,7 @@ def merge_by_ex_date(rows_by_fund, identifiers):
     return merged
 
 
-def build_dividend_upcoming(
-    specs, distributions, history, stored, declared, today, currencies
-):
+def build_dividend_upcoming(run, distributions, history, stored, declared):
     """Build dividends_upcoming.csv from the day's inputs.
 
     Only the instruments in funds.txt get rows: a closed holding is not held,
@@ -3568,63 +3680,60 @@ def build_dividend_upcoming(
     is computed once on the lookup identifier and published under every alias.
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        run: The DividendRun
         distributions: Distribution lines from distributions.txt
         history: dividends_history.csv rows keyed on (Fund, ExDate)
         stored: The previous run's upcoming rows
         declared: Lookup identifier -> DeclaredDividend for today
-        today: The run date
-        currencies: Identifier -> the currency of its newest stored price
     """
     history_by_fund = {}
     for (fund, ex_date), row in history.items():
         history_by_fund.setdefault(fund, {})[ex_date] = row
     stored_by_fund = {}
     for row in stored:
-        stored_by_fund.setdefault(row[0], []).append(row)
+        stored_by_fund.setdefault(row.fund, []).append(row)
     schedule_for = {dist.identifier: dist for dist in distributions}
 
     rows = []
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in run.universe.specs:
         identifiers = spec.publish_ids
 
         instrument_history = merge_by_ex_date(history_by_fund, identifiers)
         ordered = [
             instrument_history[ex_date] for ex_date in sorted(instrument_history)
         ]
-        last_paid = (ordered[-1][3], ordered[-1][4]) if ordered else ("", "")
+        last_paid = (ordered[-1].amount, ordered[-1].currency) if ordered else ("", "")
 
         schedule = next(
             (schedule_for[i] for i in identifiers if i in schedule_for), None
         )
         if schedule is not None:
-            currency = first_currency(identifiers, currencies)
-            estimate = distribution_estimate(schedule, currency, today)
+            currency = run.price_currency(spec.lookup_id)
+            estimate = distribution_estimate(schedule, currency, run.today)
         else:
-            estimate = estimate_next_dividend(ordered, today)
+            estimate = estimate_next_dividend(ordered, run.today)
 
         instrument_stored = merge_by_ex_date(
             {
-                i: {row[1]: row for row in stored_by_fund.get(i, [])}
+                i: {row.ex_date: row for row in stored_by_fund.get(i, [])}
                 for i in identifiers
             },
             identifiers,
         )
 
         merged = upcoming_rows_for(
+            run,
             spec.lookup_id,
             list(instrument_stored.values()),
             set(instrument_history),
             last_paid,
-            declared.get(spec.lookup_id),
-            estimate,
-            today,
+            declared=declared.get(spec.lookup_id),
+            estimate=estimate,
         )
         for identifier in identifiers:
-            rows.extend([identifier] + row[1:] for row in merged)
+            rows.extend(row._replace(fund=identifier) for row in merged)
 
-    return sorted(rows, key=lambda row: (row[1], row[0]))
+    return sorted(rows, key=lambda row: (row.ex_date, row.fund))
 
 
 def stored_currencies(data_dir):
@@ -3637,43 +3746,22 @@ def first_currency(identifiers, currencies):
     return next((currencies[i] for i in identifiers if currencies.get(i)), "")
 
 
-def published_identifiers(identifier, specs):
-    """Return every identifier the instrument behind `identifier` is published under.
-
-    A line in distributions.txt may use the lookup id or an alias; either way
-    the rows go out under all of them. A closed holding has only itself.
-    """
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        if identifier in spec.publish_ids:
-            return spec.publish_ids
-    return (identifier,)
-
-
-def config_history_rows(distributions, specs, currencies, today):
+def config_history_rows(run, distributions):
     """Return the `config` history rows of every distributions.txt line."""
     rows = []
     for dist in distributions:
-        identifiers = published_identifiers(dist.identifier, specs)
-        currency = first_currency(identifiers, currencies)
-        for row in distribution_history_rows(dist, currency, today):
-            rows.extend([identifier] + row[1:] for identifier in identifiers)
+        identifiers = run.universe.published(dist.identifier)
+        currency = run.price_currency(dist.identifier)
+        for row in distribution_history_rows(dist, currency, run.today):
+            rows.extend(row._replace(fund=identifier) for identifier in identifiers)
     return rows
 
 
-def publish_upcoming(specs, distributions, history, declared, data_dir, today):
+def publish_upcoming(run, distributions, history, declared):
     """Rebuild dividends_upcoming.csv and return (previous rows, new rows)."""
-    previous = read_dividend_upcoming(data_dir)
-    upcoming = build_dividend_upcoming(
-        specs,
-        distributions,
-        history,
-        previous,
-        declared,
-        today,
-        stored_currencies(data_dir),
-    )
-    write_dividend_upcoming(upcoming, data_dir)
+    previous = read_dividend_upcoming(run.data_dir)
+    upcoming = build_dividend_upcoming(run, distributions, history, previous, declared)
+    write_dividend_upcoming(upcoming, run.data_dir)
     return previous, upcoming
 
 
@@ -3694,7 +3782,7 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
     never deletes (a rebuild does that: backfill_dividends).
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        specs: FundSpec instances from funds.txt
         distributions: Distribution lines from distributions.txt
         data_dir: Directory for output files (default: DATA_DIR)
         today: The run date (default: today)
@@ -3704,37 +3792,28 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
         DividendResults whose `failures` lists the instruments that could not
         be fetched; their stored rows are untouched
     """
-    if data_dir is None:
-        data_dir = DATA_DIR
-    today = today or datetime.date.today()
-
-    os.makedirs(data_dir, exist_ok=True)
-    first_run = not os.path.isfile(os.path.join(data_dir, DIVIDENDS_HISTORY_FILE))
+    run = DividendRun.prepare(specs, data_dir, today)
+    os.makedirs(run.data_dir, exist_ok=True)
+    first_run = not os.path.isfile(os.path.join(run.data_dir, DIVIDENDS_HISTORY_FILE))
     window = datetime.timedelta(days=DIVIDEND_WINDOW_DAYS)
-    start = None if first_run else (today - window).isoformat()
+    start = None if first_run else (run.today - window).isoformat()
 
-    results = collect_dividends(specs, today, start)
-    issuers = collect_issuer_tables(sources, specs)
+    results = collect_dividends(run, start)
+    issuers = collect_issuer_tables(run, sources)
     results.failures.extend(issuers.failures)
-    history = read_dividend_history(data_dir)
+    history = read_dividend_history(run.data_dir)
     merge_dividend_rows(history, results)
-    currencies = stored_currencies(data_dir)
-    merge_dividend_rows(
-        history, config_history_rows(distributions, specs, currencies, today)
-    )
-    results.declared.update(
-        merge_issuer_tables(history, specs, issuers.tables, currencies, today)
-    )
-    write_dividend_history(list(history.values()), data_dir)
+    merge_dividend_rows(history, config_history_rows(run, distributions))
+    history, declared = merge_issuer_tables(run, history, issuers.tables)
+    results.declared.update(declared)
+    write_dividend_history(list(history.values()), run.data_dir)
 
-    previous, upcoming = publish_upcoming(
-        specs, distributions, history, results.declared, data_dir, today
-    )
-    results.summary = build_dividend_summary(previous, upcoming, specs)
+    previous, upcoming = publish_upcoming(run, distributions, history, results.declared)
+    results.summary = build_dividend_summary(previous, upcoming, run.universe)
     return results
 
 
-def rebuild_issuer_rows(history, spec, table, currencies, today, start):
+def rebuild_issuer_rows(run, history, spec, table, start):
     """Rebuild the `IS` rows of an instrument that has no Yahoo route.
 
     The instrument's `IS` rows from `start` are replaced by what the issuer
@@ -3742,8 +3821,10 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
     sources are never touched.
 
     Returns:
-        (report entries, DeclaredDividend by lookup identifier)
+        (the rebuilt history, report entries, DeclaredDividend by lookup
+        identifier); `history` is left as it was
     """
+    history = dict(history)
     counts = []
     for identifier in spec.publish_ids:
         existing = [key for key in history if key[0] == identifier]
@@ -3751,7 +3832,8 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
             [
                 key
                 for key in existing
-                if history[key][5] in DIVIDEND_SOURCE_CODES and key[1] >= (start or "")
+                if history[key].source in DIVIDEND_SOURCE_CODES
+                and key[1] >= (start or "")
             ]
             if table is not None
             else []
@@ -3761,10 +3843,10 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
         counts.append((identifier, existing, doomed))
 
     tables = {} if table is None else {spec.lookup_id: table}
-    declared = merge_issuer_tables(history, [spec], tables, currencies, today, start)
+    history, declared = merge_issuer_tables(run, history, tables, start)
     if table is None:
         items = [BackfillEntry.failed(ident, existing) for ident, existing, _ in counts]
-        return items, declared
+        return history, items, declared
 
     items = []
     for identifier, existing, doomed in counts:
@@ -3772,7 +3854,7 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
             row
             for key, row in history.items()
             if key[0] == identifier
-            and row[5] in DIVIDEND_SOURCE_CODES
+            and row.source in DIVIDEND_SOURCE_CODES
             and key[1] >= (start or "")
         )
         items.append(
@@ -3781,10 +3863,114 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
                 before=len(existing),
                 deleted=len(doomed),
                 retained=len(existing) - len(doomed),
-                inserted=[(row[1], row[4]) for row in rows],
+                inserted=[(row.ex_date, row.currency) for row in rows],
             )
         )
-    return items, declared
+    return history, items, declared
+
+
+def fetch_rebuild_events(run, start=None):
+    """Fetch Yahoo's dividend events of each YA instrument, for the rebuild.
+
+    Retried by `fetch_with_retries()`; one instrument failing never stops the
+    others.
+
+    Returns:
+        (lookup identifier -> its DividendEvents dated the run's day or
+        earlier, for the instruments that fetched; the
+        "<identifier>: dividends: <error>" lines of those that did not)
+    """
+    events, failures = {}, []
+    for spec in run.universe.specs:
+        if spec.source != "YA":
+            continue
+        fetched, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            failures.append(f"{spec.lookup_id}: dividends: {error}")
+            continue
+        events[spec.lookup_id] = [
+            event for event in fetched if event.ex_date <= run.today.isoformat()
+        ]
+    return events, failures
+
+
+def rebuild_dividend_rows(run, history, distributions, events, issuers, *, start=None):
+    """Return what --backfill-dividends makes of the history, fetching nothing.
+
+    For each YA instrument that fetched, its `YA` rows from `start` (all of
+    them without one) are replaced by `events`, and where its issuer's page
+    fetched its issuer rows too, the table being applied last; one whose
+    fetch failed keeps every row. An instrument with no Yahoo route has its
+    issuer rows rebuilt alone (rebuild_issuer_rows). The `config` rows of
+    `distributions` are merged last.
+
+    Args:
+        run: The DividendRun
+        history: dividends_history.csv rows keyed on (Fund, ExDate); not changed
+        distributions: Distribution lines from distributions.txt
+        events: fetch_rebuild_events' lookup identifier -> DividendEvents
+        issuers: The run's IssuerResults
+        start: Inclusive ISO date to rebuild from, None for everything
+
+    Returns:
+        (the rebuilt history, the BackfillEntry of each identifier, lookup
+        identifier -> the DeclaredDividend its issuer announced)
+    """
+    history = dict(history)
+    entries, declared = [], {}
+
+    for spec in run.universe.specs:
+        table = issuers.tables.get(spec.lookup_id)
+        if spec.source != "YA":
+            if spec.lookup_id in issuers.requested:
+                history, items, announced = rebuild_issuer_rows(
+                    run, history, spec, table, start
+                )
+                entries.extend(items)
+                declared.update(announced)
+            continue
+
+        fetched = events.get(spec.lookup_id)
+        owned = ("YA",) if table is None else ("YA",) + DIVIDEND_SOURCE_CODES
+
+        for identifier in spec.publish_ids:
+            existing = [key for key in history if key[0] == identifier]
+            if fetched is None:
+                entries.append(BackfillEntry.failed(identifier, existing))
+                continue
+
+            doomed = [
+                key
+                for key in existing
+                if history[key].source in owned and key[1] >= (start or "")
+            ]
+            for key in doomed:
+                del history[key]
+            merge_dividend_rows(
+                history,
+                (
+                    DividendRow(identifier, e.ex_date, "", e.amount, e.currency, "YA")
+                    for e in fetched
+                ),
+            )
+            entries.append(
+                BackfillEntry.rebuilt(
+                    identifier,
+                    before=len(existing),
+                    deleted=len(doomed),
+                    retained=len(existing) - len(doomed),
+                    inserted=[(e.ex_date, e.currency) for e in fetched],
+                )
+            )
+
+        tables = {} if table is None else {spec.lookup_id: table}
+        history, announced = merge_issuer_tables(run, history, tables, start)
+        declared.update(announced)
+
+    merge_dividend_rows(history, config_history_rows(run, distributions))
+    return history, entries, declared
 
 
 def backfill_dividends(
@@ -3803,7 +3989,7 @@ def backfill_dividends(
     the issuers' announced ones).
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        specs: FundSpec instances from funds.txt
         distributions: Distribution lines from distributions.txt
         start: Inclusive ISO date to rebuild from, None for everything
         data_dir: Directory for output files (default: DATA_DIR)
@@ -3813,80 +3999,20 @@ def backfill_dividends(
     Returns:
         BackfillReport
     """
-    if data_dir is None:
-        data_dir = DATA_DIR
-    today = today or datetime.date.today()
-
-    os.makedirs(data_dir, exist_ok=True)
-    history = read_dividend_history(data_dir)
+    run = DividendRun.prepare(specs, data_dir, today)
+    os.makedirs(run.data_dir, exist_ok=True)
     report = BackfillReport()
-    issuers = collect_issuer_tables(sources, specs)
-    report.failures.extend(issuers.failures)
-    currencies = stored_currencies(data_dir)
-    declared = {}
+    issuers = collect_issuer_tables(run, sources)
+    events, failures = fetch_rebuild_events(run, start)
+    report.failures.extend(issuers.failures + failures)
 
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        table = issuers.tables.get(spec.lookup_id)
-        if spec.source != "YA":
-            if spec.lookup_id in issuers.requested:
-                items, announced = rebuild_issuer_rows(
-                    history, spec, table, currencies, today, start
-                )
-                report.entries.extend(items)
-                declared.update(announced)
-            continue
-
-        events, error = fetch_with_retries(
-            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
-        )
-        if error:
-            report.failures.append(f"{spec.lookup_id}: dividends: {error}")
-        else:
-            events = [event for event in events if event.ex_date <= today.isoformat()]
-        owned = ("YA",) if table is None else ("YA",) + DIVIDEND_SOURCE_CODES
-
-        for identifier in spec.publish_ids:
-            existing = [key for key in history if key[0] == identifier]
-            if error:
-                report.entries.append(BackfillEntry.failed(identifier, existing))
-                continue
-
-            doomed = [
-                key
-                for key in existing
-                if history[key][5] in owned and key[1] >= (start or "")
-            ]
-            for key in doomed:
-                del history[key]
-            merge_dividend_rows(
-                history,
-                (
-                    [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
-                    for e in events
-                ),
-            )
-            report.entries.append(
-                BackfillEntry.rebuilt(
-                    identifier,
-                    before=len(existing),
-                    deleted=len(doomed),
-                    retained=len(existing) - len(doomed),
-                    inserted=[(e.ex_date, e.currency) for e in events],
-                )
-            )
-
-        declared.update(
-            merge_issuer_tables(
-                history, [spec], issuers.tables, currencies, today, start
-            )
-        )
-
-    merge_dividend_rows(
-        history, config_history_rows(distributions, specs, currencies, today)
+    stored = read_dividend_history(run.data_dir)
+    history, entries, declared = rebuild_dividend_rows(
+        run, stored, distributions, events, issuers, start=start
     )
-    write_dividend_history(list(history.values()), data_dir)
-    publish_upcoming(specs, distributions, history, declared, data_dir, today)
+    report.entries.extend(entries)
+    write_dividend_history(list(history.values()), run.data_dir)
+    publish_upcoming(run, distributions, history, declared)
     return report
 
 
@@ -4452,7 +4578,7 @@ class DividendSummaryRow(NamedTuple):
     status: str
 
 
-def build_dividend_summary(previous, upcoming, specs):
+def build_dividend_summary(previous, upcoming, universe):
     """List the upcoming dividends that are news today (SPEC-010).
 
     A row is news when its (Fund, ExDate) was not in the previous file or its
@@ -4462,28 +4588,27 @@ def build_dividend_summary(previous, upcoming, specs):
     as in the price table.
 
     Args:
-        previous: The previous run's dividends_upcoming.csv rows
+        previous: The previous run's dividends_upcoming.csv rows (UpcomingRow)
         upcoming: Today's rows
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        universe: The configured instruments (Universe)
     """
-    before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
+    before = {(row.fund, row.ex_date): (row.pay_date, row.status) for row in previous}
     rows = []
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        for row in sorted(upcoming, key=lambda row: row[1]):
-            if row[0] != spec.lookup_id:
+    for spec in universe.specs:
+        for row in sorted(upcoming, key=lambda row: row.ex_date):
+            if row.fund != spec.lookup_id:
                 continue
-            if before.get((row[0], row[1])) == (row[2], row[5]):
+            if before.get((row.fund, row.ex_date)) == (row.pay_date, row.status):
                 continue
             rows.append(
                 DividendSummaryRow(
                     spec.lookup_id,
                     tuple(spec.aliases),
-                    row[1],
-                    row[2],
-                    row[3],
-                    row[4],
-                    row[5],
+                    row.ex_date,
+                    row.pay_date,
+                    row.amount,
+                    row.currency,
+                    row.status,
                 )
             )
     return rows
