@@ -1,6 +1,6 @@
 # SPEC-014: Bank of England Bank Rate Published Monthly as uk_bank_rate.csv
 
-**Status**: ✅ Built, on branch `uk-bank-rate` (not yet merged)
+**Status**: ✅ Complete
 **Created**: 2026-11-01
 **Type**: Feature (new published file)
 **Tracking**: [#93](https://github.com/joneswm/FundPrices/issues/93)

@@ -1,6 +1,6 @@
 # SPEC-011: Dividend Pay Dates from the Issuer
 
-**Status**: ✅ Built, on branch `pay-dates` (not yet merged)
+**Status**: ✅ Complete
 **Created**: 2026-10-26
 **Type**: Feature
 **Tracking**: [#87](https://github.com/joneswm/FundPrices/issues/87) (option 2)

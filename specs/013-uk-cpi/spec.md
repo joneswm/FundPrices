@@ -1,6 +1,6 @@
 # SPEC-013: UK CPI Published Monthly as uk_cpi.csv
 
-**Status**: ✅ Built, on branch `uk-cpi` (not yet merged)
+**Status**: ✅ Complete
 **Created**: 2026-10-27
 **Type**: Feature (new published file)
 **Tracking**: [#91](https://github.com/joneswm/FundPrices/issues/91)

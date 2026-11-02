@@ -1,7 +1,7 @@
 # Tasks: Dividend Pay Dates from the Issuer
 
 **Spec**: SPEC-011
-**Status**: ✅ Built, on branch `pay-dates` (not yet merged)
+**Status**: ✅ Complete
 **Created**: 2026-10-26
 
 ---
