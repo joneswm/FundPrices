@@ -1228,30 +1228,30 @@ def scrape_funds(funds, data_dir=None, now=None):
                 # an alias may carry the fund's whole history. A fund with
                 # only a .price file carries nothing: the file holds no date.
                 last_known = next(
-                    (stored[i][1:] for i in spec.publish_ids if i in stored), None
+                    (stored[i] for i in spec.publish_ids if i in stored), None
                 )
                 if last_known is not None:
                     for identifier in spec.publish_ids:
-                        results.carried.append([identifier, *last_known])
+                        carried = last_known._replace(fund=identifier)
+                        results.carried.append(carried)
                         # Heal the published price file: it may still hold an
                         # error string written before this behaviour existed.
-                        results.latest.append([identifier, *last_known])
+                        results.latest.append(carried)
                 continue
 
             for quote in quotes:
                 for identifier in spec.publish_ids:
-                    results.append(
-                        [identifier, quote.date, quote.price, quote.currency]
-                    )
+                    results.append(PriceRow(identifier, *quote))
 
             latest = max(quotes, key=lambda quote: quote.date, default=None)
             if latest is not None:
                 for identifier in spec.publish_ids:
                     # Never rewrite the price file from an older bar than the
                     # stored newest one (see keep_newer_stored_row).
-                    row = [identifier, latest.date, latest.price, latest.currency]
                     results.latest.append(
-                        keep_newer_stored_row(identifier, row, stored)
+                        keep_newer_stored_row(
+                            identifier, PriceRow(identifier, *latest), stored
+                        )
                     )
     finally:
         browser.close()
@@ -1264,32 +1264,50 @@ def scrape_funds(funds, data_dir=None, now=None):
 # ===========================================================================
 
 
-HISTORY_HEADER = ["Fund", "Date", "Price", "Currency"]
+class PriceRow(NamedTuple):
+    """One row of the price files: a price as its source dated it.
+
+    The row of prices_history.csv, latest_prices.csv, the rolling window and
+    the --history export. Fields are the file's text.
+    """
+
+    HEADER = ["Fund", "Date", "Price", "Currency"]
+
+    fund: str
+    date: str  # ISO YYYY-MM-DD, the price date the source reports
+    price: str
+    currency: str  # "" for a row stored before the column existed
+
+
+HISTORY_HEADER = PriceRow.HEADER
 
 
 def read_history_rows(history_csv):
-    """Read stored history keyed on (Fund, Date).
+    """Read stored history as PriceRow keyed on (Fund, Date).
 
     A legacy row without a currency reads with an empty one; a row without a
     price is skipped.
     """
     return read_keyed_csv(
-        history_csv, HISTORY_HEADER, lambda row: (row[0], row[1]) if row[2] else None
+        history_csv,
+        PriceRow.HEADER,
+        lambda row: (row.fund, row.date) if row.price else None,
+        row=PriceRow._make,
     )
 
 
 def latest_rows_by_fund(rows):
-    """Return each fund's row with the newest price date."""
+    """Return each fund's (or pair's) row with the newest date."""
     latest = {}
     for row in rows:
         current = latest.get(row[0])
         if current is None or row[1] > current[1]:
-            latest[row[0]] = list(row)
+            latest[row[0]] = row
     return latest
 
 
 def newest_stored_rows(data_dir):
-    """Return fund -> newest stored [fund, date, price, currency].
+    """Return fund -> newest stored PriceRow.
 
     The floor for "latest" files: a fetch may not publish anything older.
     """
@@ -1304,13 +1322,13 @@ def newest_stored_rows(data_dir):
                 if not fund or not is_usable_price(row.get("Price")):
                     continue
                 current = newest.get(fund)
-                if current is None or row.get("Date", "") > current[1]:
-                    newest[fund] = [
+                if current is None or row.get("Date", "") > current.date:
+                    newest[fund] = PriceRow(
                         fund,
                         row.get("Date", ""),
                         row["Price"],
                         row.get("Currency") or "",
-                    ]
+                    )
     return newest
 
 
@@ -1322,12 +1340,12 @@ def keep_newer_stored_row(fund, row, stored):
     never go backwards. The same date still replaces, so corrections apply.
     """
     current = stored.get(fund)
-    if current is not None and current[1] > row[1]:
+    if current is not None and current.date > row.date:
         log.warning(
-            f"{fund} fetched price dated {row[1]} is older than the "
-            f"stored {current[1]}; keeping the stored row"
+            f"{fund} fetched price dated {row.date} is older than the "
+            f"stored {current.date}; keeping the stored row"
         )
-        return list(current)
+        return current
     return row
 
 
@@ -1430,17 +1448,17 @@ def write_results(results, data_dir=None, now=None):
         fund, date_text, price = row[0], row[1], row[2]
         currency = row[3] if len(row) > 3 else ""
         if is_usable_price(price):
-            incoming.append([fund, date_text, price, currency])
+            incoming.append(PriceRow(fund, date_text, price, currency))
 
     stored = newest_stored_rows(data_dir)
     history_rows = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
     for row in incoming:
-        history_rows[(row[0], row[1])] = row
+        history_rows[(row.fund, row.date)] = row
 
     latest = latest_rows_by_fund(incoming)
     # A fund that could not be fetched still reports its last real price.
     for row in getattr(results, "carried", []):
-        latest.setdefault(row[0], list(row))
+        latest.setdefault(row[0], PriceRow._make(row))
     # A stale fetch must not replace a newer stored row. History is keyed
     # upsert and never loses one; this keeps the latest files, and the rolling
     # window measured from them, from stepping back as well.
@@ -1460,7 +1478,23 @@ def write_results(results, data_dir=None, now=None):
 
 
 FX_RATE_DECIMALS = 6
-FX_HEADER = ["Pair", "Date", "Rate"]
+
+
+class FxRow(NamedTuple):
+    """One row of fx_history.csv and latest_fx.csv: a day's rate for a pair.
+
+    `rate` is GBP per one unit of the pair's foreign currency, as text at
+    FX_RATE_DECIMALS places.
+    """
+
+    HEADER = ["Pair", "Date", "Rate"]
+
+    pair: str
+    date: str
+    rate: str
+
+
+FX_HEADER = FxRow.HEADER
 
 
 # A day's FX rate is the New York close, 17:00 in New York (#80). Yahoo's daily
@@ -1602,7 +1636,7 @@ def snap_fx_rates(pairs, data_dir=None, now=None):
     time), which also decides whose closes have passed.
 
     Returns:
-        ScrapeResults of [pair, date, rate] rows
+        ScrapeResults of FxRow
     """
     if data_dir is None:
         data_dir = DATA_DIR
@@ -1620,15 +1654,18 @@ def snap_fx_rates(pairs, data_dir=None, now=None):
             results.failures.append(f"{pair}: {error}")
             continue
         for quote in quotes:
-            results.append([pair, quote.date, quote.price])
+            results.append(FxRow(pair, quote.date, quote.price))
 
     return results
 
 
 def read_fx_rows(fx_csv):
-    """Read stored FX rates keyed on (Pair, Date); a row without a rate is skipped."""
+    """Read stored rates as FxRow keyed on (Pair, Date); a row without a rate is skipped."""
     return read_keyed_csv(
-        fx_csv, FX_HEADER, lambda row: (row[0], row[1]) if row[2] else None
+        fx_csv,
+        FxRow.HEADER,
+        lambda row: (row.pair, row.date) if row.rate else None,
+        row=FxRow._make,
     )
 
 
@@ -1671,9 +1708,9 @@ def write_fx_results(results, data_dir=None):
     fx_csv = os.path.join(data_dir, "fx_history.csv")
 
     stored = read_fx_rows(fx_csv)
-    for row in results:
-        if row[2]:
-            stored[(row[0], row[1])] = [row[0], row[1], row[2]]
+    for row in map(FxRow._make, results):
+        if row.rate:
+            stored[(row.pair, row.date)] = row
 
     write_fx_files(list(stored.values()), data_dir)
 
@@ -1825,11 +1862,9 @@ def is_removable_row(row):
     parse is a damaged file, and the ValueError stops the rebuild rather than
     deleting the row under a "rebuilt" status.
     """
-    row_date = row[1]
-    currency = row[3] if len(row) > 3 else ""
-    if datetime.date.fromisoformat(row_date).weekday() >= 5:
+    if datetime.date.fromisoformat(row.date).weekday() >= 5:
         return True
-    return not currency
+    return not row.currency
 
 
 def rebuild_fx_rows(pairs, start, stored, now=None):
@@ -1870,7 +1905,7 @@ def rebuild_fx_rows(pairs, start, stored, now=None):
             del stored[key]
 
         for quote in quotes:
-            stored[(pair, quote.date)] = [pair, quote.date, quote.price]
+            stored[(pair, quote.date)] = FxRow(pair, quote.date, quote.price)
 
         report.entries.append(
             BackfillEntry.rebuilt(
@@ -1967,14 +2002,8 @@ def rebuild_price_rows(specs, start, stored, now=None):
                     del stored[key]
 
                 for quote in quotes:
-                    if not is_usable_price(quote.price):
-                        continue
-                    stored[(identifier, quote.date)] = [
-                        identifier,
-                        quote.date,
-                        quote.price,
-                        quote.currency,
-                    ]
+                    if is_usable_price(quote.price):
+                        stored[(identifier, quote.date)] = PriceRow(identifier, *quote)
 
                 report.entries.append(
                     BackfillEntry.rebuilt(
@@ -1992,7 +2021,7 @@ def rebuild_price_rows(specs, start, stored, now=None):
     finally:
         browser.close()
 
-    rows = [row for row in stored.values() if is_usable_price(row[2])]
+    rows = [row for row in stored.values() if is_usable_price(row.price)]
     return rows, report
 
 
@@ -2130,12 +2159,9 @@ def import_closed_holdings(holdings, data_dir=None, now=None):
                 report.warnings.append(warning)
 
             for quote in wanted:
-                stored[(holding.identifier, quote.date)] = [
-                    holding.identifier,
-                    quote.date,
-                    quote.price,
-                    holding.currency,
-                ]
+                stored[(holding.identifier, quote.date)] = PriceRow(
+                    holding.identifier, quote.date, quote.price, holding.currency
+                )
 
             report.entries.append(
                 BackfillEntry.rebuilt(
@@ -4849,9 +4875,7 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=
         report.failures.append(f"{symbol}: {error}")
         return report
 
-    report.rows = [
-        [symbol, quote.date, quote.price, quote.currency] for quote in quotes
-    ]
+    report.rows = [PriceRow(symbol, *quote) for quote in quotes]
     os.makedirs(data_dir, exist_ok=True)
     with open_for_write(path) as file:
         writer = csv_writer(file)
