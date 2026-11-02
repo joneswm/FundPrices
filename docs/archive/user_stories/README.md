@@ -40,12 +40,12 @@ The user stories served their purpose well and are preserved here for:
 
 **Total**: 27 user stories across 5 categories
 
-### Current Status Tracking
+### Current Status
 
-For current implementation status, see:
-- **Active tracking**: `docs/user_stories/implementation_status.md`
-- **New specifications**: `specs/` directory
+- **Open work**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
+- **What each specification delivered**: `specs/README.md`
 - **Project principles**: `constitution.md`
+- **This record**: `docs/user_stories/implementation_status.md` is the frozen status of these 27 stories
 
 ---
 
@@ -123,7 +123,7 @@ specs/                       # New specifications
 - ✅ **Test Coverage**: 90%+ requirement maintained
 - ✅ **Code Quality**: Same standards enforced
 - ✅ **Documentation**: Still comprehensive
-- ✅ **Implementation Tracking**: `implementation_status.md` tracks both formats
+- ✅ **Implementation Tracking**: `implementation_status.md` recorded these stories and is now frozen; status lives in `specs/README.md` and GitHub Issues
 
 ---
 
@@ -156,7 +156,7 @@ These files provide a complete audit trail of:
 ### Current Documentation
 - **Constitution**: `constitution.md` - Project principles
 - **Specifications**: `specs/` - New feature specs
-- **Status Tracking**: `docs/user_stories/implementation_status.md`
+- **Status**: `specs/README.md` (what each spec delivered) and [GitHub Issues](https://github.com/joneswm/FundPrices/issues) (open work)
 - **Spec Kit Guide**: `docs/archive/spec_kit_assessment.md` (archived)
 
 ### Technical Documentation

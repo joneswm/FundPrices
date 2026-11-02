@@ -9,11 +9,11 @@
 
 ## Current Status
 
-This directory now contains only the **implementation status tracking** document. The original user story files have been archived.
+This directory now contains only the frozen **implementation status** record. The original user story files have been archived.
 
-### Active File
+### Contents
 
-- **implementation_status.md** - Historical record of completed legacy user stories (US-XXX) and Spec Kit specifications (SPEC-XXX). No longer updated for new work — use GitHub Issues.
+- **implementation_status.md** - Frozen record of the 27 completed legacy user stories (US-XXX). It is not updated: what each specification delivered is in `specs/README.md`, and open work is in GitHub Issues.
 
 ---
 
@@ -94,8 +94,9 @@ To view the original user stories:
 
 ## Questions?
 
-- **Current status / open work**: See [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
-- **Historical status**: See `implementation_status.md` in this directory
+- **Open work**: See [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
+- **What each specification delivered**: See `specs/README.md`
+- **Legacy record**: See `implementation_status.md` in this directory (frozen)
 - **New features**: See `specs/README.md`
 - **Archived stories**: See `docs/archive/user_stories/README.md`
 - **Spec Kit background**: See `docs/archive/spec_kit_assessment.md` (archived)
