@@ -4888,6 +4888,34 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
     return report
 
 
+def publish_report(report, heading):
+    """Print a mode's report, add it to the Actions job summary, fail on failures.
+
+    Shared by the rebuilds, the import and the history export. In Actions
+    the report also goes under `heading` on the run page, through the job
+    summary file the runner names; elsewhere stdout is all there is. The
+    exit comes last, so everything the mode wrote is reported before the
+    job goes red.
+
+    Args:
+        report: Anything with to_markdown() and a failures list
+        heading: The job-summary section title, without the "## "
+
+    Raises:
+        SystemExit(1) when the report has failures
+    """
+    summary = report.to_markdown()
+    print(summary)
+
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as file:
+            file.write(f"## {heading}\n\n{summary}\n")
+
+    if report.failures:
+        raise SystemExit(1)
+
+
 def main(argv=None):
     """Run the scraper in the mode `argv` selects (sys.argv when None)."""
     args = parse_arguments(argv)
@@ -4900,31 +4928,13 @@ def main(argv=None):
 
         specs = read_fund_specs(FUNDS_FILE)
         report = backfill_history(specs, args.start)
-        summary = report.to_markdown()
-        print(summary)
-
-        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if step_summary:
-            with open(step_summary, "a", encoding="utf-8") as f:
-                f.write(f"## Backfill from {args.start}\n\n{summary}\n")
-
         # Everything obtainable has been written before signalling failure.
-        if report.failures:
-            raise SystemExit(1)
+        publish_report(report, f"Backfill from {args.start}")
         return
 
     if args.import_closed:
         report = import_closed_holdings(read_closed_holdings(CLOSED_HOLDINGS_FILE))
-        summary = report.to_markdown()
-        print(summary)
-
-        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if step_summary:
-            with open(step_summary, "a", encoding="utf-8") as f:
-                f.write(f"## Closed-holding import\n\n{summary}\n")
-
-        if report.failures:
-            raise SystemExit(1)
+        publish_report(report, "Closed-holding import")
         return
 
     if args.backfill_dividends:
@@ -4939,17 +4949,7 @@ def main(argv=None):
         )
         sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, specs)
         report = backfill_dividends(specs, distributions, args.start, sources=sources)
-        summary = report.to_markdown()
-        print(summary)
-
-        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if step_summary:
-            with open(step_summary, "a", encoding="utf-8") as f:
-                f.write(f"## Dividend rebuild from {args.start or 'the start'}\n\n")
-                f.write(f"{summary}\n")
-
-        if report.failures:
-            raise SystemExit(1)
+        publish_report(report, f"Dividend rebuild from {args.start or 'the start'}")
         return
 
     if args.history:
@@ -4959,19 +4959,10 @@ def main(argv=None):
             raise SystemExit(2)
 
         report = fetch_historical_data(args.history, args.start, args.end)
-        summary = report.to_markdown()
-        print(summary)
-
-        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if step_summary:
-            with open(step_summary, "a", encoding="utf-8") as f:
-                f.write(
-                    f"## History of {args.history} from {args.start} "
-                    f"to {args.end or 'today'}\n\n{summary}\n"
-                )
-
-        if report.failures:
-            raise SystemExit(1)
+        publish_report(
+            report,
+            f"History of {args.history} from {args.start} to {args.end or 'today'}",
+        )
         return
 
     # Normal scraping mode

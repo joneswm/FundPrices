@@ -8810,6 +8810,47 @@ class TestUkBankRateInMain(unittest.TestCase):
 # ===========================================================================
 
 
+class TestPublishReport(DataDirCase):
+    """Test the one way every mode's report reaches stdout and the run page."""
+
+    @staticmethod
+    def report(*failures):
+        report = BackfillReport()
+        report.failures.extend(failures)
+        return report
+
+    @patch("builtins.print")
+    def test_the_report_is_printed_and_nothing_else_written(self, mock_print):
+        """Test outside Actions the report goes to stdout only."""
+        with patch.dict(os.environ, {}, clear=True):
+            scrape_fund_price.publish_report(self.report(), "Backfill from 2023")
+        mock_print.assert_called_once_with(self.report().to_markdown())
+        self.assertEqual(os.listdir(self.test_dir), [])
+
+    @patch("builtins.print")
+    def test_the_report_is_appended_under_its_heading_in_actions(self, _):
+        """Test the job summary gets the heading and the markdown, appended."""
+        self.write_text("summary.md", "earlier\n")
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
+            scrape_fund_price.publish_report(self.report(), "Closed-holding import")
+        self.assertEqual(
+            self.read_text("summary.md"),
+            "earlier\n## Closed-holding import\n\n"
+            + self.report().to_markdown()
+            + "\n",
+        )
+
+    @patch("builtins.print")
+    def test_failures_exit_non_zero_after_the_report_is_out(self, mock_print):
+        """Test the job goes red only once the report has been published."""
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
+            with self.assertRaises(SystemExit) as error:
+                scrape_fund_price.publish_report(self.report("QQQ: timeout"), "H")
+        self.assertEqual(error.exception.code, 1)
+        mock_print.assert_called_once()
+        self.assertIn("- QQQ: timeout", self.read_text("summary.md").splitlines())
+
+
 class TestMainEntryPoint(DataDirCase):
     """Test the main() command-line entry point."""
 

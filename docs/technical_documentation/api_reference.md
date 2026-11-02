@@ -851,8 +851,17 @@ exception in one is recorded on the failure list under its name (`prices: <error
 `fx: <error>`, `dividends: <error>`, `uk_cpi: <error>` or `uk_bank_rate: <error>`) and
 costs the later files and the summary nothing, so the run exits non-zero only after
 everything obtainable has been written. The rebuilds, the import and the `--history` export
-print their report, add it to the Actions job summary and exit non-zero when it has
-failures; a bad invocation exits 2 before any network call.
+publish their report through `publish_report()`; a bad invocation exits 2 before any
+network call.
+
+### `publish_report(report, heading)`
+
+Prints `report.to_markdown()`, appends it under `## <heading>` to the file
+`GITHUB_STEP_SUMMARY` names when that variable is set (the Actions run page), and raises
+`SystemExit(1)` when `report.failures` is non-empty, in that order, so a failed rebuild still
+shows what it wrote. `report` is a `BackfillReport` (the rebuilds and the import) or a
+`HistoryReport`: anything with `to_markdown()` and `failures`. The daily summary's own
+append to the run page is `write_summary()`'s.
 
 ## Daily Summary
 
