@@ -5,6 +5,7 @@ import decimal
 import html
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -21,6 +22,10 @@ import numpy as np
 import requests
 import yfinance as yf
 from playwright.sync_api import sync_playwright
+
+# Warnings go to this logger; the command line sends them to stderr as
+# "WARNING: <message>". Reports and the summary are printed to stdout.
+log = logging.getLogger("fundprices")
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
@@ -176,8 +181,8 @@ def canonical_source(code, line_number=None):
         return upper
 
     where = f" on line {line_number}" if line_number else ""
-    print(
-        f"Warning: source code {upper!r}{where} is deprecated; use "
+    log.warning(
+        f"source code {upper!r}{where} is deprecated; use "
         f"{canonical!r} (Yahoo API). {upper!r} named Google Finance, which "
         f"this project no longer uses."
     )
@@ -762,8 +767,8 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
         elif index == len(bars) - 1 and session_still_open(
             ticker, timestamp.date(), now
         ):
-            print(
-                f"Warning: {symbol} {timestamp.date()}: session still open, "
+            log.warning(
+                f"{symbol} {timestamp.date()}: session still open, "
                 f"intraday price {format_yahoo_price(close)} not stored"
             )
             continue
@@ -774,8 +779,8 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
         if 0 < index < len(priced) - 1 and is_untraded_spike(
             close, volume, priced[index - 1][1], priced[index + 1][1]
         ):
-            print(
-                f"Warning: {symbol} {timestamp.date()}: dropped untraded close "
+            log.warning(
+                f"{symbol} {timestamp.date()}: dropped untraded close "
                 f"{format_yahoo_price(close)}, far from both neighbouring closes"
             )
             continue
@@ -935,8 +940,8 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
         # FT prices are text; keep the digits exactly as published.
         price = normalize_price(cells[3].strip())
         if not ft_row_settled(price_date, now):
-            print(
-                f"Warning: {isin} {price_date}: day not over in New York, "
+            log.warning(
+                f"{isin} {price_date}: day not over in New York, "
                 f"provisional price {price} not stored"
             )
             held_back = True
@@ -1136,7 +1141,7 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
         try:
             return fetch_ft_quotes(fund_id, start, end)
         except Exception as error:
-            print(f"Warning: FT historical lookup failed for {fund_id}: {error}")
+            log.warning(f"FT historical lookup failed for {fund_id}: {error}")
 
     url, selector = get_source_config(source, fund_id)
     if not (url and selector):
@@ -1286,8 +1291,8 @@ def keep_newer_stored_row(fund, row, stored):
     """
     current = stored.get(fund)
     if current is not None and current[1] > row[1]:
-        print(
-            f"Warning: {fund} fetched price dated {row[1]} is older than the "
+        log.warning(
+            f"{fund} fetched price dated {row[1]} is older than the "
             f"stored {current[1]}; keeping the stored row"
         )
         return list(current)
@@ -2348,9 +2353,7 @@ def collect_dividends(specs, today, start=None):
             lambda: fetch_yahoo_declared(spec.lookup_id, today)
         )
         if error:
-            print(
-                f"Warning: {spec.lookup_id}: declared dividend lookup failed: {error}"
-            )
+            log.warning(f"{spec.lookup_id}: declared dividend lookup failed: {error}")
         elif declared is not None:
             results.declared[spec.lookup_id] = declared
 
@@ -4933,4 +4936,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     main()
