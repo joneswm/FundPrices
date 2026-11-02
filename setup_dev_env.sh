@@ -39,15 +39,15 @@ check_python() {
         PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
         print_status "Python $PYTHON_VERSION found"
         
-        # Check if version is 3.7 or higher
-        if python3 -c "import sys; exit(0 if sys.version_info >= (3, 7) else 1)"; then
-            print_status "Python version is compatible (3.7+)"
+        # Check if version is 3.10 or higher
+        if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
+            print_status "Python version is compatible (3.10+)"
         else
-            print_error "Python version must be 3.7 or higher"
+            print_error "Python version must be 3.10 or higher"
             exit 1
         fi
     else
-        print_error "Python 3 is not installed. Please install Python 3.7 or higher."
+        print_error "Python 3 is not installed. Please install Python 3.10 or higher."
         exit 1
     fi
 }

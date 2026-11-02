@@ -9,13 +9,22 @@ REM Check if Python is installed
 echo ℹ️  Checking Python installation...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ❌ Python is not installed. Please install Python 3.7 or higher.
+    echo ❌ Python is not installed. Please install Python 3.10 or higher.
     pause
     exit /b 1
 )
 
 for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PYTHON_VERSION=%%i
 echo ✅ Python %PYTHON_VERSION% found
+
+REM Check if version is 3.10 or higher
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ❌ Python %PYTHON_VERSION% is too old. Please install Python 3.10 or higher.
+    pause
+    exit /b 1
+)
+echo ✅ Python version is compatible (3.10+)
 
 REM Check if pip is installed
 echo ℹ️  Checking pip installation...
