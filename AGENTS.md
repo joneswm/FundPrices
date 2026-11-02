@@ -154,9 +154,8 @@ YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 - `IV` - investing.com (undocumented HTTP endpoint). Used only by closed holdings, for
   funds Yahoo and FT no longer price; never put it on a schedule
 - `GF` - deprecated spelling of `YA`; still accepted, warns, and names the line
-- `YH` - Yahoo Finance (web scraping). Undated, so prefer `YA`. Currently unused
-- `MS` - Morningstar (web scraping). Supported but unused: the one fund that
-  needed it now comes from Yahoo
+- `YH` and `MS` - the Yahoo Finance and Morningstar web scrapers, removed in #110;
+  Playwright now serves only the FT fallback
 
 How each source is fetched, and the run modes, are in
 `docs/technical_documentation/architecture.md`.
@@ -244,9 +243,10 @@ These are the invariants. The design behind them is in
 
 ### Retries and Last Known Price
 - Every fetch is retried up to `MAX_PRICE_ATTEMPTS` (3) via `fetch_with_retries()`
-- After exhausting retries, `read_last_known_row()` supplies the fund's most recent stored
-  row, which is carried into `latest_prices.csv` under its original date
-  (`ScrapeResults.carried`). No row is invented for today
+- After exhausting retries, the fund's newest stored row (`newest_stored_rows()`, read
+  once per run from `latest_prices.csv` and `prices_history.csv`) is carried into
+  `latest_prices.csv` under its original date (`ScrapeResults.carried`). No row is
+  invented for today: a bare `.price` file holds no date, so it carries nothing
 - A fund with no stored history simply has no row; nothing is recorded as "N/A"
 - `ScrapeResults.failures` lists the funds that fell back
 - **This already exists - do not reimplement retry logic**

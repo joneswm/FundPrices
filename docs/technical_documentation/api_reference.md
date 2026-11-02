@@ -32,45 +32,22 @@ read_fund_specs("funds.txt")
 # [FundSpec(source="YA", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
 ```
 
-### `read_fund_ids(filename)`
-
-Reads `(source, lookup_id)` pairs. A compatibility wrapper over `read_fund_specs()`
-for callers that do not need aliases.
-
-**Parameters:**
-- `filename` (str): Path to the file containing fund identifiers
-
-**Returns:**
-- `list`: List of tuples containing (source, identifier) pairs
-
-**File Format:**
-Each line should contain: `<source>,<identifier>`
-- `source`: canonical source code (`YA`, `FT`, `IV`); a deprecated `GF` is
-  canonicalised to `YA` (see `canonical_source()`)
-- `identifier`: the lookup id for that source
-
-**Example:**
-```python
-funds = read_fund_ids("funds.txt")
-# Returns: [("FT", "GB00B1FXTF86"), ("YA", "IDTG.L"), ...]
-```
-
 ### `get_source_config(source, fund_id)`
 
-Gets URL and CSS selector configuration for a given source and fund ID.
+Gets the URL and CSS selector for the scraping fallback of a source and fund ID.
 
 **Parameters:**
-- `source` (str): Source identifier (FT, YH, MS)
+- `source` (str): Source identifier; only `FT` has an entry
 - `fund_id` (str): Fund identifier
 
 **Returns:**
-- `tuple`: (url, selector) or (None, None) if source not supported
+- `tuple`: (url, selector), or (None, None) for a source that is not scraped
 
 **Supported Sources:**
-- **YA**: Yahoo Finance API via `fetch_yahoo_quotes()` - no scraping, returns `(None, None)` here
-- **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`)
-- **YH**: Yahoo Finance (`https://sg.finance.yahoo.com/quote/{fund_id}/`)
-- **MS**: Morningstar (`https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}`)
+- **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`),
+  used only when `fetch_ft_quotes()` fails
+- **YA** and **IV** fetch rather than scrape and return `(None, None)` here. The `YH` and
+  `MS` scrapers were removed in #110
 
 ### `scrape_price_with_common_settings(page, url, selector)`
 
@@ -200,39 +177,19 @@ is not covered.
 
 Returns dated quotes for one fund from its configured source: `YA` via
 `fetch_yahoo_quotes()`, `IV` via `fetch_investing_quotes()`, and `FT` via
-`fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. `YH` and `MS` scrape a page showing only the current
-price, so their quotes carry the run date and an empty currency.
+`fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. The scraped
+page shows only the current price, so a fallback quote carries the run date and an empty
+currency. Any other code raises `ValueError`.
 
 ### `LazyBrowser`
 
 Starts Playwright on first use, so a configuration that needs no scraping never
 launches Chromium. `page()` returns a live page; `close()` is safe if unused.
 
-### `read_last_known_row(fund_id, data_dir)`
-
-Returns a fund's most recent stored `[date, price, currency]`, or `None`.
-
-Used when every fetch attempt failed: the fund keeps reporting its real last price
-against the date that price belongs to, instead of a row invented for today.
-
-### `fetch_price_api(symbol)` (legacy)
-
-A thin wrapper kept from before dated quotes. It calls `fetch_yahoo_quotes()` for the last
-`SNAP_WINDOW_DAYS` (10) days and returns the newest quote's price. It reads no `.info`
-fields (`currentPrice` and `regularMarketPrice` are not used), and **nothing in the module
-calls it**; it is slated for removal. Use `fetch_yahoo_quotes()` instead.
-
-**Parameters:**
-- `symbol` (str): Yahoo ticker
-
-**Returns:**
-- `str`: the newest quote's price; `"Error: Price not available"` when there are no
-  quotes; `"Error: <message>"` when the fetch raises
-
 ### `scrape_funds(funds, data_dir=None)`
 
-Main function to scrape prices for a list of funds. Launches a Playwright browser
-only if at least one fund actually needs scraping (see `source_requires_browser`).
+Main function to scrape prices for a list of funds. Playwright starts only if an FT
+fetch falls back to scraping (see `LazyBrowser`).
 
 **Parameters:**
 - `funds` (list): `FundSpec` instances, or plain `(source, identifier)` pairs, which
@@ -244,9 +201,10 @@ only if at least one fund actually needs scraping (see `source_requires_browser`
 - `ScrapeResults`: a `list` subclass of `[fund_id, date, price, currency]` rows, one
   per dated quote in the last `SNAP_WINDOW_DAYS` (10) days, with two extra attributes:
   - `.failures`: `"<lookup_id>: <error>"` strings for funds whose every attempt failed
-  - `.carried`: the last stored row for each of those funds, under its original date,
-    so `latest_prices.csv` keeps reporting a real price. A fund with no stored
-    history has no carried row and is simply absent
+  - `.carried`: the newest stored row (`newest_stored_rows()`) for each of those
+    funds, under its original date, so `latest_prices.csv` keeps reporting a real
+    price. A fund with no stored row has no carried row and is simply absent; its
+    `.price` file alone carries nothing, since the file holds no date
 
 **Result Format:**
 ```python
@@ -337,33 +295,17 @@ and if every attempt fails the fund falls back to its most recent good price.
 
 ### `fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS)`
 
-Calls `fetch_price()` up to `attempts` times (default 3). Retries both raised exceptions
-and returned `"Error: ..."` values.
+Calls `fetch_price()` up to `attempts` times (default 3), retrying raised exceptions.
 
 **Returns:**
 - `tuple`: `(price, None)` on success, or `(None, last_error)` if every attempt failed
 
-### `get_last_known_price(fund_id, data_dir)`
-
-Returns the most recent usable price for a fund, checked in order:
-
-1. `read_latest_price_file()` - `data/latest_<fund_id>.price`
-2. `read_latest_csv_price()` - `latest_prices.csv`
-3. `read_history_price()` - most recent row in `prices_history.csv`
-
-**Returns:**
-- `str` price, or `None` if no usable historical price exists
-
-`scrape_funds()` itself uses `read_last_known_row()`, which also returns the date and
-currency; this function remains for callers that need only the price.
-
 ### Supporting helpers
 
-- `is_error_price(price)` - True when a value is an `"Error: ..."` string
+- `is_error_price(price)` - True when a stored value is an `"Error: ..."` string left by
+  an old run
 - `normalize_price(price)` - normalises a price value for storage
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
-- `source_requires_browser(source, fund_id)` - False for `YA`, `FT` and `IV`, which all
-  reach HTTP endpoints, so Playwright is only launched when genuinely needed
 
 ## Closed Holdings
 
@@ -711,7 +653,9 @@ Shared by the daily run and the rebuild so both produce byte-identical output.
 
 When `latest` is supplied it names the funds currently being priced, and the rolling
 window is limited to that set. When omitted, `latest` is derived from `rows` and the
-window covers every fund.
+window covers every fund. The window ends on the newest date in `latest` (today when
+there is none, or when that stored date does not parse) and runs back
+`ROLLING_HISTORY_DAYS` days inclusive; a row whose date does not parse is left out.
 
 ### `latest_rows_by_fund(rows)`
 
@@ -1057,10 +1001,10 @@ Inside a run these are caught per instrument and surface on `.failures` or in a
 
 ### Basic Usage
 ```python
-from scrape_fund_price import scrape_funds, read_fund_ids, write_results
+from scrape_fund_price import scrape_funds, read_fund_specs, write_results
 
 # Read fund configuration
-funds = read_fund_ids("funds.txt")
+funds = read_fund_specs("funds.txt")
 
 # Fetch dated quotes, then store them
 results = scrape_funds(funds)

@@ -3,6 +3,7 @@ import datetime
 import csv
 import decimal
 import html
+import io
 import json
 import math
 import os
@@ -16,7 +17,6 @@ import yfinance as yf
 import argparse
 import re
 import statistics
-from contextlib import nullcontext
 from html.parser import HTMLParser
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -268,15 +268,6 @@ def read_fund_specs(filename):
     return specs
 
 
-def read_fund_ids(filename):
-    """Read (source, identifier) pairs from a funds file.
-
-    Compatibility wrapper over read_fund_specs() for callers that only need
-    the identifier a fund is looked up by.
-    """
-    return [(spec.source, spec.lookup_id) for spec in read_fund_specs(filename)]
-
-
 class ClosedHolding(NamedTuple):
     """One instrument imported once and then left alone.
 
@@ -515,30 +506,22 @@ def as_fund_spec(entry):
 
 
 def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for web scraping sources.
+    """Get URL and CSS selector configuration for the scraping fallback.
 
-    Note: YA (Yahoo API) fetches rather than scrapes, so it has no entry
-    here. FT has one only as a fallback for when its HTTP endpoint fails.
+    Only FT has an entry, used when its HTTP endpoint fails. YA and IV fetch
+    rather than scrape. The YH and MS scrapers were removed in #110.
 
     Args:
-        source: Two-character source code (FT, YH, MS)
+        source: Two-character source code
         fund_id: Fund identifier specific to the source
 
     Returns:
-        Tuple of (url, selector) or (None, None) if source is invalid or uses API
+        Tuple of (url, selector), or (None, None) for a source that is not scraped
     """
     source_configs = {
         "FT": {
             "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
             "selector": ".mod-ui-data-list__value",
-        },
-        "YH": {
-            "url": f"https://sg.finance.yahoo.com/quote/{fund_id}/",
-            "selector": 'span[data-testid="qsp-price"]',
-        },
-        "MS": {
-            "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
-            "selector": "#mainContent_quicktakeContent_fvOverview_lblNAV",
         },
     }
 
@@ -1029,27 +1012,6 @@ def fetch_investing_quotes(pair_id, start, end=None):
     return quotes
 
 
-def fetch_price_api(symbol):
-    """Fetch the latest price for a symbol using Yahoo Finance.
-
-    Args:
-        symbol: Stock/fund ticker symbol (e.g., AAPL, MSFT)
-
-    Returns:
-        Price as string or error message
-    """
-    try:
-        start = (
-            datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
-        ).isoformat()
-        quotes = fetch_yahoo_quotes(symbol, start)
-        if not quotes:
-            return "Error: Price not available"
-        return quotes[-1].price
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
 def scrape_price_with_common_settings(page, url, selector):
     """Scrape price using common settings for all sources."""
     user_agent = (
@@ -1076,70 +1038,6 @@ def normalize_price(price):
 def is_usable_price(price):
     """Return True when a stored value can be reused as a prior price."""
     return bool(price) and price != "N/A" and not is_error_price(price)
-
-
-def read_latest_price_file(fund_id, data_dir):
-    """Read the per-fund latest price file if it contains a usable value."""
-    latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
-    if not os.path.isfile(latest_price_file):
-        return None
-
-    with open(latest_price_file, "r") as f:
-        price = f.read().strip()
-
-    return price if is_usable_price(price) else None
-
-
-def read_latest_csv_price(fund_id, data_dir):
-    """Read the latest CSV price for a fund if it contains a usable value."""
-    latest_csv = os.path.join(data_dir, "latest_prices.csv")
-    if not os.path.isfile(latest_csv):
-        return None
-
-    with open(latest_csv, mode="r", newline="") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-                return row["Price"]
-
-    return None
-
-
-def read_history_price(fund_id, data_dir):
-    """Read the most recent usable historical price for a fund."""
-    history_csv = os.path.join(data_dir, "prices_history.csv")
-    if not os.path.isfile(history_csv):
-        return None
-
-    with open(history_csv, mode="r", newline="") as file:
-        reader = csv.DictReader(file)
-        rows = list(reader)
-
-    for row in reversed(rows):
-        if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-            return row["Price"]
-
-    return None
-
-
-def read_stored_rows(fund_id, data_dir):
-    """Return every stored [date, price, currency] for a fund, unordered.
-
-    Reads latest_prices.csv and prices_history.csv, so a row survives in either
-    file counts.
-    """
-    candidates = []
-    for name in ("latest_prices.csv", "prices_history.csv"):
-        path = os.path.join(data_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, mode="r", newline="") as file:
-            for row in csv.DictReader(file):
-                if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-                    candidates.append(
-                        [row.get("Date", ""), row["Price"], row.get("Currency") or ""]
-                    )
-    return candidates
 
 
 def newest_stored_rows(data_dir):
@@ -1185,61 +1083,17 @@ def keep_newer_stored_row(fund, row, stored):
     return row
 
 
-def read_last_known_row(fund_id, data_dir):
-    """Return a fund's most recent stored [date, price, currency], or None.
-
-    Used when every fetch attempt failed, so the fund keeps reporting its real
-    last price against the date that price actually belongs to.
-    """
-    candidates = read_stored_rows(fund_id, data_dir)
-
-    if not candidates:
-        price = read_latest_price_file(fund_id, data_dir)
-        return [datetime.date.today().isoformat(), price, ""] if price else None
-
-    return max(candidates, key=lambda row: row[0])
-
-
-def get_last_known_price(fund_id, data_dir):
-    """Return the last non-error price available for a fund."""
-    return (
-        read_latest_price_file(fund_id, data_dir)
-        or read_latest_csv_price(fund_id, data_dir)
-        or read_history_price(fund_id, data_dir)
-    )
-
-
 def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
-    """Fetch a price, retrying exceptions and returned Error values."""
+    """Fetch a price, retrying exceptions."""
     last_error = None
 
     for _ in range(attempts):
         try:
-            price = fetch_price()
+            return fetch_price(), None
         except Exception as e:
             last_error = str(e)
-            continue
-
-        if not is_error_price(price):
-            return price, None
-
-        last_error = price
 
     return None, last_error
-
-
-def source_requires_browser(source, fund_id):
-    """Return True when a fund source needs Playwright scraping.
-
-    YA, FT and IV all reach dated HTTP endpoints, so none needs a browser on
-    its normal path. FT can still fall back to scraping, which starts the
-    browser lazily at that point.
-    """
-    if source.upper() in ("YA", "FT", "IV"):
-        return False
-
-    url, selector = get_source_config(source, fund_id)
-    return bool(url and selector)
 
 
 class LazyBrowser:
@@ -1272,9 +1126,9 @@ class LazyBrowser:
 def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
     """Return dated quotes for one fund from its configured source.
 
-    YA, FT and IV use dated HTTP routes. YH and MS scrape a page that shows
-    only the current price, so their quotes carry the run date and no
-    currency. An FT failure falls back to scraping rather than losing the fund.
+    YA, FT and IV use dated HTTP routes. An FT failure falls back to scraping
+    its summary page rather than losing the fund; that page shows only the
+    current price, so the quote carries the run date and no currency.
     """
     code = source.upper()
 
@@ -1339,17 +1193,15 @@ def scrape_funds(funds, data_dir=None):
                 # for today. Record the failure once for the fund, not once
                 # per identifier.
                 results.failures.append(f"{spec.lookup_id}: {error}")
-                last_known = None
-                for identifier in spec.publish_ids:
-                    # A newly introduced lookup id has nothing stored yet,
-                    # while an alias may carry the fund's whole history.
-                    last_known = read_last_known_row(identifier, data_dir)
-                    if last_known is not None:
-                        break
-
+                # A newly introduced lookup id has nothing stored yet, while
+                # an alias may carry the fund's whole history. A fund with
+                # only a .price file carries nothing: the file holds no date.
+                last_known = next(
+                    (stored[i][1:] for i in spec.publish_ids if i in stored), None
+                )
                 if last_known is not None:
                     for identifier in spec.publish_ids:
-                        results.carried.append([identifier] + last_known)
+                        results.carried.append([identifier, *last_known])
                         # Heal the published price file: it may still hold an
                         # error string written before this behaviour existed.
                         write_latest_price_file(identifier, last_known[1], data_dir)
@@ -1447,6 +1299,9 @@ def write_history_files(rows, data_dir, latest=None):
         max((row[1] for row in latest.values()), default=None)
         or datetime.date.today().isoformat()
     )
+    # A carried row is a stored row, and a stored date that does not parse
+    # is tolerated per row below; tolerate it here too rather than lose the
+    # whole run's output to one bad row.
     try:
         reference = datetime.date.fromisoformat(reference_date)
     except ValueError:
@@ -3202,8 +3057,6 @@ def read_xlsx_rows(content):
     Raises:
         ValueError: not a workbook
     """
-    import io
-
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             workbook = ET.fromstring(archive.read("xl/workbook.xml"))

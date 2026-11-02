@@ -206,7 +206,7 @@ against a second one before relying on it. `closed_holdings.txt` records worked 
 ### 2. Test Individual Components
 ```bash
 # Test fund reading
-python -c "from scrape_fund_price import read_fund_ids; print(read_fund_ids('funds.txt'))"
+python -c "from scrape_fund_price import read_fund_specs; print(read_fund_specs('funds.txt'))"
 
 # Test one fund with the same retry behaviour as the daily run
 python -c "
