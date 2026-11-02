@@ -1630,122 +1630,98 @@ class TestFxInTheDailyRun(DataDirCase):
         self.assertIn("Error: HKDGBP: Error: Timeout", ran["printed"])
 
 
-class TestFundSpecParsing(unittest.TestCase):
+class TestFundSpecParsing(DataDirCase):
     """Test funds.txt parsing, including aliases and validation."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+    def specs(self, text):
+        return read_fund_specs(self.write_text("funds.txt", text))
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _write(self, text):
-        path = os.path.join(self.test_dir, "funds.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        return path
+    def assertRejectedAt(self, text, line):
+        """Assert the file is rejected with an error naming `line`."""
+        with self.assertRaises(ValueError) as error:
+            self.specs(text)
+        self.assertIn(f"line {line}", str(error.exception))
 
     def test_two_field_line_has_no_aliases(self):
         """Test existing config lines keep their meaning."""
-        specs = read_fund_specs(self._write("YA,QQQ\n"))
+        specs = self.specs("YA,QQQ\n")
         self.assertEqual(specs, [FundSpec("YA", "QQQ", ())])
         self.assertEqual(specs[0].publish_ids, ("QQQ",))
 
     def test_third_field_adds_an_alias(self):
         """Test a fund can publish under a second identifier."""
-        specs = read_fund_specs(self._write("GF,0P00000YAN,JFM0003373\n"))
+        specs = self.specs("YA,0P00000YAN,JFM0003373\n")
         self.assertEqual(specs[0].lookup_id, "0P00000YAN")
         self.assertEqual(specs[0].aliases, ("JFM0003373",))
         self.assertEqual(specs[0].publish_ids, ("0P00000YAN", "JFM0003373"))
 
     def test_multiple_aliases_are_semicolon_separated(self):
         """Test more than one alias can be given."""
-        specs = read_fund_specs(self._write("GF,ABC,ONE;TWO\n"))
+        specs = self.specs("YA,ABC,ONE;TWO\n")
         self.assertEqual(specs[0].publish_ids, ("ABC", "ONE", "TWO"))
 
     def test_whitespace_and_blank_lines_are_ignored(self):
         """Test untidy config files still parse."""
-        specs = read_fund_specs(self._write("\n  YA , QQQ , ALIAS \n\n  \nFT,ISIN1\n"))
+        specs = self.specs("\n  YA , QQQ , ALIAS \n\n  \nFT,ISIN1\n")
         self.assertEqual(
             specs, [FundSpec("YA", "QQQ", ("ALIAS",)), FundSpec("FT", "ISIN1", ())]
         )
 
     def test_comments_are_stripped(self):
         """Test the inline comments the docs have always shown actually work."""
-        specs = read_fund_specs(
-            self._write("# a heading\nFT,GB00B1FXTF86    # Financial Times\n")
-        )
+        specs = self.specs("# a heading\nFT,GB00B1FXTF86    # Financial Times\n")
         self.assertEqual(specs, [FundSpec("FT", "GB00B1FXTF86", ())])
 
     def test_read_fund_ids_still_returns_pairs(self):
         """Test the existing helper keeps its shape for existing callers."""
-        path = self._write("YA,0P00000YAN,JFM0003373\nFT,ISIN1\n")
+        path = self.write_text("funds.txt", "YA,0P00000YAN,JFM0003373\nFT,ISIN1\n")
         self.assertEqual(read_fund_ids(path), [("YA", "0P00000YAN"), ("FT", "ISIN1")])
 
     def test_line_with_one_field_is_rejected(self):
         """Test an incomplete line names its line number."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,QQQ\nJUSTONE\n"))
-        self.assertIn("line 2", str(error.exception))
+        self.assertRejectedAt("YA,QQQ\nJUSTONE\n", 2)
 
     def test_empty_source_or_identifier_is_rejected(self):
         """Test blank fields are not silently accepted."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,QQQ\n,MISSING_SOURCE\n"))
-        self.assertIn("line 2", str(error.exception))
+        self.assertRejectedAt("YA,QQQ\n,MISSING_SOURCE\n", 2)
 
     def test_empty_alias_is_rejected(self):
         """Test a stray separator is treated as a typo, not an empty alias."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,ABC,ONE;;TWO\n"))
-        self.assertIn("line 1", str(error.exception))
+        self.assertRejectedAt("YA,ABC,ONE;;TWO\n", 1)
 
     def test_alias_matching_its_own_lookup_id_is_rejected(self):
         """Test a self-referencing alias is rejected rather than double-writing."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,ABC,ABC\n"))
-        self.assertIn("line 1", str(error.exception))
+        self.assertRejectedAt("YA,ABC,ABC\n", 1)
 
     def test_duplicate_identifier_across_lines_is_rejected(self):
         """Test a repeated fund cannot silently produce duplicate rows."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,QQQ\nFT,ISIN1\nGF,QQQ\n"))
-        self.assertIn("line 3", str(error.exception))
+        self.assertRejectedAt("YA,QQQ\nFT,ISIN1\nYA,QQQ\n", 3)
 
     def test_alias_colliding_with_another_funds_id_is_rejected(self):
         """Test an alias cannot shadow a different instrument."""
-        with self.assertRaises(ValueError) as error:
-            read_fund_specs(self._write("GF,QQQ\nGF,ABC,QQQ\n"))
-        self.assertIn("line 2", str(error.exception))
+        self.assertRejectedAt("YA,QQQ\nYA,ABC,QQQ\n", 2)
 
 
-class TestAliasPublishing(unittest.TestCase):
+class TestAliasPublishing(DataDirCase):
     """Test that one fetch publishes under every configured identifier."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+    SPEC = FundSpec("YA", "0P00000YAN", ("JFM0003373",))
+    QUOTE = Quote("2026-09-17", "192.43", "USD")
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_price_is_fetched_once_for_all_identifiers(self, mock_quotes, mock_pw):
+    def test_price_is_fetched_once_for_all_identifiers(self, mock_quotes):
         """Test aliases cost no extra network calls."""
-        mock_quotes.return_value = [Quote("2026-09-17", "192.43", "USD")]
+        mock_quotes.return_value = [self.QUOTE]
         scrape_funds(
-            [FundSpec("GF", "0P00000YAN", ("JFM0003373", "EXTRA"))], self.test_dir
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373", "EXTRA"))], self.test_dir
         )
         self.assertEqual(mock_quotes.call_count, 1)
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_each_identifier_gets_an_identical_row(self, mock_quotes, mock_pw):
+    def test_each_identifier_gets_an_identical_row(self, mock_quotes):
         """Test every identifier records the same date, price and currency."""
-        mock_quotes.return_value = [Quote("2026-09-17", "192.43", "USD")]
-        results = scrape_funds(
-            [FundSpec("GF", "0P00000YAN", ("JFM0003373",))], self.test_dir
-        )
+        mock_quotes.return_value = [self.QUOTE]
+        results = scrape_funds([self.SPEC], self.test_dir)
         self.assertEqual(
             list(results),
             [
@@ -1754,35 +1730,31 @@ class TestAliasPublishing(unittest.TestCase):
             ],
         )
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_a_price_file_is_written_per_identifier(self, mock_quotes, mock_pw):
+    def test_a_price_file_is_written_per_identifier(self, mock_quotes):
         """Test per-fund price files exist for aliases too."""
-        mock_quotes.return_value = [Quote("2026-09-17", "192.43", "USD")]
-        scrape_funds([FundSpec("GF", "0P00000YAN", ("JFM0003373",))], self.test_dir)
+        mock_quotes.return_value = [self.QUOTE]
+        scrape_funds([self.SPEC], self.test_dir)
         for fund_id in ("0P00000YAN", "JFM0003373"):
-            path = os.path.join(self.test_dir, f"latest_{fund_id}.price")
-            with open(path) as f:
-                self.assertEqual(f.read().strip(), "192.43")
+            with self.subTest(fund=fund_id):
+                price_file = self.read_text(f"latest_{fund_id}.price")
+                self.assertEqual(price_file.strip(), "192.43")
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_fallback_uses_an_alias_stored_price(self, mock_quotes, mock_pw):
+    def test_fallback_uses_an_alias_stored_price(self, mock_quotes):
         """Test day-one failure can fall back to the alias's existing history.
 
         The lookup identifier is new and has nothing stored, while the alias
         carries the fund's whole history.
         """
-        history = os.path.join(self.test_dir, "prices_history.csv")
-        with open(history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Fund", "Date", "Price", "Currency"])
-            writer.writerow(["JFM0003373", "2026-09-17", "192.43", "USD"])
+        self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price", "Currency"],
+            [["JFM0003373", "2026-09-17", "192.43", "USD"]],
+        )
 
         mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds(
-            [FundSpec("GF", "0P00000YAN", ("JFM0003373",))], self.test_dir
-        )
+        results = scrape_funds([self.SPEC], self.test_dir)
 
         self.assertEqual(list(results), [])
         self.assertEqual(
@@ -1793,22 +1765,19 @@ class TestAliasPublishing(unittest.TestCase):
             ],
         )
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failure_is_reported_once_per_fund(self, mock_quotes, mock_pw):
+    def test_failure_is_reported_once_per_fund(self, mock_quotes):
         """Test an aliased fund is not reported twice for one failure."""
         mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds(
-            [FundSpec("GF", "0P00000YAN", ("JFM0003373",))], self.test_dir
-        )
+        results = scrape_funds([self.SPEC], self.test_dir)
         self.assertEqual(len(results.failures), 1)
+        self.assertIn("0P00000YAN", results.failures[0])
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_plain_tuples_are_still_accepted(self, mock_quotes, mock_pw):
+    def test_plain_tuples_are_still_accepted(self, mock_quotes):
         """Test existing callers passing (source, id) pairs keep working."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
-        results = scrape_funds([("GF", "QQQ")], self.test_dir)
+        results = scrape_funds([("YA", "QQQ")], self.test_dir)
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
 
 
