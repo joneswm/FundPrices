@@ -1935,10 +1935,10 @@ def validate_start_date(value, flag="--from"):
 
 def validate_backfill_args(args):
     """Return an error message for an invalid backfill invocation, else None."""
-    if not getattr(args, "backfill", False):
+    if not args.backfill:
         return None
 
-    if getattr(args, "history", None):
+    if args.history:
         return "--backfill cannot be combined with --history"
 
     if not args.start:
