@@ -5421,18 +5421,73 @@ class TestEstimateNextDividend(unittest.TestCase):
         self.assertEqual(self._estimate(rows).amount, "1")
 
 
-class TestDistributionSchedules(unittest.TestCase):
-    """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
+class DividendRunCase(DataDirCase):
+    """Shared scaffolding for the dividend tests (SPEC-010).
+
+    The run date, builders for the two files' rows, a distributions.txt
+    parser, and the dividend update run with Yahoo faked.
+    """
 
     TODAY = date(2026, 10, 26)
 
+    # The IssuerRunCase classes (SPEC-011, SPEC-012) still call these; step
+    # 2.Z of #97 removes them once those callers use the DataDirCase methods.
+    def _file(self, name):
+        return self.path(name)
+
+    def _text(self, name):
+        return self.read_text(name)
+
+    def _read(self, name):
+        return self.read_rows(name)
+
+    def _write(self, name, text):
+        self.write_text(name, text)
+
+    @staticmethod
+    def row(fund, ex, pay, amount, currency, source):
+        """A dividends_history.csv row."""
+        return [fund, ex, pay, amount, currency, source]
+
+    @classmethod
+    def upcoming(cls, fund, ex, pay, amount, currency, status, as_of=None):
+        """A dividends_upcoming.csv row, as of the run date unless given."""
+        as_of = as_of or cls.TODAY.isoformat()
+        return [fund, ex, pay, amount, currency, status, as_of]
+
+    def _dists(self, *lines):
+        """Parse distributions.txt lines, without the identifier check."""
+        path = self.write_text("distributions.txt", "\n".join(lines) + "\n")
+        return scrape_fund_price.read_distributions(path, None)
+
+    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
+        """Run update_dividends (or `runner`) with Yahoo faked."""
+        events = events or {}
+        declared = declared or {}
+        self.windows = []
+
+        def fake_events(symbol, window_start, end=None):
+            self.windows.append((symbol, window_start))
+            value = events.get(symbol, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def fake_declared(symbol, today=None):
+            return declared.get(symbol)
+
+        runner = runner or scrape_fund_price.update_dividends
+        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
+            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
+                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+
+
+class TestDistributionSchedules(DividendRunCase):
+    """Test turning a distributions.txt line into rows (SPEC-010, #85)."""
+
     def _dist(self, text):
         """Parse a single distributions.txt line."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "distributions.txt")
-            with open(path, "w") as f:
-                f.write(text + "\n")
-            [dist] = scrape_fund_price.read_distributions(path, None)
+        [dist] = self._dists(text)
         return dist
 
     def test_the_estimate_is_the_next_occurrence_of_an_ex_date(self):
@@ -5491,8 +5546,8 @@ class TestDistributionSchedules(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                ["X", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"],
-                ["X", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"],
+                self.row("X", "2026-03-01", "2026-03-31", "0.0821", "GBP", "config"),
+                self.row("X", "2026-09-01", "2026-10-01", "0.0794", "GBP", "config"),
             ],
         )
 
@@ -5525,39 +5580,23 @@ class TestDistributionSchedules(unittest.TestCase):
         self.assertEqual([row[1] for row in rows], ["2026-09-01"])
 
 
-class TestDividendUpcomingStorage(unittest.TestCase):
+class TestDividendUpcomingStorage(DividendRunCase):
     """Test dividends_upcoming.csv reading and writing (SPEC-010, #85)."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     def test_rows_are_written_sorted_with_a_header(self):
         """Test the file is ordered by ex-date then fund."""
         scrape_fund_price.write_dividend_upcoming(
             [
-                ["QQQ", "2026-12-22", "", "0.9", "USD", "estimated", "2026-10-26"],
-                [
-                    "IGLS.L",
-                    "2026-11-12",
-                    "2026-11-28",
-                    "0.1",
-                    "GBP",
-                    "declared",
-                    "2026-10-26",
-                ],
-                ["AAA", "2026-12-22", "", "", "", "estimated", "2026-10-26"],
+                self.upcoming("QQQ", "2026-12-22", "", "0.9", "USD", "estimated"),
+                self.upcoming(
+                    "IGLS.L", "2026-11-12", "2026-11-28", "0.1", "GBP", "declared"
+                ),
+                self.upcoming("AAA", "2026-12-22", "", "", "", "estimated"),
             ],
             self.test_dir,
         )
-        with open(
-            os.path.join(self.test_dir, "dividends_upcoming.csv"), newline=""
-        ) as f:
-            text = f.read()
         self.assertEqual(
-            text,
+            self.read_text("dividends_upcoming.csv"),
             "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
             "IGLS.L,2026-11-12,2026-11-28,0.1,GBP,declared,2026-10-26\n"
             "AAA,2026-12-22,,,,estimated,2026-10-26\n"
@@ -5566,7 +5605,7 @@ class TestDividendUpcomingStorage(unittest.TestCase):
 
     def test_rows_round_trip(self):
         """Test reading gives back what was written."""
-        rows = [["QQQ", "2026-12-22", "", "0.9", "USD", "estimated", "2026-10-26"]]
+        rows = [self.upcoming("QQQ", "2026-12-22", "", "0.9", "USD", "estimated")]
         scrape_fund_price.write_dividend_upcoming(rows, self.test_dir)
         self.assertEqual(scrape_fund_price.read_dividend_upcoming(self.test_dir), rows)
 
@@ -5576,13 +5615,13 @@ class TestDividendUpcomingStorage(unittest.TestCase):
 
     def test_damaged_rows_are_skipped_and_short_rows_padded(self):
         """Test a bad line cannot stop the run."""
-        with open(os.path.join(self.test_dir, "dividends_upcoming.csv"), "w") as f:
-            f.write(
-                "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
-                ",2026-12-22,,,,estimated,2026-10-26\n"
-                "QQQ,,,,,estimated,2026-10-26\n"
-                "QQQ,2026-12-22\n"
-            )
+        self.write_text(
+            "dividends_upcoming.csv",
+            "Fund,ExDate,PayDate,Amount,Currency,Status,AsOf\n"
+            ",2026-12-22,,,,estimated,2026-10-26\n"
+            "QQQ,,,,,estimated,2026-10-26\n"
+            "QQQ,2026-12-22\n",
+        )
         self.assertEqual(
             scrape_fund_price.read_dividend_upcoming(self.test_dir),
             [["QQQ", "2026-12-22", "", "", "", "", ""]],
@@ -5917,51 +5956,6 @@ class TestBuildDividendUpcoming(unittest.TestCase):
         """Test callers may pass (source, identifier) pairs."""
         history = self._history(["QQQ", "2026-09-22", "", "0.9", "USD", "YA"])
         self.assertEqual(len(self._build([("GF", "QQQ")], history)), 1)
-
-
-class DividendRunCase(DataDirCase):
-    """Shared scaffolding for tests that run the dividend update end to end."""
-
-    TODAY = date(2026, 10, 26)
-
-    def _file(self, name):
-        return self.path(name)
-
-    def _text(self, name):
-        return self.read_text(name)
-
-    def _read(self, name):
-        return self.read_rows(name)
-
-    def _write(self, name, text):
-        self.write_text(name, text)
-
-    def _dists(self, *lines):
-        path = self._file("distributions.txt")
-        with open(path, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        return scrape_fund_price.read_distributions(path, None)
-
-    def _run(self, specs, events=None, declared=None, distributions=(), runner=None):
-        """Run update_dividends (or `runner`) with Yahoo faked."""
-        events = events or {}
-        declared = declared or {}
-        self.windows = []
-
-        def fake_events(symbol, window_start, end=None):
-            self.windows.append((symbol, window_start))
-            value = events.get(symbol, [])
-            if isinstance(value, Exception):
-                raise value
-            return value
-
-        def fake_declared(symbol, today=None):
-            return declared.get(symbol)
-
-        runner = runner or scrape_fund_price.update_dividends
-        with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
-            with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
-                return runner(specs, list(distributions), self.test_dir, self.TODAY)
 
 
 class TestDailyDividendUpdate(DividendRunCase):
