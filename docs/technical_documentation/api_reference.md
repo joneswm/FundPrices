@@ -8,7 +8,7 @@ This document provides detailed API documentation for the Fund Price Scraping pr
 
 One configured instrument.
 
-- `source` (str): canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`). `GF` is accepted on input and canonicalised to `YA`
+- `source` (str): canonical source code (`YA`, `FT`, `IV`). `GF` is accepted on input and canonicalised to `YA`
 - `lookup_id` (str): the identifier sent to the source
 - `aliases` (tuple): extra identifiers to publish under
 - `publish_ids` (property): `lookup_id` followed by each alias
@@ -22,9 +22,10 @@ Reads instrument configuration.
 
 **Returns:** `list[FundSpec]`
 
-**Raises:** `ValueError` naming the offending line, for a malformed line, an empty or
-self-referencing alias, or an identifier repeated anywhere in the file. Validation runs
-before any network call, so a bad config cannot fail half way through a run.
+**Raises:** `ValueError` naming the offending line, for a malformed line, a retired
+source code (`YH`, `MS`; see `RETIRED_SOURCES`), an empty or self-referencing alias, or
+an identifier repeated anywhere in the file. Validation runs before any network call, so
+a bad config cannot fail half way through a run.
 
 ```python
 read_fund_specs("funds.txt")
@@ -44,7 +45,7 @@ for callers that do not need aliases.
 
 **File Format:**
 Each line should contain: `<source>,<identifier>`
-- `source`: canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`); a deprecated `GF` is
+- `source`: canonical source code (`YA`, `FT`, `IV`); a deprecated `GF` is
   canonicalised to `YA` (see `canonical_source()`)
 - `identifier`: the lookup id for that source
 
@@ -387,8 +388,8 @@ Reads one-off import configuration, defaulting to `CLOSED_HOLDINGS_FILE`.
 **Line grammar:** `<identifier>,<source>,<lookup_id>,<currency>,<start>,<end>`.
 Blank lines and `#` comments are ignored.
 
-**Raises** `ValueError` naming the line for a malformed line, an unparseable or
-reversed date, or a repeated identifier.
+**Raises** `ValueError` naming the line for a malformed line, a retired source code
+(`YH`, `MS`), an unparseable or reversed date, or a repeated identifier.
 
 ### `fetch_investing_quotes(pair_id, start, end=None)`
 
@@ -738,10 +739,25 @@ writers named in this document keep their own names and signatures as wrappers.
 
 ## Source Code Helpers
 
+### `config_lines(filename, label)`
+
+The line iteration the five configuration readers share. Yields `(number, fields, error)`
+for each entry line of the file: `number` counts every line, so an error names the line
+an editor shows; `fields` are the line's comma-separated fields, stripped, with a trailing
+`#` comment removed (blank and comment-only lines are skipped); `error(message)` returns
+the `ValueError` for that line, prefixed `<label> line <number>:` (`funds file`,
+`closed holdings`, `distributions file`, `fx pairs file`, `dividend sources file`). Each
+reader keeps its own field validation. `first_use(seen, noun, value, number, error)`
+records a value's first line and raises `<noun> <value> already used on line N` for a
+repeat; `configured_source(code, number, error)` is `canonical_source()` plus the
+rejection of a retired code.
+
 ### `canonical_source(code, line_number=None)`
 
 Upper-cases a source code and maps a deprecated one (`GF` → `YA`, via
-`SOURCE_ALIASES`), printing a warning that names the line.
+`SOURCE_ALIASES`), printing a warning that names the line. A retired code (`YH`, `MS`,
+in `RETIRED_SOURCES`) passes through unchanged; `read_fund_specs()` and
+`read_closed_holdings()` reject it, naming the line.
 
 ### `as_fund_spec(entry)`
 
