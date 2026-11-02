@@ -773,6 +773,9 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_write.assert_called_once_with(mock_scrape.return_value)
 
 
+@unittest.skipUnless(
+    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
+)
 class TestFunctionalScraping(unittest.TestCase):
     """Functional tests that can run against real websites (optional)."""
 
@@ -4065,6 +4068,9 @@ class TestSummaryRowMarkers(unittest.TestCase):
         self.assertNotIn("0P00000YAN ~", markdown)
 
 
+@unittest.skipUnless(
+    os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
+)
 class TestFunctionalClosedHoldingSources(unittest.TestCase):
     """Functional test for the source only closed holdings use (optional)."""
 
@@ -9694,4 +9700,4 @@ class TestUkBankRateInMain(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(buffer=True)
