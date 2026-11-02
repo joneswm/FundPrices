@@ -7106,7 +7106,7 @@ class TestIsharesPageParsing(unittest.TestCase):
             self._parse(page)
 
     def test_a_bad_record_or_pay_date_is_an_error(self):
-        """Test a date that is not one is refused in any column, as the other issuers do."""
+        """Test a non-date is refused in any column, as the other issuers do."""
         for bad in (20261340, "x", 2026071, True):
             for column in (1, 2):
                 row = [20260716, 20260717, 20260729, "1.5"]
@@ -7766,7 +7766,7 @@ class TestIssuerDispatch(unittest.TestCase):
             scrape_fund_price.fetch_issuer_table(source)
 
     def test_the_codes_are_the_fetchers(self):
-        """Test DIVIDEND_SOURCE_CODES is derived from ISSUER_FETCHERS, so neither drifts."""
+        """Test DIVIDEND_SOURCE_CODES comes from ISSUER_FETCHERS, so neither drifts."""
         self.assertEqual(
             scrape_fund_price.DIVIDEND_SOURCE_CODES,
             tuple(scrape_fund_price.ISSUER_FETCHERS),
@@ -9997,7 +9997,7 @@ class TestHistoricalData(DataDirCase):
     """
 
     def test_parse_arguments_history_with_dates(self):
-        """Test parsing command-line arguments for historical data with start and end dates."""
+        """Test parsing --history with start and end dates."""
         args = parse_arguments(
             ["--history", "AAPL", "--start", "2024-01-01", "--end", "2024-12-31"]
         )

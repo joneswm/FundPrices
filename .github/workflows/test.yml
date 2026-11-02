@@ -70,13 +70,15 @@ jobs:
             b.close()
         PY
 
-    - name: Check formatting
-      # Black and isort as configured in .pre-commit-config.yaml and the Makefile's
-      # format-check target (constitution section 3). Checks only; never reformats.
+    - name: Check formatting and lint
+      # Black, isort and flake8 as configured in .pre-commit-config.yaml and the
+      # Makefile's format-check and lint targets (constitution section 3).
+      # Checks only; never reformats.
       run: |
-        pip install black isort
+        pip install black isort flake8
         black --check --line-length=88 .
         isort --check-only --profile=black --line-length=88 .
+        flake8 --max-line-length=88 --ignore=E203,W503 .
 
     - name: Run the mocked suite under coverage
       # The live classes skip without FUNDPRICES_LIVE, so this needs no

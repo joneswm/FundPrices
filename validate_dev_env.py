@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
 Development Environment Validation Script
-Validates that the development environment is properly configured for the FundPrices project.
+Checks that the development environment is set up for the FundPrices project.
 """
 
-import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,7 +37,8 @@ class DevEnvValidator:
             )
         else:
             self.log_error(
-                f"Python {version.major}.{version.minor}.{version.micro} is not compatible (requires 3.10+)"
+                f"Python {version.major}.{version.minor}.{version.micro} "
+                "is not compatible (requires 3.10+)"
             )
 
     def check_virtual_environment(self):
@@ -121,11 +120,13 @@ class DevEnvValidator:
             self.log_success("VS Code configuration is complete")
         elif vscode_found > 0:
             self.log_warning(
-                f"VS Code configuration is partial ({vscode_found}/{len(vscode_files)} files)"
+                "VS Code configuration is partial "
+                f"({vscode_found}/{len(vscode_files)} files)"
             )
         else:
             self.log_warning(
-                "VS Code configuration is missing (.vscode/ is gitignored; see docs/technical_documentation/ide_setup.md)"
+                "VS Code configuration is missing (.vscode/ is gitignored; "
+                "see docs/technical_documentation/ide_setup.md)"
             )
 
         # Check Cursor configuration
@@ -247,10 +248,10 @@ class DevEnvValidator:
                 print(f"   • {warning}")
 
         if not self.errors:
-            print(f"\n🎉 Development environment is properly configured!")
+            print("\n🎉 Development environment is properly configured!")
             print("   You can start developing using the TDD workflow.")
         else:
-            print(f"\n🔧 Please fix the errors above before starting development.")
+            print("\n🔧 Please fix the errors above before starting development.")
 
         return len(self.errors) == 0
 

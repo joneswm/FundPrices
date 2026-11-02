@@ -574,7 +574,7 @@ class Universe(NamedTuple):
         return cls(specs, lookup_of, publish_ids_of, frozenset(lookup_of))
 
     def published(self, identifier):
-        """Return every identifier the instrument behind `identifier` is published under.
+        """Return every identifier the instrument behind `identifier` publishes.
 
         A line in distributions.txt may use the lookup id or an alias; either
         way the rows go out under all of them. An identifier funds.txt does
@@ -1681,7 +1681,7 @@ def collect_fx_rates(pairs, data_dir=None, now=None):
 
 
 def read_fx_rows(fx_csv):
-    """Read stored rates as FxRow keyed on (Pair, Date); a row without a rate is skipped."""
+    """Read stored rates as FxRow keyed on (Pair, Date); rateless rows are skipped."""
     return read_keyed_csv(
         fx_csv,
         FxRow.HEADER,
@@ -4196,7 +4196,7 @@ MONTH_ABBREVIATIONS = {name[:3]: number for name, number in MONTH_NUMBERS.items(
 
 
 class UkBankRateResults:
-    """The day's Bank Rate update: `failures` holds the "uk_bank_rate: <error>" lines."""
+    """The day's Bank Rate update; `failures` holds "uk_bank_rate: <error>" lines."""
 
     def __init__(self, failures=None):
         self.failures = failures or []
@@ -4868,7 +4868,8 @@ def parse_arguments(args=None):
         description="Fund Price Scraper with Historical Data Support",
         epilog="Examples:\n"
         "  Normal mode: python scrape_fund_price.py\n"
-        "  Historical: python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31\n"
+        "  Historical: python scrape_fund_price.py --history AAPL\n"
+        "              --start 2024-01-01 --end 2024-12-31\n"
         "  Backfill:   python scrape_fund_price.py --backfill --from 2021-12-01\n"
         "  Closed:     python scrape_fund_price.py --import-closed\n"
         "  Dividends:  python scrape_fund_price.py --backfill-dividends\n"

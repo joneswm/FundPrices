@@ -1,6 +1,6 @@
 # FundPrices Project Constitution
 
-**Version**: 1.3.1  
+**Version**: 1.3.2  
 **Last Updated**: 2026-11-02  
 **Status**: Active
 
@@ -85,10 +85,9 @@ isort scrape_fund_price.py test_scrape_fund_price.py
 ```
 
 ### Linting and format checks
-- CI checks formatting with Black and isort on every push (`test.yml`, the
-  `make format-check` target and the pre-commit hooks run the same commands)
-- flake8 runs through the pre-commit hooks where they are installed; fix what it
-  reports before committing
+- CI checks formatting with Black and isort and lints with flake8 on every push
+  (`test.yml`, the `make format-check` and `make lint` targets and the pre-commit
+  hooks run the same commands)
 - No warnings in production code
 
 ### Module Layout
@@ -440,8 +439,8 @@ cannot drift out of sync with the actual requirements.
 ### Automated Enforcement
 - CI runs the tests on Python 3.10, 3.12 and 3.14 and enforces both coverage gates on
   every push and pull request
-- CI checks Black and isort formatting on every push and pull request; the pre-commit
-  hooks (`.pre-commit-config.yaml`) run the same checks plus flake8 where installed
+- CI checks Black and isort formatting and flake8 on every push and pull request; the
+  pre-commit hooks (`.pre-commit-config.yaml`) run the same checks locally
 - A failing run on `main` is fixed or reverted before other work continues
 
 ### Manual Review
@@ -501,6 +500,8 @@ This constitution is a living document. Amendments require:
   CI checks Black and isort formatting (it does, since #116) and that flake8 runs in the
   pre-commit hooks; section 4 and section 10 record that `YH` and `MS` were removed
   (#110) and that a configuration line naming them is a validation error (#113)
+- v1.3.2 (2026-11-02): CI lints with flake8 as well, now that the code is clean (#122);
+  sections 3 and Enforcement say so
 
 ---
 
