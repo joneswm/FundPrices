@@ -678,17 +678,13 @@ class TestFundPriceScraper(DataDirCase):
 @unittest.skipUnless(
     os.environ.get("FUNDPRICES_LIVE"), "live sources; set FUNDPRICES_LIVE=1"
 )
-class TestFunctionalScraping(unittest.TestCase):
-    """Functional tests that can run against real websites (optional)."""
+class TestFunctionalScraping(DataDirCase):
+    """Functional tests that can run against real websites (optional).
 
-    def setUp(self):
-        # Without an explicit directory these write into the repository's
-        # data/, leaving files such as latest_AAPL.price for a symbol that is
-        # not in funds.txt.
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    Every fetch is given the scratch directory: without one these write into
+    the repository's data/, leaving files such as latest_AAPL.price for a
+    symbol that is not in funds.txt.
+    """
 
     def assertUsableQuotes(self, results, fund_id, expect_dated=True):
         """Assert a live fetch produced at least one usable dated price.
@@ -771,16 +767,8 @@ class TestFunctionalScraping(unittest.TestCase):
         self.assertTrue(price.startswith("Error:") or price == "N/A")
 
 
-class TestHistoricalData(unittest.TestCase):
+class TestHistoricalData(DataDirCase):
     """Test historical data retrieval functionality."""
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        """Clean up test fixtures."""
-        shutil.rmtree(self.test_dir)
 
     def test_parse_arguments_history_with_dates(self):
         """Test parsing command-line arguments for historical data with start and end dates."""
@@ -807,49 +795,40 @@ class TestHistoricalData(unittest.TestCase):
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_fetch_historical_data_valid_symbol(self, mock_ticker):
-        """Test fetching historical data for a valid symbol."""
-        # Mock the yfinance Ticker object
-        mock_hist = MagicMock()
-        mock_hist.empty = False  # Indicate data was returned
-        mock_hist.to_csv = MagicMock()
-        mock_ticker.return_value.history.return_value = mock_hist
+        """Test the bars are saved as history_<symbol>_<start>_<end>.csv."""
+        fake_ticker(mock_ticker, [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
 
         result = fetch_historical_data(
             "AAPL", "2024-01-01", "2024-12-31", self.test_dir
         )
 
-        # Verify the function was called correctly
         mock_ticker.assert_called_once_with("AAPL")
         mock_ticker.return_value.history.assert_called_once_with(
             start="2024-01-01", end="2024-12-31"
         )
-
-        # Verify result contains expected filename
-        self.assertIn("history_AAPL", result)
-        self.assertTrue(result.endswith(".csv"))
+        name = "history_AAPL_2024-01-01_2024-12-31.csv"
+        self.assertEqual(result, self.path(name))
+        self.assertEqual(
+            self.read_rows(name), [["2024-01-02", "185.64"], ["2024-01-03", "184.25"]]
+        )
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_fetch_historical_data_invalid_symbol(self, mock_ticker):
-        """Test fetching historical data for an invalid symbol."""
-        # Mock the yfinance Ticker to raise an exception
+        """Test an error from Yahoo comes back as an error message."""
         mock_ticker.return_value.history.side_effect = Exception("Invalid symbol")
 
         result = fetch_historical_data(
             "INVALID_XYZ", "2024-01-01", "2024-12-31", self.test_dir
         )
 
-        # Should return error message
-        self.assertTrue(result.startswith("Error:"))
+        self.assertEqual(result, "Error: Invalid symbol")
 
     def test_fetch_historical_data_invalid_date_format(self):
         """Test fetching historical data with invalid date format."""
         result = fetch_historical_data(
             "AAPL", "01-01-2024", "2024-12-31", self.test_dir
         )
-
-        # Should return error message about date format
-        self.assertTrue(result.startswith("Error:"))
-        self.assertIn("date", result.lower())
+        self.assertEqual(result, "Error: Invalid start date format. Use YYYY-MM-DD")
 
     def test_fetch_historical_data_invalid_end_date_format(self):
         """Test fetching historical data with a malformed end date."""
@@ -859,9 +838,7 @@ class TestHistoricalData(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_fetch_historical_data_empty_range_returns_error(self, mock_ticker):
         """Test a date range yielding no rows reports no data found."""
-        mock_hist = MagicMock()
-        mock_hist.empty = True
-        mock_ticker.return_value.history.return_value = mock_hist
+        fake_ticker(mock_ticker, [])
         result = fetch_historical_data("AAPL", "2024-01-01", "2024-01-02")
         self.assertEqual(result, "Error: No data found for symbol AAPL")
 
@@ -870,40 +847,26 @@ class TestHistoricalData(unittest.TestCase):
         result = fetch_historical_data(
             "AAPL", "2024-12-31", "2024-01-01", self.test_dir
         )
-
-        # Should return error message
-        self.assertTrue(result.startswith("Error:"))
-        self.assertIn("start", result.lower())
+        self.assertEqual(result, "Error: Start date must be before end date")
 
 
-class TestPriceFallbackSources(unittest.TestCase):
+class TestPriceFallbackSources(DataDirCase):
     """Test the last-known-price fallback chain used when fetches fail."""
 
-    def setUp(self):
-        """Set up test fixtures."""
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        """Clean up test fixtures."""
-        shutil.rmtree(self.test_dir)
-
-    def _write_csv(self, name, rows):
-        path = os.path.join(self.test_dir, name)
-        with open(path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Fund", "Date", "Price"])
-            writer.writerows(rows)
-        return path
+    HEADER = ["Fund", "Date", "Price"]
 
     def test_read_latest_csv_price_returns_usable_price(self):
         """Test latest_prices.csv supplies a fallback price for a known fund."""
-        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
         self.assertEqual(read_latest_csv_price("AAPL", self.test_dir), "150.25")
 
     def test_read_latest_csv_price_skips_unusable_values(self):
         """Test error and N/A entries are not reused as prices."""
-        self._write_csv(
+        self.write_csv(
             "latest_prices.csv",
+            self.HEADER,
             [
                 ["AAPL", "2026-01-01", "Error: timeout"],
                 ["MSFT", "2026-01-01", "N/A"],
@@ -914,13 +877,16 @@ class TestPriceFallbackSources(unittest.TestCase):
 
     def test_read_latest_csv_price_unknown_fund_returns_none(self):
         """Test a fund absent from latest_prices.csv yields no fallback."""
-        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
         self.assertIsNone(read_latest_csv_price("TSLA", self.test_dir))
 
     def test_read_history_price_returns_most_recent_usable(self):
         """Test history fallback prefers the last usable row for the fund."""
-        self._write_csv(
+        self.write_csv(
             "prices_history.csv",
+            self.HEADER,
             [
                 ["AAPL", "2026-01-01", "100.00"],
                 ["AAPL", "2026-01-02", "110.00"],
@@ -931,8 +897,9 @@ class TestPriceFallbackSources(unittest.TestCase):
 
     def test_read_history_price_all_unusable_returns_none(self):
         """Test history with only error rows provides no fallback price."""
-        self._write_csv(
+        self.write_csv(
             "prices_history.csv",
+            self.HEADER,
             [
                 ["AAPL", "2026-01-01", "Error: timeout"],
                 ["AAPL", "2026-01-02", "N/A"],
@@ -942,15 +909,20 @@ class TestPriceFallbackSources(unittest.TestCase):
 
     def test_get_last_known_price_prefers_price_file_over_csv(self):
         """Test the fallback chain checks the per-fund price file first."""
-        with open(os.path.join(self.test_dir, "latest_AAPL.price"), "w") as f:
-            f.write("999.99\n")
-        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "150.25"]])
+        self.write_text("latest_AAPL.price", "999.99\n")
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "150.25"]]
+        )
         self.assertEqual(get_last_known_price("AAPL", self.test_dir), "999.99")
 
     def test_get_last_known_price_falls_through_to_history(self):
         """Test the chain reaches prices_history.csv when earlier sources are unusable."""
-        self._write_csv("latest_prices.csv", [["AAPL", "2026-01-01", "Error: timeout"]])
-        self._write_csv("prices_history.csv", [["AAPL", "2025-12-31", "123.45"]])
+        self.write_csv(
+            "latest_prices.csv", self.HEADER, [["AAPL", "2026-01-01", "Error: timeout"]]
+        )
+        self.write_csv(
+            "prices_history.csv", self.HEADER, [["AAPL", "2025-12-31", "123.45"]]
+        )
         self.assertEqual(get_last_known_price("AAPL", self.test_dir), "123.45")
 
     def test_get_last_known_price_returns_none_when_nothing_stored(self):
@@ -958,7 +930,7 @@ class TestPriceFallbackSources(unittest.TestCase):
         self.assertIsNone(get_last_known_price("AAPL", self.test_dir))
 
 
-class TestMainEntryPoint(unittest.TestCase):
+class TestMainEntryPoint(DataDirCase):
     """Test the main() command-line entry point."""
 
     @patch("builtins.print")
@@ -1000,35 +972,17 @@ class TestMainEntryPoint(unittest.TestCase):
         time to the literal data/prices_history.csv made every main() test
         summarise the repository's committed history instead.
         """
-        test_dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, test_dir)
-        with open(os.path.join(test_dir, "prices_history.csv"), "w") as f:
-            f.write(
-                "Fund,Date,Price,Currency\n"
-                "TESTFUND,2026-10-29,100.00,GBP\n"
-                "TESTFUND,2026-10-30,101.00,GBP\n"
-            )
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.DATA_DIR", test_dir))
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "TESTFUND")],
-                )
-            )
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            summary = enter(patch("scrape_fund_price.write_summary"))
+        self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price", "Currency"],
+            [
+                ["TESTFUND", "2026-10-29", "100.00", "GBP"],
+                ["TESTFUND", "2026-10-30", "101.00", "GBP"],
+            ],
+        )
+        with daily_run_stubs(self.test_dir, specs=[FundSpec("YA", "TESTFUND")]) as s:
             main([])
-        [row] = summary.call_args.args[0]
+        [row] = s["write_summary"].call_args.args[0]
         self.assertEqual(
             (row.name, row.new_date, row.new, row.old),
             ("TESTFUND", "2026-10-30", "101.00", "100.00"),
