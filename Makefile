@@ -1,4 +1,15 @@
-.PHONY: help install test test-coverage format lint clean setup dev-setup validate
+.PHONY: help install setup dev-setup validate test test-coverage format lint clean \
+	tdd-red tdd-green tdd-refactor all-checks ci format-check
+
+# The interpreter the non-test targets use: the active virtual environment if one is
+# active, else venv/ if it exists, else the system python3. No target needs venv/.
+ifdef VIRTUAL_ENV
+PYTHON ?= python
+else ifneq ($(wildcard venv/bin/python),)
+PYTHON ?= venv/bin/python
+else
+PYTHON ?= python3
+endif
 
 help: ## Show this help message
 	@echo "FundPrices Development Commands"
@@ -6,13 +17,13 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 install: ## Install dependencies
-	pip install -r requirements.txt
-	pip install black flake8 isort coverage pre-commit
-	playwright install chromium
+	$(PYTHON) -m pip install -r requirements.txt
+	$(PYTHON) -m pip install black flake8 isort coverage pre-commit
+	$(PYTHON) -m playwright install chromium
 
 setup: ## Complete development environment setup
 	@echo "Setting up development environment..."
-	python -m venv venv
+	$(PYTHON) -m venv venv
 	@echo "Virtual environment created. Please activate it:"
 	@echo "  source venv/bin/activate  # Linux/Mac"
 	@echo "  venv\\Scripts\\activate     # Windows"
@@ -29,7 +40,7 @@ dev-setup: ## Run development environment setup script
 	fi
 
 validate: ## Validate development environment
-	python validate_dev_env.py
+	$(PYTHON) validate_dev_env.py
 
 test: ## Run tests
 	python test_scrape_fund_price.py
@@ -40,11 +51,15 @@ test-coverage: ## Run tests with coverage
 	coverage html
 
 format: ## Format code with Black and isort
-	black --line-length=88 .
-	isort --profile=black --line-length=88 .
+	$(PYTHON) -m black --line-length=88 .
+	$(PYTHON) -m isort --profile=black --line-length=88 .
+
+format-check: ## Check formatting without changing files (what CI does)
+	$(PYTHON) -m black --check --line-length=88 .
+	$(PYTHON) -m isort --check-only --profile=black --line-length=88 .
 
 lint: ## Lint code with flake8
-	flake8 --max-line-length=88 --ignore=E203,W503 .
+	$(PYTHON) -m flake8 --max-line-length=88 --ignore=E203,W503 .
 
 clean: ## Clean up temporary files
 	find . -type f -name "*.pyc" -delete
@@ -68,8 +83,5 @@ tdd-refactor: ## TDD REFACTOR Phase - Run tests to verify refactoring
 all-checks: format lint test ## Run all code quality checks
 	@echo "All checks completed successfully!"
 
-ci: ## Run CI pipeline locally
-	make format
-	make lint
-	make test-coverage
+ci: format-check lint test-coverage ## Run the CI checks locally (checks formatting; never reformats)
 	@echo "CI pipeline completed successfully!"
