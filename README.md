@@ -4,7 +4,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 
 ## Features
 
-- **Multi-source support**: Yahoo Finance API, the Financial Times and investing.com over plain HTTP, with Playwright scraping (Yahoo, Morningstar) kept as a fallback
+- **Multi-source support**: Yahoo Finance API, the Financial Times and investing.com over plain HTTP; the FT fetch falls back to Playwright scraping (the Yahoo and Morningstar scrapers are supported but unused)
 - **True price dates and currencies**: every row carries the date and currency the source reports, so weekends and holidays are absent rather than repeated
 - **FX rates**: end-of-day rates for a configured set of currency pairs
 - **Daily summary**: new price, old price, delta and percent delta for every instrument
@@ -17,7 +17,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
 - **Resilience**: retries, then the last known price; one failure never stops the run
-- **Testing**: unit and functional test suite with both coverage gates enforced in CI
+- **Testing**: a mocked suite that needs no network, live-source tests behind `FUNDPRICES_LIVE`, and both coverage gates enforced in CI
 
 ## Quick Start
 
@@ -283,8 +283,8 @@ intermittent gap in a source cannot delete real trading days.
 # Run once to scrape current prices from configured funds
 python scrape_fund_price.py
 
-# Run tests
-python test_scrape_fund_price.py
+# Run the mocked test suite
+./run_tests.sh unit
 ```
 
 #### Price Resilience
@@ -462,17 +462,20 @@ Date,Open,High,Low,Close,Volume,Dividends,Stock Splits
 ### GitHub Actions
 The project includes automated execution via GitHub Actions:
 
-- **Schedule**: twice daily, at 21:05 UTC after the US close all year round and at 09:17 UTC for the
-  funds' previous-day NAVs and any close a late evening run missed (`05 21 * * *` and `17 9 * * *`
-  in `scrape.yml`). GitHub starts scheduled runs hours late, so these are "not before" times
+- **Schedule**: two runs a day, 21:05 UTC after the US close all year round and 09:17 UTC for the
+  funds' previous-day NAVs and any close a late evening run missed. `scrape.yml` is canonical for
+  the schedule (`05 21 * * *` and `17 9 * * *`). GitHub starts scheduled runs hours late, so these
+  are "not before" times
 - **Manual triggers**: Run on-demand from GitHub Actions tab
 - **Output**: Automatically commits results to the repository
 
 ### Local Automation
 ```bash
-# Add to crontab for a daily run at 22:30 UTC. Prices are end-of-day, so running
+# Mirror the two-run schedule of scrape.yml: 21:05 UTC after the US close, and
+# 09:17 UTC for the funds' previous-day NAVs. Prices are end-of-day, so running
 # more often fetches the same rows again.
-30 22 * * * cd /path/to/FundPrices && python scrape_fund_price.py
+5 21 * * * cd /path/to/FundPrices && python scrape_fund_price.py
+17 9 * * * cd /path/to/FundPrices && python scrape_fund_price.py
 ```
 
 ## Documentation
@@ -480,11 +483,10 @@ The project includes automated execution via GitHub Actions:
 ### Core Documentation
 - [Constitution](constitution.md) - **Project principles and standards**
 - [**GitHub Issues**](https://github.com/joneswm/FundPrices/issues) - **Task tracking (source of truth for work to be done)**
-- [Specifications](specs/README.md) - **Spec Kit specifications for features (primary development approach)**
-- [Implementation Status](docs/user_stories/implementation_status.md) - Historical record of completed work
+- [Specifications](specs/README.md) - **Spec Kit specifications for features (primary development approach), with what each one delivered**
 
 ### Technical Documentation
-- [Technical Documentation](docs/technical_documentation/README.md)
+- [Technical Documentation](docs/technical_documentation/README.md) - index, and the table of which file owns which fact
 - [API Reference](docs/technical_documentation/api_reference.md)
 - [Architecture](docs/technical_documentation/architecture.md)
 - [Deployment Guide](docs/technical_documentation/deployment.md)
@@ -498,46 +500,36 @@ The project includes automated execution via GitHub Actions:
 
 ### Historical Reference
 - [Archived User Stories](docs/archive/user_stories/README.md) - **Legacy user stories (100% complete)**
+- [Implementation Status](docs/user_stories/implementation_status.md) - Frozen record of the legacy user stories; current status is in `specs/README.md` and GitHub Issues
 - [Spec Kit Assessment](docs/archive/spec_kit_assessment.md) - **Archived: why Spec Kit was adopted**
 
 ## Development Status
 
-**Current Implementation**: 100% Complete (27/27 legacy user stories, archived)  
-**Spec Kit Migration**: ✅ Complete — Spec Kit is the primary development approach  
-**Task Tracking**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)  
-**New Features**: Open an issue, then create a spec in `specs/XXX-feature-name/`
-
-- ✅ **UK Bank Rate**: the Bank of England Bank Rate at each month end, from 2015, published as `uk_bank_rate.csv` for the Sharpe ratio (SPEC-014)
-- ✅ **UK CPI**: the ONS consumer price index (D7BT) published monthly as `uk_cpi.csv`, from 2015, for real returns (SPEC-013)
-- ✅ **Dividend Pay Dates**: the issuer's real pay dates and declared amounts for the iShares funds, merged into the dividend files (SPEC-011), and for QQQ, GLTL.L, KNSL and 0639.HK from Invesco, SSGA, Q4 Inc and etnet (SPEC-012)
-- ✅ **Dividend Calendar**: past and upcoming dividends per instrument, declared or projected, with a hand-kept schedule for instruments no source covers (SPEC-010)
-- ✅ **Core Functionality**: Multi-source dated price collection (Yahoo Finance API, FT and investing.com over HTTP; scraping fallback), FX rates, daily summary, history rebuild, closed-holding imports
-- ✅ **Historical Data**: Retrieve historical price data for any stock/fund over custom date ranges
-- ✅ **Data Quality**: Duplicate prevention in price history
-- ✅ **Automation**: GitHub Actions workflows, automated data persistence
-- ✅ **Testing**: Comprehensive unit and functional tests; coverage gates of 90% overall and 95% on the main module enforced in CI
-- ✅ **IDE Integration**: VS Code/Cursor test integration with debugging support
-- ✅ **TDD Enforcement**: Mandatory Test-Driven Development workflow
-- ✅ **Code Quality**: Standards, tools, and quality gates implemented
-- ✅ **Development Environment**: Complete setup scripts and validation tools
-
-**🎉 All User Stories Complete - Production Ready!**
-
-Current and planned work is tracked in [GitHub Issues](https://github.com/joneswm/FundPrices/issues).
-See [Implementation Status](docs/user_stories/implementation_status.md) for the historical record of completed work.
+- **Open work**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
+- **What each feature delivered**: [`specs/README.md`](specs/README.md), one entry per spec
+- **New features**: open an issue, then create a spec in `specs/XXX-feature-name/`
+- **Legacy record**: the 27 user stories that predate Spec Kit are all complete and archived under
+  [`docs/archive/user_stories/`](docs/archive/user_stories/README.md); their
+  [implementation status](docs/user_stories/implementation_status.md) is frozen
 
 ## Testing
 
-Run the complete test suite:
 ```bash
-python test_scrape_fund_price.py
+./run_tests.sh unit       # the default: the mocked suite, no network needed
+./run_tests.sh live       # also the tests that hit the live sources
+./run_tests.sh coverage   # the mocked suite with both coverage gates
+./run_tests.sh all        # everything, live tests included
 ```
 
+`python test_scrape_fund_price.py` runs the mocked suite directly. The live-source tests run
+only when the environment variable `FUNDPRICES_LIVE` is set (`./run_tests.sh live` sets it),
+and skip when a source is down. The coverage gates, 90% overall and 95% on
+`scrape_fund_price.py`, live in `.coveragerc` and are enforced in CI.
+
 The test suite includes:
-- Unit tests for all functions
-- Integration tests with real fund data
+- Unit tests for all functions, with external dependencies mocked
+- Live tests against the real sources
 - Error handling and edge case testing
-- Mock testing for external dependencies
 
 ## Dependencies
 
@@ -577,7 +569,7 @@ section 7). Everyone else:
 2. Create a feature branch
 3. **Follow TDD workflow**: RED-GREEN-REFACTOR cycle
 4. Write tests first, then implementation
-5. Ensure all tests pass and coverage >90%
+5. Ensure all tests pass and both coverage gates hold (90% overall, 95% on `scrape_fund_price.py`)
 6. Update documentation
 7. Submit a pull request
 
