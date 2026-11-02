@@ -576,7 +576,7 @@ class Universe(NamedTuple):
         return self.publish_ids_of[lookup_id]
 
 
-def configured_identifiers(specs, closed_file=None):
+def configured_identifiers(universe, closed_file=None):
     """Return every identifier a distributions.txt line may name.
 
     The identifiers funds.txt publishes under (lookup ids and aliases) and the
@@ -586,7 +586,7 @@ def configured_identifiers(specs, closed_file=None):
     if closed_file is None:
         closed_file = CLOSED_HOLDINGS_FILE
 
-    identifiers = set(Universe.from_specs(specs).all_identifiers)
+    identifiers = set(universe.all_identifiers)
     if os.path.isfile(closed_file):
         identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
     return identifiers
@@ -666,7 +666,7 @@ class DividendSource(NamedTuple):
     source_id: str
 
 
-def read_dividend_sources(filename=None, specs=None):
+def read_dividend_sources(filename=None, universe=None):
     """Read the issuer sources of dividend dates.
 
     Each line is `<identifier>,<source>,<source-id>` with `#` comments and
@@ -675,9 +675,9 @@ def read_dividend_sources(filename=None, specs=None):
 
     Args:
         filename: Path to read (default: DIVIDEND_SOURCES_FILE)
-        specs: The funds.txt instruments; a line may name any identifier they
-            publish, and two lines may not name one instrument. None skips
-            those checks
+        universe: The funds.txt instruments as a Universe; a line may name any
+            identifier they publish, and two lines may not name one
+            instrument. None skips those checks
 
     Raises:
         ValueError: naming the offending line, before any network call.
@@ -688,9 +688,7 @@ def read_dividend_sources(filename=None, specs=None):
     if not os.path.isfile(filename):
         return []
 
-    instrument_of = None
-    if specs is not None:
-        instrument_of = Universe.from_specs(specs).lookup_of
+    instrument_of = None if universe is None else universe.lookup_of
 
     sources = []
     seen = {}
@@ -2424,11 +2422,11 @@ class DividendRun(NamedTuple):
     data_dir: str
 
     @classmethod
-    def prepare(cls, specs, data_dir=None, today=None):
+    def prepare(cls, universe, data_dir=None, today=None):
         """Settle a run: its date, the instrument map and the stored currencies.
 
         Args:
-            specs: FundSpec instances from funds.txt
+            universe: The funds.txt instruments as a Universe
             data_dir: Directory of the data files (default: DATA_DIR)
             today: The run date (default: today)
         """
@@ -2436,7 +2434,7 @@ class DividendRun(NamedTuple):
             data_dir = DATA_DIR
         return cls(
             today or datetime.date.today(),
-            Universe.from_specs(specs),
+            universe,
             stored_currencies(data_dir),
             data_dir,
         )
@@ -3770,7 +3768,7 @@ def publish_upcoming(run, distributions, history, declared):
 # ===========================================================================
 
 
-def update_dividends(specs, distributions, data_dir=None, today=None, sources=()):
+def update_dividends(universe, distributions, data_dir=None, today=None, sources=()):
     """Run the daily dividend update and write both dividend files.
 
     Upserts Yahoo's events into dividends_history.csv, adds the rows
@@ -3782,7 +3780,7 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
     never deletes (a rebuild does that: backfill_dividends).
 
     Args:
-        specs: FundSpec instances from funds.txt
+        universe: The funds.txt instruments as a Universe (built once in main())
         distributions: Distribution lines from distributions.txt
         data_dir: Directory for output files (default: DATA_DIR)
         today: The run date (default: today)
@@ -3792,7 +3790,7 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
         DividendResults whose `failures` lists the instruments that could not
         be fetched; their stored rows are untouched
     """
-    run = DividendRun.prepare(specs, data_dir, today)
+    run = DividendRun.prepare(universe, data_dir, today)
     os.makedirs(run.data_dir, exist_ok=True)
     first_run = not os.path.isfile(os.path.join(run.data_dir, DIVIDENDS_HISTORY_FILE))
     window = datetime.timedelta(days=DIVIDEND_WINDOW_DAYS)
@@ -3974,7 +3972,7 @@ def rebuild_dividend_rows(run, history, distributions, events, issuers, *, start
 
 
 def backfill_dividends(
-    specs, distributions, start=None, data_dir=None, today=None, sources=()
+    universe, distributions, start=None, data_dir=None, today=None, sources=()
 ):
     """Rebuild the source rows of dividends_history.csv from the sources.
 
@@ -3989,7 +3987,7 @@ def backfill_dividends(
     the issuers' announced ones).
 
     Args:
-        specs: FundSpec instances from funds.txt
+        universe: The funds.txt instruments as a Universe (built once in main())
         distributions: Distribution lines from distributions.txt
         start: Inclusive ISO date to rebuild from, None for everything
         data_dir: Directory for output files (default: DATA_DIR)
@@ -3999,7 +3997,7 @@ def backfill_dividends(
     Returns:
         BackfillReport
     """
-    run = DividendRun.prepare(specs, data_dir, today)
+    run = DividendRun.prepare(universe, data_dir, today)
     os.makedirs(run.data_dir, exist_ok=True)
     report = BackfillReport()
     issuers = collect_issuer_tables(run, sources)
@@ -5076,12 +5074,14 @@ def main(argv=None, now=None):
             print(f"Error: {error}")
             raise SystemExit(2)
 
-        specs = read_fund_specs(FUNDS_FILE)
+        universe = Universe.from_specs(read_fund_specs(FUNDS_FILE))
         distributions = read_distributions(
-            DISTRIBUTIONS_FILE, configured_identifiers(specs)
+            DISTRIBUTIONS_FILE, configured_identifiers(universe)
         )
-        sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, specs)
-        report = backfill_dividends(specs, distributions, args.start, sources=sources)
+        sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, universe)
+        report = backfill_dividends(
+            universe, distributions, args.start, today=now.date(), sources=sources
+        )
         publish_report(report, f"Dividend rebuild from {args.start or 'the start'}")
         return
 
@@ -5102,11 +5102,13 @@ def main(argv=None, now=None):
     failures = []
 
     funds = read_fund_specs(FUNDS_FILE)
+    universe = Universe.from_specs(funds)
+    today = now.date()
     # Validated with funds.txt, before any network call.
     distributions = read_distributions(
-        DISTRIBUTIONS_FILE, configured_identifiers(funds)
+        DISTRIBUTIONS_FILE, configured_identifiers(universe)
     )
-    sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, funds)
+    sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, universe)
 
     # Each step below is isolated: a crash in one is recorded as a
     # failure and the rest still write their files, so the run exits
@@ -5136,7 +5138,9 @@ def main(argv=None, now=None):
     # Dividends are fetched and written independently too: a crash here
     # must not cost the day's price summary.
     try:
-        dividends = update_dividends(funds, distributions, sources=sources)
+        dividends = update_dividends(
+            universe, distributions, today=today, sources=sources
+        )
     except Exception as error:
         dividends = DividendResults(failures=[f"dividends: {error}"])
     failures.extend(dividends.failures)
@@ -5144,20 +5148,20 @@ def main(argv=None, now=None):
     # The CPI index is its own file from its own source, so it is fetched
     # and written independently as well.
     try:
-        failures.extend(update_uk_cpi().failures)
+        failures.extend(update_uk_cpi(today=today).failures)
     except Exception as error:
         failures.append(f"uk_cpi: {error}")
 
     # The Bank Rate is another file from another source, fetched and
     # written independently of the CPI.
     try:
-        failures.extend(update_uk_bank_rate().failures)
+        failures.extend(update_uk_bank_rate(today=today).failures)
     except Exception as error:
         failures.append(f"uk_bank_rate: {error}")
 
     # Built from what was just written, so it reflects a partial run too;
     # a day with failures is exactly when the summary is most useful.
-    run_date = now.date().isoformat()
+    run_date = today.isoformat()
     history = list(
         read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
     )

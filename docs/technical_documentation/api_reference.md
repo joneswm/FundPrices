@@ -438,14 +438,15 @@ decimals, one per ex-date, and `as-of` is `YYYY-MM-DD`. See `specs/010-dividends
 or (when `known_identifiers` is given) an identifier in neither `funds.txt` nor
 `closed_holdings.txt`.
 
-### `configured_identifiers(specs, closed_file=None)`
+### `configured_identifiers(universe, closed_file=None)`
 
 Every identifier `distributions.txt` may name: the identifiers `funds.txt` publishes under
 (`Universe.all_identifiers`) and those of `closed_holdings.txt`.
 
 ### `Universe(specs, lookup_of, publish_ids_of, all_identifiers)`
 
-The configured instruments, mapped once per run: `Universe.from_specs(specs)` canonicalises
+The configured instruments, mapped once per run: `main()` calls `Universe.from_specs(specs)`
+once and passes the result to every dividend step. It canonicalises
 each spec (`as_fund_spec()`) and builds `lookup_of` (published identifier to lookup id),
 `publish_ids_of` (lookup id to its published identifiers, lookup id first) and
 `all_identifiers` (a frozenset). `universe.published(identifier)` is every identifier the
@@ -457,7 +458,7 @@ in place of the specs.
 
 What every step of one dividend run shares: the run date, the `Universe`, identifier to the
 currency of its newest stored price (`stored_currencies()`, read once per run) and the data
-folder. `DividendRun.prepare(specs, data_dir=None, today=None)` settles one (defaults
+folder. `DividendRun.prepare(universe, data_dir=None, today=None)` settles one (defaults
 `DATA_DIR` and today); `run.price_currency(identifier)` is the first stored currency among
 the instrument's identifiers, `""` when none has one. `update_dividends()` and
 `backfill_dividends()` prepare one and pass it as the first argument of each step.
@@ -542,7 +543,7 @@ by ex-date then fund. `publish_upcoming(run, distributions, history, declared)` 
 previous file, builds and writes the new one, and returns `(previous, upcoming)`;
 `config_history_rows(run, distributions)` is the `config` rows of every line.
 
-### `update_dividends(specs, distributions, data_dir=None, today=None, sources=())`
+### `update_dividends(universe, distributions, data_dir=None, today=None, sources=())`
 
 The daily run: fetch (the whole history when `dividends_history.csv` does not exist,
 otherwise the last `DIVIDEND_WINDOW_DAYS`), upsert, add the `config` rows, apply the
@@ -550,7 +551,7 @@ issuers' tables, write the history, rebuild and write the upcoming file. Never d
 Returns `DividendResults`; `.summary` holds the `DividendSummaryRow` entries that are news
 today, `.failures` also the `"<id>: pay dates: <error>"` lines of issuer pages.
 
-### `backfill_dividends(specs, distributions, start=None, data_dir=None, today=None, sources=())`
+### `backfill_dividends(universe, distributions, start=None, data_dir=None, today=None, sources=())`
 
 The rebuild: for every `YA` instrument that fetches, its `YA` rows from `start`
 (everything when `None`) are replaced by what Yahoo reports, and its `IS` rows too where
@@ -572,11 +573,11 @@ computes the rebuilt history without fetching or writing anything, returning
 SPEC-011. `dividend_sources.txt` names, per instrument, an issuer page that lists every
 distribution with its ex-date, record date, pay date and amount.
 
-### `DividendSource(identifier, source, source_id)`, `read_dividend_sources(filename=None, specs=None)`
+### `DividendSource(identifier, source, source_id)`, `read_dividend_sources(filename=None, universe=None)`
 
 One line of `dividend_sources.txt` (`<identifier>,<source>,<source-id>`), read from
 `DIVIDEND_SOURCES_FILE` by default. A missing file has no entries. `source` is one of
-`DIVIDEND_SOURCE_CODES` (`IS`, `IV`, `SS`, `Q4`, `ET`), uppercased; `source_id` must match `DIVIDEND_SOURCE_ID_RULES[source]` (IS: 1 to 9 digits; IV: CUSIP; SS: ISIN; Q4: `host/MIC`; ET: HK code). With `specs`
+`DIVIDEND_SOURCE_CODES` (`IS`, `IV`, `SS`, `Q4`, `ET`), uppercased; `source_id` must match `DIVIDEND_SOURCE_ID_RULES[source]` (IS: 1 to 9 digits; IV: CUSIP; SS: ISIN; Q4: `host/MIC`; ET: HK code). With a `universe`
 the identifier must be one `funds.txt` publishes and two lines may not name one instrument.
 Raises `ValueError` naming the line, before any network call.
 

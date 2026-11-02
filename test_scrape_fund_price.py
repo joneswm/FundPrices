@@ -325,6 +325,11 @@ DividendRow = scrape_fund_price.DividendRow
 UpcomingRow = scrape_fund_price.UpcomingRow
 
 
+def universe_of(specs):
+    """The Universe main() would build from these funds.txt instruments."""
+    return scrape_fund_price.Universe.from_specs(specs)
+
+
 def dividend_run(specs=(), currencies=None, today=date(2026, 10, 26), data_dir=None):
     """A DividendRun for calling one dividend step on its own.
 
@@ -401,7 +406,9 @@ class DividendRunCase(DataDirCase):
         runner = runner or scrape_fund_price.update_dividends
         with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
             with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
-                return runner(specs, list(distributions), self.test_dir, self.TODAY)
+                return runner(
+                    universe_of(specs), list(distributions), self.test_dir, self.TODAY
+                )
 
 
 class IssuerRunCase(DividendRunCase):
@@ -438,9 +445,9 @@ class IssuerRunCase(DividendRunCase):
                 raise value
             return value
 
-        def update(specs, dists, data_dir, today):
+        def update(universe, dists, data_dir, today):
             return scrape_fund_price.update_dividends(
-                specs, dists, data_dir, today, sources=sources
+                universe, dists, data_dir, today, sources=sources
             )
 
         with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
@@ -948,7 +955,9 @@ class TestDividendSourceConfiguration(DataDirCase):
         path = self.write_text("dividend_sources.txt", text)
         if specs == "default":
             specs = self.SPECS
-        return scrape_fund_price.read_dividend_sources(path, specs)
+        return scrape_fund_price.read_dividend_sources(
+            path, None if specs is None else universe_of(specs)
+        )
 
     def test_reads_lines_comments_and_blank_lines(self):
         """Test the documented grammar."""
@@ -974,13 +983,17 @@ class TestDividendSourceConfiguration(DataDirCase):
     def test_a_missing_file_means_no_sources(self):
         """Test the file is optional."""
         missing = self.path("none.txt")
-        self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
+        self.assertEqual(
+            scrape_fund_price.read_dividend_sources(missing, universe_of([])), []
+        )
 
     def test_the_default_file_is_the_configured_one(self):
         """Test the production call names no file."""
         path = self.write_text("dividend_sources.txt", "QQQ,IS,1\n")
         with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
-            [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
+            [source] = scrape_fund_price.read_dividend_sources(
+                universe=universe_of(self.SPECS)
+            )
         self.assertEqual(source.identifier, "QQQ")
 
     def test_without_specs_the_identifier_is_not_checked(self):
@@ -1034,7 +1047,7 @@ class TestPayDateSourceConfiguration(DataDirCase):
 
     def _read(self, text):
         path = self.write_text("dividend_sources.txt", text)
-        return scrape_fund_price.read_dividend_sources(path, self.SPECS)
+        return scrape_fund_price.read_dividend_sources(path, universe_of(self.SPECS))
 
     def test_the_four_codes_are_known(self):
         """Test the code list and the authority of each."""
@@ -1091,10 +1104,12 @@ class TestConfiguredIdentifiers(DataDirCase):
             "closed_holdings.txt", "BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n"
         )
         known = scrape_fund_price.configured_identifiers(
-            [
-                FundSpec("YA", "0P00000YAN", ("JFM0003373",)),
-                FundSpec("FT", "GB00B1FXTF86"),
-            ],
+            universe_of(
+                [
+                    FundSpec("YA", "0P00000YAN", ("JFM0003373",)),
+                    FundSpec("FT", "GB00B1FXTF86"),
+                ]
+            ),
             closed,
         )
         self.assertEqual(known, {"0P00000YAN", "JFM0003373", "GB00B1FXTF86", "BKCH"})
@@ -1102,7 +1117,7 @@ class TestConfiguredIdentifiers(DataDirCase):
     def test_a_missing_closed_holdings_file_adds_nothing(self):
         """Test the file is optional here."""
         known = scrape_fund_price.configured_identifiers(
-            [FundSpec("FT", "GB00B1FXTF86")], self.path("no-such-file")
+            universe_of([FundSpec("FT", "GB00B1FXTF86")]), self.path("no-such-file")
         )
         self.assertEqual(known, {"GB00B1FXTF86"})
 
@@ -6395,7 +6410,9 @@ class TestDailyDividendUpdate(DividendRunCase):
                 with patch.object(
                     scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
                 ):
-                    scrape_fund_price.update_dividends([FundSpec("YA", "QQQ")], [])
+                    scrape_fund_price.update_dividends(
+                        universe_of([FundSpec("YA", "QQQ")]), []
+                    )
         self.assertTrue(os.path.isfile(self.path("dividends_history.csv")))
         self.assertTrue(os.path.isfile(self.path("dividends_upcoming.csv")))
 
@@ -6556,7 +6573,7 @@ class TestDividendBackfill(DividendRunCase):
                 scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: []
             ):
                 scrape_fund_price.backfill_dividends(
-                    [FundSpec("YA", "QQQ")], [], "2026-01-01"
+                    universe_of([FundSpec("YA", "QQQ")]), [], "2026-01-01"
                 )
         self.assertTrue(os.path.isfile(self.path("dividends_history.csv")))
 
@@ -6786,8 +6803,8 @@ class TestDividendsInTheDailyRun(DataDirCase):
         """Test update_dividends gets the funds and the validated schedules."""
         self._run()
         self.update.assert_called_once()
-        specs, distributions = self.update.call_args.args
-        self.assertEqual([spec.lookup_id for spec in specs], ["QQQ"])
+        universe, distributions = self.update.call_args.args
+        self.assertEqual([spec.lookup_id for spec in universe.specs], ["QQQ"])
         self.assertEqual(distributions, [])
 
     def test_the_summary_receives_the_days_dividend_rows(self):
@@ -6867,7 +6884,7 @@ class TestDividendBackfillMainMode(DataDirCase):
         main(self._argv())
         mock_scrape.assert_not_called()
         [call] = mock_backfill.call_args_list
-        self.assertEqual(call.args[0][0].lookup_id, "QQQ")
+        self.assertEqual(call.args[0].specs[0].lookup_id, "QQQ")
         self.assertEqual(call.args[2], "2024-01-01")
         printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
         self.assertIn("| QQQ |", printed)
@@ -8729,7 +8746,7 @@ class TestOneUniversePerRun(IssuerRunCase):
             [["IGLS.L", "2026-10-23", "51.2", "GBP"]],
         )
         run = scrape_fund_price.DividendRun.prepare(
-            self.SPECS, self.test_dir, self.TODAY
+            universe_of(self.SPECS), self.test_dir, self.TODAY
         )
         self.assertEqual(run.today, self.TODAY)
         self.assertEqual(
@@ -8743,7 +8760,7 @@ class TestOneUniversePerRun(IssuerRunCase):
     def test_a_run_defaults_to_today_and_the_data_folder(self):
         """Test the clock and DATA_DIR are read only when nothing is given."""
         with patch.object(scrape_fund_price, "DATA_DIR", self.test_dir):
-            run = scrape_fund_price.DividendRun.prepare(self.SPECS)
+            run = scrape_fund_price.DividendRun.prepare(universe_of(self.SPECS))
         self.assertEqual(run.today, date.today())
         self.assertEqual(run.data_dir, self.test_dir)
 
@@ -9151,7 +9168,8 @@ class TestUkCpiInMain(unittest.TestCase):
     def test_the_daily_run_updates_the_index_once(self):
         """Test update_uk_cpi runs in the normal mode."""
         self._main({"return_value": scrape_fund_price.UkCpiResults()})
-        self.update.assert_called_once_with()
+        self.update.assert_called_once()
+        self.assertIsInstance(self.update.call_args.kwargs["today"], date)
 
     def test_a_failure_is_in_the_runs_failure_list_after_everything_is_written(self):
         """Test the run exits non-zero, with prices and summary already written."""
@@ -9565,7 +9583,8 @@ class TestUkBankRateInMain(unittest.TestCase):
     def test_the_daily_run_updates_the_rate_once(self):
         """Test update_uk_bank_rate runs in the normal mode."""
         self._main({"return_value": scrape_fund_price.UkBankRateResults()})
-        self.update.assert_called_once_with()
+        self.update.assert_called_once()
+        self.assertIsInstance(self.update.call_args.kwargs["today"], date)
 
     def test_a_failure_is_in_the_runs_failure_list_after_everything_is_written(self):
         """Test the run exits non-zero, with prices and summary already written."""
@@ -10188,7 +10207,7 @@ class TestCommittedConfiguration(unittest.TestCase):
     def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
         """Test a typo in the owner's file fails the suite, not the nightly run."""
         specs = read_fund_specs(os.path.join(REPO, "funds.txt"))
-        known = scrape_fund_price.configured_identifiers(specs)
+        known = scrape_fund_price.configured_identifiers(universe_of(specs))
         scrape_fund_price.read_distributions(
             os.path.join(REPO, "distributions.txt"), known
         )
@@ -10197,7 +10216,7 @@ class TestCommittedConfiguration(unittest.TestCase):
         """Test a typo in the owner's file fails the suite, not the nightly run."""
         sources = scrape_fund_price.read_dividend_sources(
             os.path.join(REPO, "dividend_sources.txt"),
-            read_fund_specs(os.path.join(REPO, "funds.txt")),
+            universe_of(read_fund_specs(os.path.join(REPO, "funds.txt"))),
         )
         self.assertTrue(sources)
         self.assertTrue(
@@ -10208,7 +10227,7 @@ class TestCommittedConfiguration(unittest.TestCase):
         """Test the shipped rows validate against the committed funds.txt."""
         sources = scrape_fund_price.read_dividend_sources(
             os.path.join(REPO, "dividend_sources.txt"),
-            read_fund_specs(os.path.join(REPO, "funds.txt")),
+            universe_of(read_fund_specs(os.path.join(REPO, "funds.txt"))),
         )
         by_code = {s.source: s for s in sources if s.source != "IS"}
         self.assertEqual(
