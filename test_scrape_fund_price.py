@@ -2724,6 +2724,63 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         )
 
 
+class TestTypedPriceRows(DataDirCase):
+    """Test the price files' rows are PriceRow NamedTuples (#120)."""
+
+    QQQ = ("QQQ", "2026-09-18", "721.45", "USD")
+
+    def test_a_price_row_names_its_columns_and_carries_the_header(self):
+        """Test the fields read by name and HISTORY_HEADER is PriceRow.HEADER."""
+        row = scrape_fund_price.PriceRow(*self.QQQ)
+        self.assertEqual((row.fund, row.date, row.price, row.currency), self.QQQ)
+        self.assertEqual(
+            scrape_fund_price.PriceRow.HEADER, ["Fund", "Date", "Price", "Currency"]
+        )
+        self.assertIs(
+            scrape_fund_price.HISTORY_HEADER, scrape_fund_price.PriceRow.HEADER
+        )
+
+    def test_stored_history_reads_as_price_rows(self):
+        """Test read_history_rows builds PriceRow, a legacy row's currency empty."""
+        path = self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price"],
+            [["OLD", "2026-09-01", "9.99"]],
+        )
+        self.assertEqual(
+            list(read_history_rows(path).values()),
+            [scrape_fund_price.PriceRow("OLD", "2026-09-01", "9.99", "")],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_scrape_returns_price_rows(self, mock_ticker):
+        """Test the rows and the .price rows of a scrape are PriceRow."""
+        fake_ticker(mock_ticker, [("2026-09-18", 721.45)], currency="USD")
+        results = scrape_funds([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        expected = [scrape_fund_price.PriceRow(*self.QQQ)]
+        self.assertEqual((list(results), results.latest), (expected, expected))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_carried_row_is_a_price_row(self, mock_ticker):
+        """Test a failed fund carries its stored row as a PriceRow."""
+        self.write_csv(
+            "prices_history.csv", scrape_fund_price.HISTORY_HEADER, [self.QQQ]
+        )
+        mock_ticker.side_effect = Exception("Network error")
+        results = scrape_funds([FundSpec("YA", "QQQ")], self.test_dir, now=RUN_NOW)
+        expected = [scrape_fund_price.PriceRow(*self.QQQ)]
+        self.assertEqual((results.carried, results.latest), (expected, expected))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_history_export_returns_price_rows(self, mock_ticker):
+        """Test the --history report's rows are PriceRow too."""
+        fake_ticker(mock_ticker, [("2026-09-18", 721.45)], currency="USD")
+        report = fetch_historical_data(
+            "QQQ", "2026-09-18", "2026-09-18", self.test_dir, now=RUN_NOW
+        )
+        self.assertEqual(report.rows, [scrape_fund_price.PriceRow(*self.QQQ)])
+
+
 class TestRollingWindowCoversCurrentFundsOnly(DataDirCase):
     """Test the 90-day window tracks latest_prices.csv, not raw history.
 
@@ -4281,6 +4338,40 @@ def fake_hourly_fx(mock_ticker):
         ]
     )
     return fake_ticker(mock_ticker, [(None, 0.75023), (None, 0.754)], index=index)
+
+
+class TestTypedFxRows(DataDirCase):
+    """Test the FX files' rows are FxRow NamedTuples (#120)."""
+
+    def test_an_fx_row_names_its_columns_and_carries_the_header(self):
+        """Test the fields read by name and FX_HEADER is FxRow.HEADER."""
+        row = scrape_fund_price.FxRow("USDGBP", "2026-09-18", "0.746700")
+        self.assertEqual(
+            (row.pair, row.date, row.rate), ("USDGBP", "2026-09-18", "0.746700")
+        )
+        self.assertEqual(scrape_fund_price.FxRow.HEADER, ["Pair", "Date", "Rate"])
+        self.assertIs(scrape_fund_price.FX_HEADER, scrape_fund_price.FxRow.HEADER)
+
+    def test_stored_rates_read_as_fx_rows(self):
+        """Test read_fx_rows builds FxRow."""
+        path = self.write_csv(
+            "fx_history.csv",
+            ["Pair", "Date", "Rate"],
+            [["USDGBP", "2026-09-18", "0.7467"]],
+        )
+        self.assertEqual(
+            list(scrape_fund_price.read_fx_rows(path).values()),
+            [scrape_fund_price.FxRow("USDGBP", "2026-09-18", "0.7467")],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_snap_returns_fx_rows(self, mock_ticker):
+        """Test the day's rates come back as FxRow."""
+        fake_hourly_fx(mock_ticker)
+        results = snap_fx_rates(["USDGBP"], self.test_dir, now=utc(2026, 10, 19, 12))
+        self.assertEqual(
+            list(results), [scrape_fund_price.FxRow("USDGBP", "2026-10-16", "0.750230")]
+        )
 
 
 class TestFxClock(DataDirCase):
