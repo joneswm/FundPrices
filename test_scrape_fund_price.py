@@ -11,6 +11,7 @@ import json
 import urllib.parse
 import datetime
 from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 
 import scrape_fund_price
 
@@ -113,6 +114,8 @@ def tearDownModule():
 # DataDirCase gives a test its own scratch directory and file helpers, and
 # stubs the pacing sleeps. fake_ticker and history_metadata stand in for
 # yf.Ticker, daily_run_stubs for the daily run's collaborators in main() tests.
+# BackfillCase, DividendRunCase (with its row builders) and IssuerRunCase are
+# the feature-level bases that build on DataDirCase.
 # ---------------------------------------------------------------------------
 
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -332,18 +335,6 @@ class DividendRunCase(DataDirCase):
 
     # The IssuerRunCase classes (SPEC-011, SPEC-012) still call these; step
     # 2.Z of #97 removes them once those callers use the DataDirCase methods.
-    def _file(self, name):
-        return self.path(name)
-
-    def _text(self, name):
-        return self.read_text(name)
-
-    def _read(self, name):
-        return self.read_rows(name)
-
-    def _write(self, name, text):
-        self.write_text(name, text)
-
     @staticmethod
     def row(fund, ex, pay, amount, currency, source):
         """A dividends_history.csv row."""
@@ -590,12 +581,6 @@ class TestSourceCodeCanonicalisation(DataDirCase):
                 )
         self.assertEqual(len(results), 1)
 
-    def test_committed_funds_file_uses_only_current_codes(self):
-        """Test the repository's own configuration has been migrated."""
-        specs = read_fund_specs("funds.txt")
-        self.assertEqual({s.source for s in specs}, {"YA", "FT"})
-        self.assertEqual(len(specs), 32)
-
 
 class TestFxPairConfiguration(DataDirCase):
     """Test fx_pairs.txt parsing and validation."""
@@ -736,20 +721,6 @@ class TestClosedHoldingConfiguration(DataDirCase):
                 "JFM50541951": "IV",
             },
         )
-
-    def test_committed_windows_are_fully_present_in_history(self):
-        """Test the committed history actually covers every configured window.
-
-        The import is a one-off, so nothing re-runs to catch a window that
-        silently came back short: Yahoo treats the end date as exclusive and
-        BKCH first imported 284 rows for a 285-day window.
-        """
-        stored = read_history_rows(os.path.join("data", "prices_history.csv"))
-        for holding in read_closed_holdings(scrape_fund_price.CLOSED_HOLDINGS_FILE):
-            dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
-            self.assertTrue(dates, f"{holding.identifier} has no stored history")
-            self.assertEqual(dates[0], holding.start, holding.identifier)
-            self.assertEqual(dates[-1], holding.end, holding.identifier)
 
     def test_closed_holdings_are_absent_from_the_daily_configuration(self):
         """Test the daily run cannot pick up an instrument that stopped trading."""
@@ -907,11 +878,6 @@ class TestDistributionConfiguration(DataDirCase):
                 with self.assertRaisesRegex(ValueError, f"line 3.*{fragment}"):
                     self._read(f"# one\n\n{line}\n")
 
-    def test_the_shipped_file_parses_and_has_no_entries(self):
-        """Test the committed distributions.txt is a valid, empty file."""
-        path = os.path.join(os.path.dirname(__file__), "distributions.txt")
-        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
-
 
 class TestDividendSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
@@ -999,16 +965,6 @@ class TestDividendSourceConfiguration(DataDirCase):
         with self.assertRaisesRegex(ValueError, "line 2.*same instrument.*line 1"):
             self._read("IE00B0M63516,IS,1\nIDBZ,IS,1\n")
 
-    def test_the_committed_file_is_valid_for_the_committed_funds(self):
-        """Test a typo in the owner's file fails the suite, not the nightly run."""
-        sources = scrape_fund_price.read_dividend_sources(
-            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
-        )
-        self.assertTrue(sources)
-        self.assertTrue(
-            all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
-        )
-
 
 class TestPayDateSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
@@ -1069,22 +1025,6 @@ class TestPayDateSourceConfiguration(DataDirCase):
                 with self.assertRaisesRegex(ValueError, pattern):
                     self._read(text + "\n")
 
-    def test_the_committed_file_names_the_four_instruments(self):
-        """Test the shipped rows validate against the committed funds.txt."""
-        sources = scrape_fund_price.read_dividend_sources(
-            _REAL_DIVIDEND_SOURCES_FILE, read_fund_specs("funds.txt")
-        )
-        by_code = {s.source: s for s in sources if s.source != "IS"}
-        self.assertEqual(
-            {code: (s.identifier, s.source_id) for code, s in by_code.items()},
-            {
-                "IV": ("QQQ", "46090E103"),
-                "SS": ("GLTL.L", "IE00B6YX5L24"),
-                "Q4": ("KNSL", "ir.kinsalecapitalgroup.com/XNYS"),
-                "ET": ("0639.HK", "639"),
-            },
-        )
-
 
 class TestConfiguredIdentifiers(DataDirCase):
     """Test which identifiers a distributions.txt line may name (SPEC-010, #85)."""
@@ -1106,12 +1046,6 @@ class TestConfiguredIdentifiers(DataDirCase):
             [("FT", "GB00B1FXTF86")], self.path("no-such-file")
         )
         self.assertEqual(known, {"GB00B1FXTF86"})
-
-    def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
-        """Test a typo in the owner's file fails the suite, not the nightly run."""
-        specs = read_fund_specs("funds.txt")
-        known = scrape_fund_price.configured_identifiers(specs)
-        scrape_fund_price.read_distributions("distributions.txt", known)
 
 
 # ===========================================================================
@@ -1399,7 +1333,7 @@ class TestYahooUnfinishedSession(unittest.TestCase):
     @staticmethod
     def _now(text):
         """A London wall-clock time, as the run's `now`."""
-        london = scrape_fund_price.ZoneInfo("Europe/London")
+        london = ZoneInfo("Europe/London")
         return datetime.datetime.fromisoformat(text).replace(tzinfo=london)
 
     def _fetch(self, mock_ticker, meta, now, rows=None):
@@ -7462,11 +7396,11 @@ class TestDailyIssuerDates(IssuerRunCase):
         )
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
         )
         self.assertEqual(
-            self._read("dividends_upcoming.csv"),
+            self.read_rows("dividends_upcoming.csv"),
             [
                 [
                     "IGLS.L",
@@ -7489,7 +7423,7 @@ class TestDailyIssuerDates(IssuerRunCase):
             {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
             declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
         )
-        rows = self._read("dividends_upcoming.csv")
+        rows = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(
             [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
         )
@@ -7503,7 +7437,7 @@ class TestDailyIssuerDates(IssuerRunCase):
             {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
             declared={"IGLS.L": scrape_fund_price.DeclaredDividend("2026-11-19", "")},
         )
-        rows = self._read("dividends_upcoming.csv")
+        rows = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(
             [(row[1], row[5]) for row in rows], [("2026-11-19", "declared")]
         )
@@ -7517,20 +7451,23 @@ class TestDailyIssuerDates(IssuerRunCase):
             {"251804": issuer_table(self.PAST, self.NEXT)},
         )
         self.assertEqual(
-            [(row[0], row[1], row[5]) for row in self._read("dividends_history.csv")],
+            [
+                (row[0], row[1], row[5])
+                for row in self.read_rows("dividends_history.csv")
+            ],
             [
                 ("0P00000YAN", "2026-07-16", "IS"),
                 ("JFM0003373", "2026-07-16", "IS"),
             ],
         )
         self.assertEqual(
-            [(row[0], row[1]) for row in self._read("dividends_upcoming.csv")],
+            [(row[0], row[1]) for row in self.read_rows("dividends_upcoming.csv")],
             [("0P00000YAN", "2026-11-12"), ("JFM0003373", "2026-11-12")],
         )
 
     def test_an_instrument_with_no_yahoo_route_is_filled_from_the_issuer(self):
         """Test the FT-priced iShares fund, in its stored price currency."""
-        self._write(
+        self.write_text(
             "latest_prices.csv",
             "Fund,Date,Price,Currency\nIE00B0M63516,2026-10-23,40.5,USD\n",
         )
@@ -7547,7 +7484,7 @@ class TestDailyIssuerDates(IssuerRunCase):
             },
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
                 ["IDBZ", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
                 ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
@@ -7558,7 +7495,7 @@ class TestDailyIssuerDates(IssuerRunCase):
 
     def test_a_pence_line_takes_the_issuers_pounds_as_pence(self):
         """Test the declared amount of a GBp instrument."""
-        self._write(
+        self.write_text(
             "latest_prices.csv",
             "Fund,Date,Price,Currency\nFLOS.L,2026-10-23,5000,GBp\n",
         )
@@ -7574,10 +7511,10 @@ class TestDailyIssuerDates(IssuerRunCase):
             {"FLOS.L": [self.EVENT("2026-05-21", "9.91", "GBp")]},
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["FLOS.L", "2026-05-21", "2026-05-29", "9.91", "GBp", "IS"]],
         )
-        [row] = self._read("dividends_upcoming.csv")
+        [row] = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(row[3:6], ["10", "GBp", "declared"])
 
     def test_one_failing_page_costs_nothing_else(self):
@@ -7597,7 +7534,7 @@ class TestDailyIssuerDates(IssuerRunCase):
         self.assertEqual(results.failures, ["IGLS.L: pay dates: boom"])
         self.assertEqual(self.fetched.count("251804"), 3)
         self.assertEqual(
-            {(row[0], row[2]) for row in self._read("dividends_history.csv")},
+            {(row[0], row[2]) for row in self.read_rows("dividends_history.csv")},
             {("IGLS.L", ""), ("FLOS.L", "2026-05-29")},
         )
 
@@ -7622,7 +7559,7 @@ class TestDailyIssuerDates(IssuerRunCase):
         )
         self._issuer_run(specs, [self.IGLS], {"251804": OSError("down")}, events)
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
         )
 
@@ -7651,13 +7588,13 @@ class TestDailyIssuerDates(IssuerRunCase):
         )
         first = self._issuer_run(*args)
         files = {
-            name: self._text(name)
+            name: self.read_text(name)
             for name in ("dividends_history.csv", "dividends_upcoming.csv")
         }
         second = self._issuer_run(*args)
         self.assertEqual(
             files,
-            {name: self._text(name) for name in files},
+            {name: self.read_text(name) for name in files},
         )
         [news] = first.summary
         self.assertEqual(
@@ -7680,7 +7617,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
 
     def test_yahoo_and_issuer_rows_from_the_start_are_replaced(self):
         """Test the rebuild applies the issuer last and drops what it dropped."""
-        self._write(
+        self.write_text(
             "dividends_history.csv",
             "Fund,ExDate,PayDate,Amount,Currency,Source\n"
             "IGLS.L,2025-07-17,2025-07-30,2.4917,GBP,IS\n"
@@ -7708,7 +7645,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             start="2026-01-01",
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
                 ["IGLS.L", "2025-07-17", "2025-07-30", "2.4917", "GBP", "IS"],
                 ["IGLS.L", "2026-01-15", "2026-01-28", "2.5662", "GBP", "IS"],
@@ -7719,13 +7656,13 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
         [entry] = report.entries
         self.assertEqual((entry["deleted"], entry["status"]), (2, "rebuilt"))
         self.assertEqual(report.failures, [])
-        [upcoming] = self._read("dividends_upcoming.csv")
+        [upcoming] = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(upcoming[1:3], ["2026-11-12", "2026-11-25"])
         self.assertEqual(upcoming[5], "declared")
 
     def test_an_instrument_with_no_yahoo_route_is_rebuilt_from_the_issuer(self):
         """Test the FT-priced fund has its own line in the report."""
-        self._write(
+        self.write_text(
             "dividends_history.csv",
             "Fund,ExDate,PayDate,Amount,Currency,Source\n"
             "IE00B0M63516,2025-09-18,2025-09-30,0.2,USD,IS\n"
@@ -7746,7 +7683,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             start="2026-01-01",
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [
                 ["IE00B0M63516", "2025-09-18", "2025-09-30", "0.2", "USD", "IS"],
                 ["IE00B0M63516", "2026-03-19", "2026-03-27", "0.26", "USD", "IS"],
@@ -7775,7 +7712,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             "IE00B0M63516,2026-03-19,2026-03-27,0.26,USD,IS\n"
             "IGLS.L,2026-07-16,2026-07-29,2.4146,GBP,IS\n"
         )
-        self._write("dividends_history.csv", text)
+        self.write_text("dividends_history.csv", text)
         report = self._rebuild(
             [FundSpec("FT", "IE00B0M63516"), FundSpec("YA", "IGLS.L")],
             [
@@ -7785,7 +7722,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             {"251853": OSError("down"), "251804": OSError("down")},
             {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]},
         )
-        self.assertEqual(self._text("dividends_history.csv"), text)
+        self.assertEqual(self.read_text("dividends_history.csv"), text)
         self.assertEqual(
             report.failures,
             ["IE00B0M63516: pay dates: down", "IGLS.L: pay dates: down"],
@@ -7797,7 +7734,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
 
     def test_a_failing_yahoo_fetch_still_takes_the_issuers_rows(self):
         """Test the two sources are independent."""
-        self._write(
+        self.write_text(
             "dividends_history.csv",
             "Fund,ExDate,PayDate,Amount,Currency,Source\n"
             "IGLS.L,2026-07-16,,2.4146,GBP,YA\n",
@@ -7810,7 +7747,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
         )
         self.assertEqual(report.failures, ["IGLS.L: dividends: down"])
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"]],
         )
 
@@ -7846,7 +7783,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         )
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["QQQ", "2026-09-21", "2026-10-08", "0.75143", "USD", "IV"]],
         )
 
@@ -7859,7 +7796,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             {"ir.kinsalecapitalgroup.com/XNYS": self._table("Q4", future)},
             {"KNSL": [self.EVENT("2026-08-28", "0.25", "USD")]},
         )
-        [row] = self._read("dividends_upcoming.csv")
+        [row] = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(
             row[:6], ["KNSL", "2026-11-27", "2026-12-15", "0.25", "USD", "declared"]
         )
@@ -7875,7 +7812,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             {"GLTL.L": [self.EVENT("2026-08-03", "88.11", "GBp")]},
         )
         self.assertEqual(
-            self._read("dividends_history.csv"),
+            self.read_rows("dividends_history.csv"),
             [["GLTL.L", "2026-08-03", "2026-08-17", "88.11", "GBp", "SS"]],
         )
 
@@ -7896,7 +7833,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         )
         self.assertEqual(len(results.failures), 1)
         self.assertIn("KNSL: pay dates: Q4: changed", results.failures[0])
-        by_fund = {r[0]: r for r in self._read("dividends_history.csv")}
+        by_fund = {r[0]: r for r in self.read_rows("dividends_history.csv")}
         self.assertEqual(by_fund["QQQ"][2], "2026-10-08")
         self.assertEqual(by_fund["KNSL"][2:], ["", "0.25", "USD", "YA"])
 
@@ -8993,6 +8930,85 @@ class TestHistoricalData(DataDirCase):
             "AAPL", "2024-12-31", "2024-01-01", self.test_dir
         )
         self.assertEqual(result, "Error: Start date must be before end date")
+
+
+# ===========================================================================
+# Committed configuration
+# ===========================================================================
+
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+
+
+class TestCommittedConfiguration(unittest.TestCase):
+    """The repository's own configuration and data, read from the checkout.
+
+    These are the one place the suite reads committed files: a typo in a
+    configuration file fails the suite rather than the nightly run, and the
+    one-off closed-holding imports are checked against the stored history.
+    `len(specs)` changes whenever an instrument is added or retired.
+    """
+
+    def test_committed_funds_file_uses_only_current_codes(self):
+        """Test the repository's own configuration has been migrated."""
+        specs = read_fund_specs(os.path.join(REPO, "funds.txt"))
+        self.assertEqual({s.source for s in specs}, {"YA", "FT"})
+        self.assertEqual(len(specs), 32)
+
+    def test_committed_windows_are_fully_present_in_history(self):
+        """Test the committed history actually covers every configured window.
+
+        The import is a one-off, so nothing re-runs to catch a window that
+        silently came back short: Yahoo treats the end date as exclusive and
+        BKCH first imported 284 rows for a 285-day window.
+        """
+        stored = read_history_rows(os.path.join(REPO, "data", "prices_history.csv"))
+        for holding in read_closed_holdings(os.path.join(REPO, "closed_holdings.txt")):
+            dates = sorted(key[1] for key in stored if key[0] == holding.identifier)
+            self.assertTrue(dates, f"{holding.identifier} has no stored history")
+            self.assertEqual(dates[0], holding.start, holding.identifier)
+            self.assertEqual(dates[-1], holding.end, holding.identifier)
+
+    def test_the_shipped_file_parses_and_has_no_entries(self):
+        """Test the committed distributions.txt is a valid, empty file."""
+        path = os.path.join(REPO, "distributions.txt")
+        self.assertEqual(scrape_fund_price.read_distributions(path, set()), [])
+
+    def test_the_committed_distributions_file_is_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        specs = read_fund_specs(os.path.join(REPO, "funds.txt"))
+        known = scrape_fund_price.configured_identifiers(specs)
+        scrape_fund_price.read_distributions(
+            os.path.join(REPO, "distributions.txt"), known
+        )
+
+    def test_the_committed_dividend_sources_are_valid_for_the_committed_funds(self):
+        """Test a typo in the owner's file fails the suite, not the nightly run."""
+        sources = scrape_fund_price.read_dividend_sources(
+            os.path.join(REPO, "dividend_sources.txt"),
+            read_fund_specs(os.path.join(REPO, "funds.txt")),
+        )
+        self.assertTrue(sources)
+        self.assertTrue(
+            all(s.source in scrape_fund_price.DIVIDEND_SOURCE_CODES for s in sources)
+        )
+
+    def test_the_committed_dividend_sources_name_the_four_instruments(self):
+        """Test the shipped rows validate against the committed funds.txt."""
+        sources = scrape_fund_price.read_dividend_sources(
+            os.path.join(REPO, "dividend_sources.txt"),
+            read_fund_specs(os.path.join(REPO, "funds.txt")),
+        )
+        by_code = {s.source: s for s in sources if s.source != "IS"}
+        self.assertEqual(
+            {code: (s.identifier, s.source_id) for code, s in by_code.items()},
+            {
+                "IV": ("QQQ", "46090E103"),
+                "SS": ("GLTL.L", "IE00B6YX5L24"),
+                "Q4": ("KNSL", "ir.kinsalecapitalgroup.com/XNYS"),
+                "ET": ("0639.HK", "639"),
+            },
+        )
 
 
 # ===========================================================================
