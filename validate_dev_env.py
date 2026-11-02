@@ -32,10 +32,10 @@ class DevEnvValidator:
         """Check if Python version is compatible."""
         print("\n🐍 Checking Python version...")
         version = sys.version_info
-        if version >= (3, 7):
+        if version >= (3, 10):
             self.log_success(f"Python {version.major}.{version.minor}.{version.micro} is compatible")
         else:
-            self.log_error(f"Python {version.major}.{version.minor}.{version.micro} is not compatible (requires 3.7+)")
+            self.log_error(f"Python {version.major}.{version.minor}.{version.micro} is not compatible (requires 3.10+)")
     
     def check_virtual_environment(self):
         """Check if virtual environment is active."""
@@ -110,7 +110,7 @@ class DevEnvValidator:
         elif vscode_found > 0:
             self.log_warning(f"VS Code configuration is partial ({vscode_found}/{len(vscode_files)} files)")
         else:
-            self.log_error("VS Code configuration is missing")
+            self.log_warning("VS Code configuration is missing (.vscode/ is gitignored; see docs/technical_documentation/ide_setup.md)")
         
         # Check Cursor configuration
         if Path('.cursor/tdd-config.json').exists():

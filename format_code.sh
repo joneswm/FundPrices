@@ -6,9 +6,11 @@ set -e
 echo "🎨 Code Formatting"
 echo "=================="
 
-# Check if virtual environment is active
-if [[ "$VIRTUAL_ENV" == "" ]]; then
-    echo "⚠️  Virtual environment not active. Activating..."
+# Use the active interpreter. Activate venv/ only when none is active and it exists;
+# a clone without venv/ (CI, a dev container, a shared interpreter) runs as it is.
+if [[ -z "$VIRTUAL_ENV" && -f "venv/bin/activate" ]]; then
+    echo "ℹ️  Activating venv/..."
+    # shellcheck disable=SC1091
     source venv/bin/activate
 fi
 
