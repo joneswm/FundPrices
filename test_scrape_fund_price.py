@@ -2947,9 +2947,9 @@ class TestBackfillRebuild(BackfillCase):
         )
         self.assertEqual(len(report.failures), 1)
         self.assertIn("QQQ", report.failures[0])
-        entry = next(e for e in report.entries if e["identifier"] == "QQQ")
+        entry = next(e for e in report.entries if e.identifier == "QQQ")
         self.assertEqual(
-            (entry["status"], entry["before"], entry["deleted"]),
+            (entry.status, entry.before, entry.deleted),
             ("failed, kept existing", 1, 0),
         )
 
@@ -3143,6 +3143,37 @@ class TestBackfillRebuild(BackfillCase):
             ["USDGBP"], "2026-09-01", self.test_dir, report=report
         )
 
+    @patch("scrape_fund_price.backfill_fx")
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_pairs_from_the_caller_are_rebuilt_without_reading_the_file(
+        self, _, mock_fx
+    ):
+        """Test backfill_history(pairs=...) rebuilds the caller's pairs.
+
+        None keeps today's behaviour, reading fx_pairs.txt, until main()
+        passes read_fx_pairs() itself (#97, step 3.Z); a list is used as
+        given, so a test needs no stub to keep the live pairs out.
+        """
+        with patch(
+            "scrape_fund_price.read_fx_pairs",
+            side_effect=AssertionError("fx_pairs.txt was read"),
+        ):
+            report = backfill_history([], "2026-09-01", self.test_dir, pairs=["USDGBP"])
+        mock_fx.assert_called_once_with(
+            ["USDGBP"], "2026-09-01", self.test_dir, report=report
+        )
+
+    @patch("scrape_fund_price.backfill_fx")
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_an_empty_pairs_list_skips_the_fx_rebuild(self, _, mock_fx):
+        """Test an explicit empty list means no FX rebuild, not the file."""
+        with patch(
+            "scrape_fund_price.read_fx_pairs",
+            side_effect=AssertionError("fx_pairs.txt was read"),
+        ):
+            backfill_history([], "2026-09-01", self.test_dir, pairs=[])
+        mock_fx.assert_not_called()
+
 
 class TestBackfillReporting(BackfillCase):
     """Test the reconciliation report and sanity warnings."""
@@ -3164,13 +3195,13 @@ class TestBackfillReporting(BackfillCase):
             [FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir
         )
 
-        entry = next(e for e in report.entries if e["identifier"] == "QQQ")
-        self.assertEqual(entry["before"], 2)
-        self.assertEqual(entry["deleted"], 2)
-        self.assertEqual(entry["inserted"], 1)
-        self.assertEqual(entry["first"], "2026-09-18")
-        self.assertEqual(entry["currency"], "USD")
-        self.assertEqual(entry["status"], "rebuilt")
+        entry = next(e for e in report.entries if e.identifier == "QQQ")
+        self.assertEqual(entry.before, 2)
+        self.assertEqual(entry.deleted, 2)
+        self.assertEqual(entry.inserted, 1)
+        self.assertEqual(entry.first, "2026-09-18")
+        self.assertEqual(entry.currency, "USD")
+        self.assertEqual(entry.status, "rebuilt")
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_report_renders_a_markdown_table(self, mock_quotes):
@@ -3318,8 +3349,8 @@ class TestBackfillProtectsSourceDerivedRows(BackfillCase):
                 ["ISIN1", "2025-08-18", "8.48", "GBP"],
             ],
         )
-        entry = next(e for e in report.entries if e["identifier"] == "ISIN1")
-        self.assertEqual(entry["retained"], 1)
+        entry = next(e for e in report.entries if e.identifier == "ISIN1")
+        self.assertEqual(entry.retained, 1)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_legacy_rows_without_currency_are_still_removed(self, mock_quotes):
@@ -3400,17 +3431,17 @@ class TestBackfillMainMode(DataDirCase):
     def report_with_qqq():
         report = BackfillReport()
         report.entries.append(
-            {
-                "identifier": "QQQ",
-                "before": 1,
-                "deleted": 1,
-                "retained": 0,
-                "inserted": 2,
-                "first": "2023-01-03",
-                "last": "2026-09-18",
-                "currency": "USD",
-                "status": "rebuilt",
-            }
+            scrape_fund_price.BackfillEntry(
+                identifier="QQQ",
+                before=1,
+                deleted=1,
+                retained=0,
+                inserted=2,
+                first="2023-01-03",
+                last="2026-09-18",
+                currency="USD",
+                status="rebuilt",
+            )
         )
         return report
 
@@ -3606,16 +3637,50 @@ class TestClosedHoldingImport(DataDirCase):
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_a_failed_fetch_is_reported_and_isolated(self, mock_quotes):
         """Test one dead source does not cost the other holdings their import."""
-        mock_quotes.side_effect = [
-            ValueError("no rows"),
-            [Quote("2023-01-03", "849.00", "GBX")],
-        ]
+
+        def side_effect(source, lookup_id, start, end=None, browser=None):
+            if lookup_id == "BKCH.L":
+                raise ValueError("no rows")
+            return [Quote("2023-01-03", "849.00", "GBX")]
+
+        mock_quotes.side_effect = side_effect
         other = ClosedHolding(
             "BMV7ZZ3", "FT", "SEAL:LSE:GBX", "GBX", "2023-01-03", "2023-01-05"
         )
         report = import_closed_holdings([self.holding, other], self.test_dir)
         self.assertEqual([row[0] for row in self._history()], ["BMV7ZZ3"])
-        self.assertTrue(report.failures)
+        self.assertEqual(report.failures, ["BKCH: no rows"])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_a_transient_failure_is_retried(self, mock_quotes):
+        """Test the import fetches through fetch_with_retries like every run.
+
+        A one-off import is the fetch least able to afford a dropped
+        connection: nothing comes back for the holding until someone notices
+        and runs it again.
+        """
+        mock_quotes.side_effect = [
+            ConnectionError("reset"),
+            [Quote("2023-01-03", "2.4705", "USD")],
+        ]
+        report = import_closed_holdings([self.holding], self.test_dir)
+        self.assertEqual(self._history(), [["BKCH", "2023-01-03", "2.4705", "USD"]])
+        self.assertEqual(report.failures, [])
+        self.assertEqual(mock_quotes.call_count, 2)
+
+    @patch("scrape_fund_price.LazyBrowser")
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_fetch_is_given_a_browser_and_it_is_closed(self, mock_quotes, mock_lb):
+        """Test an FT fallback to scraping has a page to scrape with.
+
+        Without one, scrape_fund_quotes reaches browser.page() on None and
+        the holding fails with "'NoneType' object has no attribute 'page'"
+        instead of the FT error that caused the fallback.
+        """
+        mock_quotes.return_value = [Quote("2023-01-03", "2.4705", "USD")]
+        import_closed_holdings([self.holding], self.test_dir)
+        self.assertIs(mock_quotes.call_args.kwargs["browser"], mock_lb.return_value)
+        mock_lb.return_value.close.assert_called_once_with()
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_report_counts_what_was_imported(self, mock_quotes):
@@ -3626,9 +3691,9 @@ class TestClosedHoldingImport(DataDirCase):
         ]
         report = import_closed_holdings([self.holding], self.test_dir)
         entry = report.entries[0]
-        self.assertEqual(entry["identifier"], "BKCH")
-        self.assertEqual(entry["inserted"], 2)
-        self.assertEqual(entry["deleted"], 0)
+        self.assertEqual(entry.identifier, "BKCH")
+        self.assertEqual(entry.inserted, 2)
+        self.assertEqual(entry.deleted, 0)
         self.assertIn("BKCH", report.to_markdown())
 
     @patch("scrape_fund_price.scrape_fund_quotes")
@@ -3713,17 +3778,17 @@ class TestClosedImportMainMode(DataDirCase):
         """Test the reconciliation table reaches the Actions run page."""
         report = BackfillReport()
         report.entries.append(
-            {
-                "identifier": "BKCH",
-                "before": 0,
-                "deleted": 0,
-                "retained": 0,
-                "inserted": 285,
-                "first": "2023-01-03",
-                "last": "2024-02-16",
-                "currency": "USD",
-                "status": "imported",
-            }
+            scrape_fund_price.BackfillEntry(
+                identifier="BKCH",
+                before=0,
+                deleted=0,
+                retained=0,
+                inserted=285,
+                first="2023-01-03",
+                last="2024-02-16",
+                currency="USD",
+                status="imported",
+            )
         )
         mock_import.return_value = report
         summary_path = self.path("step_summary.md")
@@ -4048,8 +4113,8 @@ class TestFxBackfill(DataDirCase):
                 ["USDGBP", "2026-09-18", "0.746700"],
             ],
         )
-        entry = next(e for e in report.entries if e["identifier"] == "USDGBP")
-        self.assertEqual(entry["inserted"], 2)
+        entry = next(e for e in report.entries if e.identifier == "USDGBP")
+        self.assertEqual(entry.inserted, 2)
 
     @patch("scrape_fund_price.fetch_fx_quotes")
     def test_stale_rows_in_range_are_removed(self, mock_quotes):
@@ -4232,6 +4297,25 @@ class TestPriceSummary(unittest.TestCase):
         ]
         self.assertEqual(row.delta, "5")
         self.assertEqual(row.pct_delta, "")
+
+    def test_a_stored_value_that_is_not_a_number_gives_no_delta(self):
+        """Test a legacy "N/A" in the history blanks the delta, not the run.
+
+        The daily run hands the summary prices_history.csv as read, with no
+        filter on the Price cell, and the files once recorded "N/A" for a
+        fund with no price (is_usable_price still screens it elsewhere). The
+        newest value is still reported, and the summary is the last step of
+        the run, so a text cell must not end it.
+        """
+        rows = [
+            ["AAA", "2026-09-17", "N/A", "USD"],
+            ["AAA", "2026-09-18", "5.00", "USD"],
+        ]
+        row = build_price_summary(rows, [FundSpec("YA", "AAA", ())], [], "2026-09-18")[
+            0
+        ]
+        self.assertEqual((row.new, row.old), ("5.00", "N/A"))
+        self.assertEqual((row.delta, row.pct_delta), ("", ""))
 
     def test_instrument_with_no_history_is_reported_as_failed(self):
         """Test a configured instrument with nothing stored is visible."""
@@ -5914,16 +5998,16 @@ class TestDividendBackfill(DividendRunCase):
         [entry] = report.entries
         self.assertEqual(
             (
-                entry["identifier"],
-                entry["before"],
-                entry["deleted"],
-                entry["retained"],
-                entry["inserted"],
+                entry.identifier,
+                entry.before,
+                entry.deleted,
+                entry.retained,
+                entry.inserted,
             ),
             ("QQQ", 3, 2, 1, 2),
         )
         self.assertEqual(
-            (entry["first"], entry["last"], entry["status"]),
+            (entry.first, entry.last, entry.status),
             ("2026-03-25", "2026-06-23", "rebuilt"),
         )
 
@@ -5963,8 +6047,8 @@ class TestDividendBackfill(DividendRunCase):
             {row[0] for row in self.read_rows("dividends_history.csv")},
             {"BAD", "QQQ"},
         )
-        bad = [e for e in report.entries if e["identifier"] == "BAD"][0]
-        self.assertEqual((bad["deleted"], bad["status"]), (0, "failed, kept existing"))
+        bad = [e for e in report.entries if e.identifier == "BAD"][0]
+        self.assertEqual((bad.deleted, bad.status), (0, "failed, kept existing"))
 
     def test_every_alias_is_rebuilt_and_reported(self):
         """Test one fetch, each identifier replaced."""
@@ -5973,7 +6057,7 @@ class TestDividendBackfill(DividendRunCase):
             {"0P00000YAN": [self.EVENT("2026-06-23", "0.71", "GBP")]},
         )
         self.assertEqual(
-            [e["identifier"] for e in report.entries], ["0P00000YAN", "JFM0003373"]
+            [e.identifier for e in report.entries], ["0P00000YAN", "JFM0003373"]
         )
         self.assertEqual(len(self.read_rows("dividends_history.csv")), 2)
 
@@ -5981,9 +6065,7 @@ class TestDividendBackfill(DividendRunCase):
         """Test the report copes with no events (first and last are dashes)."""
         report = self._backfill([FundSpec("YA", "GRAB")], {"GRAB": []})
         [entry] = report.entries
-        self.assertEqual(
-            (entry["first"], entry["last"], entry["currency"]), ("-", "-", "-")
-        )
+        self.assertEqual((entry.first, entry.last, entry.currency), ("-", "-", "-"))
 
     def test_only_yahoo_instruments_are_rebuilt_and_the_upcoming_file_follows(self):
         """Test FT funds are untouched by the source and estimates are refreshed."""
@@ -5993,7 +6075,7 @@ class TestDividendBackfill(DividendRunCase):
             {"QQQ": [self.EVENT("2026-06-23", "0.71", "USD")]},
             distributions=dists,
         )
-        self.assertEqual([e["identifier"] for e in report.entries], ["QQQ"])
+        self.assertEqual([e.identifier for e in report.entries], ["QQQ"])
         funds = {row[0] for row in self.read_rows("dividends_history.csv")}
         self.assertEqual(funds, {"GB00B1FXTF86", "QQQ"})
         funds = {row[0] for row in self.read_rows("dividends_upcoming.csv")}
@@ -6285,17 +6367,17 @@ class TestDividendBackfillMainMode(DataDirCase):
     def _report(self, failures=()):
         report = BackfillReport()
         report.entries.append(
-            {
-                "identifier": "QQQ",
-                "before": 3,
-                "deleted": 2,
-                "retained": 1,
-                "inserted": 2,
-                "first": "2026-03-25",
-                "last": "2026-06-23",
-                "currency": "USD",
-                "status": "rebuilt",
-            }
+            scrape_fund_price.BackfillEntry(
+                identifier="QQQ",
+                before=3,
+                deleted=2,
+                retained=1,
+                inserted=2,
+                first="2026-03-25",
+                last="2026-06-23",
+                currency="USD",
+                status="rebuilt",
+            )
         )
         report.failures.extend(failures)
         return report
@@ -7862,7 +7944,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             ],
         )
         [entry] = report.entries
-        self.assertEqual((entry["deleted"], entry["status"]), (2, "rebuilt"))
+        self.assertEqual((entry.deleted, entry.status), (2, "rebuilt"))
         self.assertEqual(report.failures, [])
         [upcoming] = self.read_rows("dividends_upcoming.csv")
         self.assertEqual(upcoming[1:3], ["2026-11-12", "2026-11-25"])
@@ -7900,17 +7982,17 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
         [entry] = report.entries
         self.assertEqual(
             entry,
-            {
-                "identifier": "IE00B0M63516",
-                "before": 3,
-                "deleted": 2,
-                "retained": 1,
-                "inserted": 1,
-                "first": "2026-03-19",
-                "last": "2026-03-19",
-                "currency": "USD",
-                "status": "rebuilt",
-            },
+            scrape_fund_price.BackfillEntry(
+                identifier="IE00B0M63516",
+                before=3,
+                deleted=2,
+                retained=1,
+                inserted=1,
+                first="2026-03-19",
+                last="2026-03-19",
+                currency="USD",
+                status="rebuilt",
+            ),
         )
 
     def test_a_failing_page_keeps_its_rows_and_fails_the_report(self):
@@ -7936,7 +8018,7 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
             ["IE00B0M63516: pay dates: down", "IGLS.L: pay dates: down"],
         )
         self.assertEqual(
-            [entry["status"] for entry in report.entries],
+            [entry.status for entry in report.entries],
             ["failed, kept existing", "rebuilt"],
         )
 

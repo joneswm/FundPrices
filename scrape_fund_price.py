@@ -1517,6 +1517,59 @@ QUOTING_UNIT_FACTOR = 50
 FT_BACKFILL_PAUSE_SECONDS = 1
 
 
+class BackfillEntry(NamedTuple):
+    """One identifier's line of a BackfillReport.
+
+    `failed` describes an identifier left exactly as it was; `rebuilt` one
+    whose rows from the start date were replaced by what its source reported.
+    """
+
+    identifier: str
+    before: int
+    deleted: int
+    retained: int
+    inserted: int
+    first: str
+    last: str
+    currency: str
+    status: str
+
+    @classmethod
+    def failed(cls, identifier, existing, status="failed, kept existing"):
+        """The entry for an identifier whose stored keys `existing` all stay."""
+        dates = [key[1] for key in existing]
+        return cls(
+            identifier=identifier,
+            before=len(existing),
+            deleted=0,
+            retained=len(existing),
+            inserted=0,
+            first=min(dates, default="-"),
+            last=max(dates, default="-"),
+            currency="-",
+            status=status,
+        )
+
+    @classmethod
+    def rebuilt(cls, identifier, before, deleted, retained, inserted, status="rebuilt"):
+        """The entry for an identifier given the dated rows `inserted`.
+
+        `inserted` is the new rows' (date, currency) pairs in date order; the
+        currency reported is the first row's.
+        """
+        return cls(
+            identifier=identifier,
+            before=before,
+            deleted=deleted,
+            retained=retained,
+            inserted=len(inserted),
+            first=inserted[0][0] if inserted else "-",
+            last=inserted[-1][0] if inserted else "-",
+            currency=inserted[0][1] if inserted else "-",
+            status=status,
+        )
+
+
 class BackfillReport:
     """Reconciliation of what a rebuild changed, per identifier."""
 
@@ -1534,8 +1587,9 @@ class BackfillReport:
         ]
         for entry in self.entries:
             lines.append(
-                "| {identifier} | {before} | {deleted} | {retained} | {inserted} "
-                "| {first} | {last} | {currency} | {status} |".format(**entry)
+                "| {e.identifier} | {e.before} | {e.deleted} | {e.retained} "
+                "| {e.inserted} | {e.first} | {e.last} | {e.currency} "
+                "| {e.status} |".format(e=entry)
             )
 
         if self.warnings:
@@ -1597,12 +1651,14 @@ def compare_values(new_text, old_text, places=None):
 
     Uses Decimal so that 7.15 - 7.09 is exactly 0.06 rather than the binary
     float 0.0600000000000005. An old value of zero yields no percentage
-    instead of a division error.
+    instead of a division error, and a stored value that is not a number (the
+    files once recorded "N/A") yields neither, since the summary reads the
+    history as stored.
     """
     try:
         new_value = decimal.Decimal(new_text)
         old_value = decimal.Decimal(old_text)
-    except (decimal.InvalidOperation, TypeError):
+    except decimal.InvalidOperation:
         return "", ""
 
     delta = new_value - old_value
@@ -1656,15 +1712,21 @@ def summarise_series(name, aliases, rows, failures, run_date, places=None):
     )
 
 
+def group_by_name(rows):
+    """Group stored rows by their first cell, the fund or pair, in file order."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[0], []).append(row)
+    return groups
+
+
 def build_price_summary(history_rows, specs, failures, run_date):
     """Summarise each configured instrument's latest movement.
 
     An aliased instrument is reported once, under its lookup identifier, since
     its aliases carry an identical series by construction.
     """
-    by_fund = {}
-    for row in history_rows:
-        by_fund.setdefault(row[0], []).append(row)
+    by_fund = group_by_name(history_rows)
 
     rows = []
     for entry in specs:
@@ -1684,9 +1746,7 @@ def build_price_summary(history_rows, specs, failures, run_date):
 
 def build_fx_summary(fx_rows, pairs, failures, run_date):
     """Summarise each currency pair's latest movement."""
-    by_pair = {}
-    for row in fx_rows:
-        by_pair.setdefault(row[0], []).append(row)
+    by_pair = group_by_name(fx_rows)
 
     return [
         summarise_series(
@@ -2205,19 +2265,7 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
 
         if error:
             report.failures.append(f"{pair}: {error}")
-            report.entries.append(
-                {
-                    "identifier": pair,
-                    "before": len(existing),
-                    "deleted": 0,
-                    "retained": len(existing),
-                    "inserted": 0,
-                    "first": min((k[1] for k in existing), default="-"),
-                    "last": max((k[1] for k in existing), default="-"),
-                    "currency": "-",
-                    "status": "failed, kept existing",
-                }
-            )
+            report.entries.append(BackfillEntry.failed(pair, existing))
             continue
 
         doomed = [key for key in existing if key[1] >= start]
@@ -2228,17 +2276,13 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
             stored[(pair, quote.date)] = [pair, quote.date, quote.price]
 
         report.entries.append(
-            {
-                "identifier": pair,
-                "before": len(existing),
-                "deleted": len(doomed),
-                "retained": 0,
-                "inserted": len(quotes),
-                "first": quotes[0].date if quotes else "-",
-                "last": quotes[-1].date if quotes else "-",
-                "currency": "GBP",
-                "status": "rebuilt",
-            }
+            BackfillEntry.rebuilt(
+                pair,
+                before=len(existing),
+                deleted=len(doomed),
+                retained=0,
+                inserted=[(quote.date, "GBP") for quote in quotes],
+            )
         )
 
     write_fx_files(list(stored.values()), data_dir)
@@ -2260,18 +2304,19 @@ def is_removable_row(row):
     currency column and are exactly the scrape-dated, carry-forward data the
     rebuild exists to remove. A weekend row is never legitimate for these
     sources, so it is always removable.
+
+    Every writer of the history stamps ISO dates, so a date that does not
+    parse is a damaged file, and the ValueError stops the rebuild rather than
+    deleting the row under a "rebuilt" status.
     """
     row_date = row[1]
     currency = row[3] if len(row) > 3 else ""
-    try:
-        if datetime.date.fromisoformat(row_date).weekday() >= 5:
-            return True
-    except ValueError:
+    if datetime.date.fromisoformat(row_date).weekday() >= 5:
         return True
     return not currency
 
 
-def backfill_history(specs, start, data_dir=None):
+def backfill_history(specs, start, data_dir=None, pairs=None):
     """Rebuild stored history from source data, from `start` onwards.
 
     Deletes rather than upserting: carry-forward and scrape-dated rows sit on
@@ -2286,6 +2331,8 @@ def backfill_history(specs, start, data_dir=None):
         specs: FundSpec instances to rebuild
         start: Inclusive ISO start date
         data_dir: Directory for output files (default: DATA_DIR)
+        pairs: FX pairs to rebuild afterwards; None reads fx_pairs.txt, an
+            empty list skips the FX rebuild
 
     Returns:
         BackfillReport
@@ -2312,19 +2359,7 @@ def backfill_history(specs, start, data_dir=None):
                 report.failures.append(f"{spec.lookup_id}: {error}")
                 for identifier in spec.publish_ids:
                     kept = [key for key in stored if key[0] == identifier]
-                    report.entries.append(
-                        {
-                            "identifier": identifier,
-                            "before": len(kept),
-                            "deleted": 0,
-                            "retained": len(kept),
-                            "inserted": 0,
-                            "first": min((k[1] for k in kept), default="-"),
-                            "last": max((k[1] for k in kept), default="-"),
-                            "currency": "-",
-                            "status": "failed, kept existing",
-                        }
-                    )
+                    report.entries.append(BackfillEntry.failed(identifier, kept))
                 continue
 
             warning = check_quoting_unit(spec.lookup_id, quotes)
@@ -2357,17 +2392,13 @@ def backfill_history(specs, start, data_dir=None):
                     ]
 
                 report.entries.append(
-                    {
-                        "identifier": identifier,
-                        "before": len(existing),
-                        "deleted": len(doomed),
-                        "retained": len(retained),
-                        "inserted": len(quotes),
-                        "first": quotes[0].date if quotes else "-",
-                        "last": quotes[-1].date if quotes else "-",
-                        "currency": quotes[0].currency if quotes else "-",
-                        "status": "rebuilt",
-                    }
+                    BackfillEntry.rebuilt(
+                        identifier,
+                        before=len(existing),
+                        deleted=len(doomed),
+                        retained=len(retained),
+                        inserted=[(quote.date, quote.currency) for quote in quotes],
+                    )
                 )
 
             # The FT endpoint is unofficial; do not hammer it across 26 funds.
@@ -2394,7 +2425,8 @@ def backfill_history(specs, start, data_dir=None):
     for row in latest.values():
         write_latest_price_file(row[0], row[2], data_dir)
 
-    pairs = read_fx_pairs()
+    if pairs is None:
+        pairs = read_fx_pairs()
     if pairs:
         backfill_fx(pairs, start, data_dir, report=report)
 
@@ -2413,6 +2445,10 @@ def import_closed_holdings(holdings, data_dir=None):
     identifiers in funds.txt; this owns identifiers that appear in neither, so
     the two cannot tread on each other.
 
+    Each window is fetched through fetch_with_retries like every other fetch,
+    with a LazyBrowser for the FT fallback to scraping; a holding that still
+    fails is reported and the rest are imported.
+
     Args:
         holdings: ClosedHolding instances to import
         data_dir: Directory for output files (default: DATA_DIR)
@@ -2426,81 +2462,90 @@ def import_closed_holdings(holdings, data_dir=None):
     os.makedirs(data_dir, exist_ok=True)
     stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
     report = BackfillReport()
+    browser = LazyBrowser()
 
-    for holding in holdings:
-        existing = [key for key in stored if key[0] == holding.identifier]
-        entry = {
-            "identifier": holding.identifier,
-            "before": len(existing),
-            "deleted": 0,
-            "retained": len(existing),
-            "inserted": 0,
-            "first": "-",
-            "last": "-",
-            "currency": holding.currency,
-            "status": "imported",
-        }
+    try:
+        for holding in holdings:
+            existing = [key for key in stored if key[0] == holding.identifier]
 
-        # Sources disagree on the end date: Yahoo's daily bars treat it as
-        # exclusive, FT and investing.com as inclusive. Asking for one day
-        # more and letting the window filter clip it makes the convention
-        # irrelevant, rather than losing the last day from Yahoo alone.
-        fetch_end = (
-            datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
-        ).isoformat()
+            # Sources disagree on the end date: Yahoo's daily bars treat it as
+            # exclusive, FT and investing.com as inclusive. Asking for one day
+            # more and letting the window filter clip it makes the convention
+            # irrelevant, rather than losing the last day from Yahoo alone.
+            fetch_end = (
+                datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
+            ).isoformat()
 
-        try:
-            quotes = scrape_fund_quotes(
-                holding.source, holding.lookup_id, holding.start, fetch_end
+            quotes, error = fetch_with_retries(
+                lambda: scrape_fund_quotes(
+                    holding.source,
+                    holding.lookup_id,
+                    holding.start,
+                    fetch_end,
+                    browser=browser,
+                )
             )
-        except Exception as error:
-            report.failures.append(f"{holding.identifier}: {error}")
-            entry["status"] = "failed, kept existing"
-            report.entries.append(entry)
-            continue
+            if error:
+                report.failures.append(f"{holding.identifier}: {error}")
+                report.entries.append(
+                    BackfillEntry.failed(holding.identifier, existing)
+                )
+                continue
 
-        wanted = sorted(
-            (
-                quote
-                for quote in quotes
-                if holding.start <= quote.date <= holding.end
-                and is_usable_price(quote.price)
-            ),
-            key=lambda quote: quote.date,
-        )
-
-        reported = {
-            quote.currency
-            for quote in wanted
-            if quote.currency and quote.currency != holding.currency
-        }
-        if reported:
-            report.failures.append(
-                f"{holding.identifier}: expected {holding.currency} but "
-                f"{holding.lookup_id} reported {', '.join(sorted(reported))}; "
-                f"the source may have resolved to a different listing"
+            wanted = sorted(
+                (
+                    quote
+                    for quote in quotes
+                    if holding.start <= quote.date <= holding.end
+                    and is_usable_price(quote.price)
+                ),
+                key=lambda quote: quote.date,
             )
-            entry["status"] = "skipped, currency mismatch"
-            report.entries.append(entry)
-            continue
 
-        warning = check_quoting_unit(holding.identifier, wanted)
-        if warning:
-            report.warnings.append(warning)
+            reported = {
+                quote.currency
+                for quote in wanted
+                if quote.currency and quote.currency != holding.currency
+            }
+            if reported:
+                report.failures.append(
+                    f"{holding.identifier}: expected {holding.currency} but "
+                    f"{holding.lookup_id} reported {', '.join(sorted(reported))}; "
+                    f"the source may have resolved to a different listing"
+                )
+                report.entries.append(
+                    BackfillEntry.failed(
+                        holding.identifier,
+                        existing,
+                        status="skipped, currency mismatch",
+                    )
+                )
+                continue
 
-        for quote in wanted:
-            stored[(holding.identifier, quote.date)] = [
-                holding.identifier,
-                quote.date,
-                quote.price,
-                holding.currency,
-            ]
+            warning = check_quoting_unit(holding.identifier, wanted)
+            if warning:
+                report.warnings.append(warning)
 
-        entry["inserted"] = len(wanted)
-        if wanted:
-            entry["first"] = wanted[0].date
-            entry["last"] = wanted[-1].date
-        report.entries.append(entry)
+            for quote in wanted:
+                stored[(holding.identifier, quote.date)] = [
+                    holding.identifier,
+                    quote.date,
+                    quote.price,
+                    holding.currency,
+                ]
+
+            report.entries.append(
+                BackfillEntry.rebuilt(
+                    holding.identifier,
+                    before=len(existing),
+                    deleted=0,
+                    retained=len(existing),
+                    inserted=[(quote.date, holding.currency) for quote in wanted],
+                    status="imported",
+                )
+            )
+    finally:
+        browser.close()
 
     write_history_csv(list(stored.values()), data_dir)
     return report
@@ -3998,7 +4043,7 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
     Returns:
         (report entries, DeclaredDividend by lookup identifier)
     """
-    items = []
+    counts = []
     for identifier in spec.publish_ids:
         existing = [key for key in history if key[0] == identifier]
         doomed = (
@@ -4012,38 +4057,32 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
         )
         for key in doomed:
             del history[key]
-        items.append(
-            {
-                "identifier": identifier,
-                "before": len(existing),
-                "deleted": len(doomed),
-                "retained": len(existing) - len(doomed),
-                "inserted": 0,
-                "first": min((key[1] for key in existing), default="-"),
-                "last": max((key[1] for key in existing), default="-"),
-                "currency": "-",
-                "status": "failed, kept existing",
-            }
-        )
+        counts.append((identifier, existing, doomed))
 
     tables = {} if table is None else {spec.lookup_id: table}
     declared = merge_issuer_tables(history, [spec], tables, currencies, today, start)
-    if table is not None:
-        for item in items:
-            rows = sorted(
-                row
-                for key, row in history.items()
-                if key[0] == item["identifier"]
-                and row[5] in DIVIDEND_SOURCE_CODES
-                and key[1] >= (start or "")
+    if table is None:
+        items = [BackfillEntry.failed(ident, existing) for ident, existing, _ in counts]
+        return items, declared
+
+    items = []
+    for identifier, existing, doomed in counts:
+        rows = sorted(
+            row
+            for key, row in history.items()
+            if key[0] == identifier
+            and row[5] in DIVIDEND_SOURCE_CODES
+            and key[1] >= (start or "")
+        )
+        items.append(
+            BackfillEntry.rebuilt(
+                identifier,
+                before=len(existing),
+                deleted=len(doomed),
+                retained=len(existing) - len(doomed),
+                inserted=[(row[1], row[4]) for row in rows],
             )
-            item.update(
-                inserted=len(rows),
-                first=rows[0][1] if rows else "-",
-                last=rows[-1][1] if rows else "-",
-                currency=rows[-1][4] if rows else "-",
-                status="rebuilt",
-            )
+        )
     return items, declared
 
 
@@ -4108,42 +4147,33 @@ def backfill_dividends(
 
         for identifier in spec.publish_ids:
             existing = [key for key in history if key[0] == identifier]
-            item = {
-                "identifier": identifier,
-                "before": len(existing),
-                "deleted": 0,
-                "retained": len(existing),
-                "inserted": 0,
-                "first": min((key[1] for key in existing), default="-"),
-                "last": max((key[1] for key in existing), default="-"),
-                "currency": "-",
-                "status": "failed, kept existing",
-            }
-            if not error:
-                doomed = [
-                    key
-                    for key in existing
-                    if history[key][5] in owned and key[1] >= (start or "")
-                ]
-                for key in doomed:
-                    del history[key]
-                merge_dividend_rows(
-                    history,
-                    (
-                        [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
-                        for e in events
-                    ),
-                )
-                item.update(
+            if error:
+                report.entries.append(BackfillEntry.failed(identifier, existing))
+                continue
+
+            doomed = [
+                key
+                for key in existing
+                if history[key][5] in owned and key[1] >= (start or "")
+            ]
+            for key in doomed:
+                del history[key]
+            merge_dividend_rows(
+                history,
+                (
+                    [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
+                    for e in events
+                ),
+            )
+            report.entries.append(
+                BackfillEntry.rebuilt(
+                    identifier,
+                    before=len(existing),
                     deleted=len(doomed),
                     retained=len(existing) - len(doomed),
-                    inserted=len(events),
-                    first=events[0].ex_date if events else "-",
-                    last=events[-1].ex_date if events else "-",
-                    currency=events[0].currency if events else "-",
-                    status="rebuilt",
+                    inserted=[(e.ex_date, e.currency) for e in events],
                 )
-            report.entries.append(item)
+            )
 
         declared.update(
             merge_issuer_tables(

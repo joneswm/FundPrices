@@ -411,6 +411,10 @@ window and the `.price` files describe a current value that a closed holding
 does not have. Upserts and never deletes, so it cannot tread on the identifiers
 owned by the daily run or a rebuild.
 
+Each window is fetched through `fetch_with_retries()` with a `LazyBrowser`, so a
+transient failure is retried like any other fetch and an FT fallback to scraping has
+a page; a holding that still fails is recorded and the rest are imported.
+
 A holding whose source reports a currency other than the configured one is
 skipped with a failure recorded, rather than importing a window of prices for
 the wrong listing. Sources are asked one day past `end`, because Yahoo treats
@@ -644,7 +648,7 @@ Manual only: locally, or through the **Rebuild Price History** workflow.
 Returns an error message for an invalid invocation, else `None`. Rejects `--backfill`
 combined with `--history`, a missing or malformed `--from`, and a date in the future.
 
-### `backfill_history(specs, start, data_dir=None)`
+### `backfill_history(specs, start, data_dir=None, pairs=None)`
 
 Rebuilds every identifier in `specs` from `start` and returns a `BackfillReport`.
 
@@ -656,7 +660,8 @@ Rebuilds every identifier in `specs` from `start` and returns a `BackfillReport`
 - `latest_prices.csv`, the rolling window and the `.price` files are rebuilt for the
   configured identifiers only.
 - FT requests are separated by `FT_BACKFILL_PAUSE_SECONDS`.
-- Finishes by calling `backfill_fx()` when `fx_pairs.txt` has pairs.
+- Finishes by calling `backfill_fx()` for `pairs`; `None` (the default, and what
+  `main()` passes) reads `fx_pairs.txt`, and an empty list skips the FX rebuild.
 
 ### `is_removable_row(row)`
 
@@ -671,11 +676,19 @@ Returns a warning when consecutive prices differ by more than `QUOTING_UNIT_FACT
 (50), the signature of a pence/pounds switch. Used by both the rebuild and the
 closed-holding import.
 
-### `BackfillReport`
+### `BackfillReport` and `BackfillEntry`
 
 `entries`, `failures` and `warnings`, with `to_markdown()` rendering the reconciliation
 table printed to stdout and appended to the Actions job summary. Shared by the rebuild
 and the closed-holding import.
+
+Each entry is a `BackfillEntry` (`identifier`, `before`, `deleted`, `retained`,
+`inserted`, `first`, `last`, `currency`, `status`), built by one of two constructors:
+`BackfillEntry.failed(identifier, existing)` for an identifier whose stored keys all
+stay, and `BackfillEntry.rebuilt(identifier, before, deleted, retained, inserted)` for
+one replaced from its source, `inserted` being the new rows' `(date, currency)` pairs in
+date order. Both take a `status` keyword for the import's `imported` and
+`skipped, currency mismatch` lines.
 
 ## Storage Helpers
 
