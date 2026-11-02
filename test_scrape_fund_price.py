@@ -1480,6 +1480,14 @@ class TestFTQuoteFetching(unittest.TestCase):
         )
 
     @patch("scrape_fund_price.requests.get")
+    def test_an_open_end_is_the_date_of_now(self, mock_get):
+        """Test a window with no end runs to the injected now's date (#120)."""
+        mock_get.side_effect = self._responses()
+        fetch_ft_quotes(self.ISIN, "2026-10-19", now=utc(2026, 10, 31, 12))
+        ajax_url = mock_get.call_args_list[1].args[0]
+        self.assertIn("endDate=2026/10/31", ajax_url)
+
+    @patch("scrape_fund_price.requests.get")
     def test_missing_internal_id_raises(self, mock_get):
         """Test a page without the internal id is an error, not empty data."""
         mock_get.side_effect = self._responses(page="<html>no config here</html>")
@@ -1573,6 +1581,16 @@ class TestFTUnfinishedDay(unittest.TestCase):
         quotes = self._fetch(mock_get, ["2026-10-16"], "2026-10-16T13:57:00+00:00")
         self.assertEqual(quotes, [])
 
+    @patch("scrape_fund_price.requests.get")
+    def test_the_dispatch_judges_rows_against_its_now(self, mock_get):
+        """Test scrape_fund_quotes hands its `now` to the FT fetch (#120)."""
+        rows = self._row(date(2026, 10, 16), "33.45")
+        mock_get.side_effect = TestFTQuoteFetching._responses(rows=rows)
+        quotes = scrape_fund_quotes(
+            "FT", "IE00B0M63516", "2026-10-01", now=utc(2026, 10, 16, 13)
+        )
+        self.assertEqual(quotes, [])
+
     @patch("scrape_fund_price.fetch_ft_quotes", return_value=[])
     def test_held_back_rows_do_not_fall_back_to_scraping(self, mock_fetch):
         """Test an empty dated result is returned rather than scraped."""
@@ -1655,6 +1673,15 @@ class TestInvestingQuotes(unittest.TestCase):
         self.assertIn("2024-03-13", url)
 
     @patch("scrape_fund_price.requests.get")
+    def test_an_open_end_is_the_date_of_now(self, mock_get):
+        """Test a window with no end runs to the injected now's date (#120)."""
+        mock_get.return_value = self._response(
+            [{"rowDateTimestamp": "2024-01-04T00:00:00Z", "last_closeRaw": "218.95"}]
+        )
+        fetch_investing_quotes("1182866", "2024-01-04", now=utc(2024, 3, 13, 12))
+        self.assertIn("end-date=2024-03-13", mock_get.call_args[0][0])
+
+    @patch("scrape_fund_price.requests.get")
     def test_unusable_rows_are_skipped(self, mock_get):
         """Test a malformed row does not abort an otherwise good window."""
         mock_get.return_value = self._response(
@@ -1689,9 +1716,14 @@ class TestInvestingQuotes(unittest.TestCase):
     def test_dispatch_routes_iv_to_the_handler(self, mock_fetch):
         """Test the shared dispatch knows the source code."""
         mock_fetch.return_value = [Quote("2024-01-04", "218.95", "")]
-        quotes = scrape_fund_quotes("IV", "1182866", "2024-01-04", "2024-03-13")
+        now = utc(2024, 3, 14, 12)
+        quotes = scrape_fund_quotes(
+            "IV", "1182866", "2024-01-04", "2024-03-13", now=now
+        )
         self.assertEqual(quotes[0].price, "218.95")
-        mock_fetch.assert_called_once_with("1182866", "2024-01-04", "2024-03-13")
+        mock_fetch.assert_called_once_with(
+            "1182866", "2024-01-04", "2024-03-13", now=now
+        )
 
 
 class TestInvestingEmptyPayloads(DataDirCase):
@@ -1902,22 +1934,25 @@ class TestFundPriceScraper(DataDirCase):
         No writer produces such a row (every date stored is one a source
         reported), but the per-row filter tolerates one in history, and a
         carried row is a stored row. The reference date must tolerate it as
-        well, falling back to today, or a failed fetch for that fund would
-        crash the write and lose every price the run obtained.
+        well, falling back to the run's date, or a failed fetch for that fund
+        would crash the write and lose every price the run obtained. The run's
+        date is now's (#120): 2026-07-25 is inside the window ending on
+        2026-10-19 and 2026-10-20 is after it.
         """
-        recent = (date.today() - timedelta(days=5)).isoformat()
-        results = ScrapeResults(rows=[["QQQ", recent, "266.28", "USD"]])
+        rows = [
+            ["QQQ", "2026-07-25", "250.00", "USD"],
+            ["QQQ", "2026-10-14", "266.28", "USD"],
+            ["GRAB", "2026-10-20", "2.79", "USD"],
+        ]
+        results = ScrapeResults(rows=rows)
         results.carried.append(["BAD", "not-a-date", "1.00", ""])
 
-        write_results(results, self.test_dir)
+        write_results(results, self.test_dir, now=utc(2026, 10, 19, 21))
 
-        self.assertEqual(
-            self.read_rows("prices_history_90_days.csv"),
-            [["QQQ", recent, "266.28", "USD"]],
-        )
+        self.assertEqual(self.read_rows("prices_history_90_days.csv"), rows[:2])
         self.assertEqual(
             self.read_rows("latest_prices.csv"),
-            [["BAD", "not-a-date", "1.00", ""], ["QQQ", recent, "266.28", "USD"]],
+            [["BAD", "not-a-date", "1.00", ""], rows[2], rows[1]],
         )
 
     def test_write_results_append_history(self):
@@ -2243,6 +2278,50 @@ class TestAliasPublishing(DataDirCase):
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
         results = scrape_funds([("YA", "QQQ")], self.test_dir)
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
+
+
+# 13:56 London on Monday 2026-10-19, with SWDA.L's session open until 16:30:
+# the moment of the #84 rebuild that stored an intraday price.
+SWDA_OPEN_NOW = utc(2026, 10, 19, 12) + timedelta(minutes=56)
+
+
+def fake_swda_open_session(mock_ticker):
+    """Serve SWDA.L's Friday close and Monday's bar while Monday is trading."""
+    return fake_ticker(
+        mock_ticker,
+        [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)],
+        currency="GBp",
+        tz="Europe/London",
+        meta=history_metadata(10970.0, "2026-10-19 13:46", "2026-10-19 16:30"),
+    )
+
+
+class TestScrapeLoopClock(DataDirCase):
+    """Test the scrape takes the time from `now`, not the clock (#120)."""
+
+    NOW = SWDA_OPEN_NOW
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_window_runs_back_from_now(self, mock_ticker):
+        """Test the snap window is the ten days before now's date."""
+        inst = fake_swda_open_session(mock_ticker)
+        scrape_funds([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
+        self.assertEqual(inst.history.call_args.kwargs["start"], "2026-10-09")
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_a_session_open_at_now_is_not_stored(self, mock_ticker):
+        """Test the session is judged against now through the whole loop."""
+        fake_swda_open_session(mock_ticker)
+        results = scrape_funds([("YA", "SWDA.L")], self.test_dir, now=self.NOW)
+        self.assertEqual([row[1] for row in results], ["2026-10-16"])
+
+    @patch("scrape_fund_price.sync_playwright")
+    @patch("scrape_fund_price.scrape_price_with_common_settings", return_value="7.15")
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
+    def test_the_scraping_fallback_is_dated_by_now(self, _ft, _scrape, _pw):
+        """Test the undated summary page's price takes now's date."""
+        results = scrape_funds([("FT", "GB00B1FXTF86")], self.test_dir, now=self.NOW)
+        self.assertEqual(list(results), [["GB00B1FXTF86", "2026-10-19", "7.15", ""]])
 
 
 # ===========================================================================
@@ -3005,6 +3084,18 @@ class TestBackfillRebuild(BackfillCase):
             [["QQQ", "2026-09-19", "721.45", "USD"]],
         )
 
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_rebuild_reads_the_time_from_now(self, mock_ticker):
+        """Test a session still open at now is not stored by a rebuild (#120)."""
+        fake_swda_open_session(mock_ticker)
+        backfill_history(
+            [FundSpec("YA", "SWDA.L")], "2026-10-01", self.test_dir, now=SWDA_OPEN_NOW
+        )
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["SWDA.L", "2026-10-16", "11000", "GBp"]],
+        )
+
     @patch("scrape_fund_price.backfill_fx")
     @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
     def test_the_fx_rebuild_follows_for_the_configured_pairs(self, _, mock_fx):
@@ -3591,6 +3682,21 @@ class TestClosedHoldingImport(DataDirCase):
         report = import_closed_holdings([holding], self.test_dir)
         self.assertTrue(any("quoting unit" in w for w in report.warnings))
 
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_import_reads_the_time_from_now(self, mock_ticker):
+        """Test a window ending on a day still trading at now stops before it.
+
+        The import is meant for holdings long closed, but it fetches through
+        the same path as the daily run, so it judges sessions by `now` too
+        (#120).
+        """
+        fake_swda_open_session(mock_ticker)
+        holding = ClosedHolding(
+            "SWDA", "YA", "SWDA.L", "GBp", "2026-10-14", "2026-10-19"
+        )
+        import_closed_holdings([holding], self.test_dir, now=SWDA_OPEN_NOW)
+        self.assertEqual(self._history(), [["SWDA", "2026-10-16", "11000", "GBp"]])
+
 
 class TestClosedHoldingWindowEnds(DataDirCase):
     """Test the last day of a window survives, whatever the source's convention.
@@ -3840,6 +3946,15 @@ class TestFxQuoteFetching(unittest.TestCase):
         mock_hourly.return_value = []
         self.assertEqual(self.fetch("GBPGBP", "2021-12-01")[0].price, "1.000000")
 
+    @patch("scrape_fund_price.fetch_yahoo_hourly", return_value=[])
+    @patch("scrape_fund_price.fetch_yahoo_quotes", return_value=[])
+    def test_the_hourly_history_is_measured_from_now(self, mock_daily, mock_hourly):
+        """Test today is now's date: no separate clock argument (#120)."""
+        now = utc(2026, 10, 12, 12)
+        fetch_fx_quotes("USDGBP", "2021-12-01", now=now)
+        hourly_from = (date(2026, 10, 12) - timedelta(days=729)).isoformat()
+        self.assertEqual(mock_hourly.call_args.args[1], hourly_from)
+
     @patch("scrape_fund_price.fetch_yahoo_hourly")
     def test_defaults_to_today_and_now(self, mock_hourly):
         """Test the daily run needs no clock arguments."""
@@ -3969,6 +4084,46 @@ class TestFxFailureIsolation(DataDirCase):
         results = snap_fx_rates(["USDGBP"], self.test_dir)
         self.assertEqual(list(results), [["USDGBP", "2026-09-18", "0.746700"]])
         self.assertEqual(results.failures, [])
+
+
+def fake_hourly_fx(mock_ticker):
+    """Serve USDGBP=X's Friday 2026-10-16 and Monday 2026-10-19 17:00 closes.
+
+    Friday's cut is 21:00 UTC that day and Monday's 21:00 UTC on 2026-10-19,
+    so a run at noon on the Monday has Friday's rate only.
+    """
+    import pandas as pd
+
+    index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-10-16 20:00", tz="UTC"),
+            pd.Timestamp("2026-10-19 20:00", tz="UTC"),
+        ]
+    )
+    return fake_ticker(mock_ticker, [(None, 0.75023), (None, 0.754)], index=index)
+
+
+class TestFxClock(DataDirCase):
+    """Test the FX snap and rebuild take the time from `now` (#120)."""
+
+    NOW = utc(2026, 10, 19, 12)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_snap_reads_the_time_from_now(self, mock_ticker):
+        """Test the window runs back from now and an unfinished day is left out."""
+        inst = fake_hourly_fx(mock_ticker)
+        results = snap_fx_rates(["USDGBP"], self.test_dir, now=self.NOW)
+        self.assertEqual(inst.history.call_args.kwargs["start"], "2026-10-09")
+        self.assertEqual(list(results), [["USDGBP", "2026-10-16", "0.750230"]])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_rebuild_reads_the_time_from_now(self, mock_ticker):
+        """Test the rebuild judges each day's cut against now as well."""
+        fake_hourly_fx(mock_ticker)
+        backfill_fx(["USDGBP"], "2026-10-01", self.test_dir, now=self.NOW)
+        self.assertEqual(
+            self.read_rows("fx_history.csv"), [["USDGBP", "2026-10-16", "0.750230"]]
+        )
 
 
 class TestFxBackfill(DataDirCase):
@@ -9099,6 +9254,56 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
 
 
+class TestMainReadsTheClockOnce(DataDirCase):
+    """Test main(argv, now) hands one `now` to every step it runs (#120)."""
+
+    NOW = utc(2026, 10, 19, 21)
+    SPECS = [FundSpec("YA", "QQQ")]
+
+    def test_the_daily_run_passes_now_and_dates_the_summary_by_it(self):
+        """Test the scrape, the FX snap and the run date all use the one now."""
+        with daily_run_stubs(self.test_dir, specs=self.SPECS, pairs=["USDGBP"]) as s:
+            main([], now=self.NOW)
+        s["scrape_funds"].assert_called_once_with(self.SPECS, now=self.NOW)
+        s["write_results"].assert_called_once_with(
+            s["scrape_funds"].return_value, now=self.NOW
+        )
+        s["snap_fx_rates"].assert_called_once_with(["USDGBP"], now=self.NOW)
+        self.assertEqual(s["write_summary"].call_args.args[2], "2026-10-19")
+
+    def test_the_rebuild_and_the_import_pass_now(self):
+        """Test --backfill and --import-closed hand now to their step."""
+        holdings = [ClosedHolding("X", "YA", "X.L", "USD", "2023-01-03", "2023-01-05")]
+        outcomes = {
+            "backfill_history": BackfillReport(),
+            "import_closed_holdings": BackfillReport(),
+            "read_closed_holdings": holdings,
+        }
+        with daily_run_stubs(specs=self.SPECS, pairs=["USDGBP"], **outcomes) as s:
+            main(["--backfill", "--from", "2026-10-01"], now=self.NOW)
+            main(["--import-closed"], now=self.NOW)
+        s["backfill_history"].assert_called_once_with(
+            self.SPECS, "2026-10-01", pairs=["USDGBP"], now=self.NOW
+        )
+        s["import_closed_holdings"].assert_called_once_with(holdings, now=self.NOW)
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.fetch_historical_data")
+    def test_the_history_export_passes_now(self, mock_fetch, _print):
+        """Test --history hands now to the export."""
+        mock_fetch.return_value = scrape_fund_price.HistoryReport("AAPL", "path")
+        main(["--history", "AAPL", "--start", "2026-10-01"], now=self.NOW)
+        mock_fetch.assert_called_once_with("AAPL", "2026-10-01", None, now=self.NOW)
+
+    @patch("builtins.print")
+    def test_a_start_after_nows_date_is_in_the_future(self, mock_print):
+        """Test --from is judged against now, before any network call."""
+        with self.assertRaises(SystemExit) as error:
+            main(["--backfill", "--from", "2026-10-20"], now=self.NOW)
+        self.assertEqual(error.exception.code, 2)
+        mock_print.assert_called_once_with("Error: --from date is in the future")
+
+
 class TestHistoryArguments(unittest.TestCase):
     """Test --history is validated before any network call, like the rebuilds."""
 
@@ -9194,6 +9399,17 @@ class TestHistoricalData(DataDirCase):
         self.assertIsNone(args.history)
         self.assertIsNone(args.start)
         self.assertIsNone(args.end)
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_an_open_window_is_named_by_now(self, mock_ticker):
+        """Test the file of an export with no end takes now's date (#120)."""
+        fake_ticker(mock_ticker, bars=[("2026-10-01", 1.5)])
+        report = fetch_historical_data(
+            "AAPL", "2026-10-01", None, self.test_dir, now=utc(2026, 10, 19, 21)
+        )
+        self.assertEqual(
+            report.path, self.path("history_AAPL_2026-10-01_2026-10-19.csv")
+        )
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_rows_are_dated_and_formatted_as_the_source_reports_them(self, mock_ticker):
