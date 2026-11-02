@@ -4247,7 +4247,7 @@ class TestFunctionalClosedHoldingSources(unittest.TestCase):
         self.assertTrue(all(date.fromisoformat(q.date).weekday() < 5 for q in quotes))
 
 
-class TestLatestNeverGoesBackwards(unittest.TestCase):
+class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
 
     On 2026-10-10 Yahoo served no Friday close for the London ETFs, so the run
@@ -4269,19 +4269,11 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
         ["SGLN.L", "2026-10-08", "6039", "GBp"],
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, name):
-        with open(os.path.join(self.test_dir, name), newline="") as f:
-            return list(csv.reader(f))[1:]
+        return self.read_rows(name)
 
     def _price_file(self, fund):
-        with open(os.path.join(self.test_dir, f"latest_{fund}.price")) as f:
-            return f.read().strip()
+        return self.read_text(f"latest_{fund}.price").strip()
 
     def _stale_run(self):
         """Friday is stored, then a run whose newest bar is Thursday."""
@@ -4338,7 +4330,7 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
     def test_stored_latest_row_newer_than_history_is_kept(self):
         """Test latest_prices.csv itself is a floor, not only the history."""
         write_results(list(self.FRIDAY), self.test_dir)
-        os.remove(os.path.join(self.test_dir, "prices_history.csv"))
+        os.remove(self.path("prices_history.csv"))
         write_results([self.THURSDAY[0]], self.test_dir)
         latest = {r[0]: r for r in self._read("latest_prices.csv")}
         self.assertEqual(latest["CNX1.L"], self.FRIDAY[0])
@@ -4392,7 +4384,11 @@ class TestLatestNeverGoesBackwards(unittest.TestCase):
         self.assertEqual(self._price_file("IWDG.L"), "1270.5")
 
     def test_latest_fx_keeps_the_newer_rate(self):
-        """Test latest_fx.csv is derived from history and cannot regress."""
+        """Test latest_fx.csv is derived from history and cannot regress.
+
+        TestFxStorage covers the newest date winning within one write; this
+        is the stale second run, an older date written after a newer one.
+        """
         write_fx_results([["USDGBP", "2026-10-09", "0.75568"]], self.test_dir)
         write_fx_results([["USDGBP", "2026-10-08", "0.75672"]], self.test_dir)
         self.assertEqual(
@@ -4410,40 +4406,24 @@ class TestYahooEmptyLatestBar(unittest.TestCase):
 
     ROWS = [("2026-10-08", 134720.0), ("2026-10-09", float("nan"))]
 
-    def _ticker(self, mock_ticker, rows, meta):
-        import pandas as pd
-
-        idx = pd.DatetimeIndex([pd.Timestamp(d, tz="Europe/London") for d, _ in rows])
-        frame = pd.DataFrame({"Close": [c for _, c in rows]}, index=idx)
-        inst = MagicMock()
-        inst.history.return_value = frame
-        inst.fast_info = {"currency": "GBp"}
-        if isinstance(meta, Exception):
-            inst.get_history_metadata.side_effect = meta
-        else:
-            inst.get_history_metadata.return_value = meta
-        mock_ticker.return_value = inst
-        return inst
-
     @staticmethod
     def _meta(price=133800.0, traded="2026-10-09 16:35", end="2026-10-09 16:30"):
-        import pandas as pd
+        return history_metadata(price, traded, end)
 
-        def stamp(text):
-            return pd.Timestamp(text, tz="Europe/London")
-
-        return {
-            "regularMarketPrice": price,
-            "regularMarketTime": stamp(traded),
-            "exchangeTimezoneName": "Europe/London",
-            "currentTradingPeriod": {"regular": {"end": stamp(end)}},
-        }
+    def _fetch(self, mock_ticker, meta, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
+        return fetch_yahoo_quotes("CNX1.L", "2026-09-30")
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_closing_price_from_metadata_fills_the_empty_bar(self, mock_ticker):
         """Test the finished session's price stands in for the null close."""
-        self._ticker(mock_ticker, self.ROWS, self._meta())
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta())
         self.assertEqual(
             quotes,
             [
@@ -4456,41 +4436,41 @@ class TestYahooEmptyLatestBar(unittest.TestCase):
     def test_a_session_still_open_is_not_filled(self, mock_ticker):
         """Test an intraday price is never stored as a close."""
         meta = self._meta(traded="2026-10-09 15:00", end="2026-10-09 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, meta)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_metadata_from_another_day_is_not_used(self, mock_ticker):
         """Test the price must belong to the empty bar's own date."""
         meta = self._meta(traded="2026-10-08 16:35", end="2026-10-08 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, meta)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_trading_period_that_moved_on_counts_as_closed(self, mock_ticker):
         """Test a later session end shows the bar's day is over."""
-        meta = self._meta(end="2026-10-12 16:30")
-        self._ticker(mock_ticker, self.ROWS, meta)
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta(end="2026-10-12 16:30"))
         self.assertEqual(quotes[-1], Quote("2026-10-09", "133800", "GBp"))
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_only_the_newest_bar_is_filled(self, mock_ticker):
         """Test an empty bar in the middle of the window stays dropped."""
         rows = [("2026-10-07", float("nan")), ("2026-10-08", 134720.0)]
-        self._ticker(mock_ticker, rows, self._meta())
-        quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
+        quotes = self._fetch(mock_ticker, self._meta(), rows)
         self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unusable_metadata_falls_back_to_dropping_the_bar(self, mock_ticker):
         """Test bad metadata never raises or invents a price."""
-        for meta in (RuntimeError("boom"), {}, self._meta(price=float("nan"))):
-            self._ticker(mock_ticker, self.ROWS, meta)
-            quotes = fetch_yahoo_quotes("CNX1.L", "2026-09-30")
-            self.assertEqual([q.date for q in quotes], ["2026-10-08"])
+        shapes = {
+            "raises": RuntimeError("boom"),
+            "empty": {},
+            "no price": self._meta(price=float("nan")),
+        }
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta)
+                self.assertEqual([q.date for q in quotes], ["2026-10-08"])
 
 
 class TestYahooUnfinishedSession(unittest.TestCase):
@@ -4501,17 +4481,25 @@ class TestYahooUnfinishedSession(unittest.TestCase):
     """
 
     ROWS = [("2026-10-16", 11000.0), ("2026-10-19", 10970.0)]
-    _ticker = TestYahooEmptyLatestBar._ticker
-    _meta = staticmethod(TestYahooEmptyLatestBar._meta)
+
+    @staticmethod
+    def _meta(traded, end):
+        return history_metadata(10970.0, traded, end)
 
     @staticmethod
     def _now(text):
-        import pandas as pd
+        """A London wall-clock time, as the run's `now`."""
+        london = scrape_fund_price.ZoneInfo("Europe/London")
+        return datetime.datetime.fromisoformat(text).replace(tzinfo=london)
 
-        return pd.Timestamp(text, tz="Europe/London").to_pydatetime()
-
-    def _fetch(self, mock_ticker, meta, now):
-        self._ticker(mock_ticker, self.ROWS, meta)
+    def _fetch(self, mock_ticker, meta, now, rows=None):
+        fake_ticker(
+            mock_ticker,
+            bars=self.ROWS if rows is None else rows,
+            currency="GBp",
+            tz="Europe/London",
+            meta=meta,
+        )
         return fetch_yahoo_quotes("SWDA.L", "2026-10-01", now=self._now(now))
 
     @patch("scrape_fund_price.yf.Ticker")
@@ -4531,17 +4519,19 @@ class TestYahooUnfinishedSession(unittest.TestCase):
     @patch("scrape_fund_price.yf.Ticker")
     def test_keeps_previous_session_while_today_is_open(self, mock_ticker):
         """Test only a bar dated on the open session's day is held back."""
-        self.ROWS = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
+        rows = [("2026-10-15", 10900.0), ("2026-10-16", 11000.0)]
         meta = self._meta(traded="2026-10-19 13:46", end="2026-10-19 16:30")
-        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+        quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56", rows)
         self.assertEqual([q.date for q in quotes], ["2026-10-15", "2026-10-16"])
 
     @patch("scrape_fund_price.yf.Ticker")
     def test_unusable_metadata_keeps_the_newest_bar(self, mock_ticker):
         """Test a price is not lost because the session cannot be judged."""
-        for meta in (RuntimeError("boom"), {}):
-            quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
-            self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
+        shapes = {"raises": RuntimeError("boom"), "empty": {}}
+        for shape, meta in shapes.items():
+            with self.subTest(metadata=shape):
+                quotes = self._fetch(mock_ticker, meta, "2026-10-19 13:56")
+                self.assertEqual([q.date for q in quotes], ["2026-10-16", "2026-10-19"])
 
 
 class TestFTUnfinishedDay(unittest.TestCase):
@@ -4562,9 +4552,20 @@ class TestFTUnfinishedDay(unittest.TestCase):
             "<td><span>0</span></td></tr>"
         )
 
+    @staticmethod
+    def _responses(rows):
+        """The FT page, then the ajax rows, as requests.get returns them."""
+        page_resp = MagicMock()
+        page_resp.text = FT_PAGE
+        page_resp.raise_for_status.return_value = None
+        ajax_resp = MagicMock()
+        ajax_resp.json.return_value = {"html": rows}
+        ajax_resp.raise_for_status.return_value = None
+        return [page_resp, ajax_resp]
+
     def _fetch(self, mock_get, days, now):
         rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
-        mock_get.side_effect = TestFTQuoteFetching._responses(None, rows=rows)
+        mock_get.side_effect = self._responses(rows)
         now = datetime.datetime.fromisoformat(now)
         return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
 
