@@ -2457,6 +2457,10 @@ def import_closed_holdings(holdings, data_dir=None):
     identifiers in funds.txt; this owns identifiers that appear in neither, so
     the two cannot tread on each other.
 
+    Each window is fetched through fetch_with_retries like every other fetch,
+    with a LazyBrowser for the FT fallback to scraping; a holding that still
+    fails is reported and the rest are imported.
+
     Args:
         holdings: ClosedHolding instances to import
         data_dir: Directory for output files (default: DATA_DIR)
@@ -2470,77 +2474,90 @@ def import_closed_holdings(holdings, data_dir=None):
     os.makedirs(data_dir, exist_ok=True)
     stored = read_history_rows(os.path.join(data_dir, "prices_history.csv"))
     report = BackfillReport()
+    browser = LazyBrowser()
 
-    for holding in holdings:
-        existing = [key for key in stored if key[0] == holding.identifier]
+    try:
+        for holding in holdings:
+            existing = [key for key in stored if key[0] == holding.identifier]
 
-        # Sources disagree on the end date: Yahoo's daily bars treat it as
-        # exclusive, FT and investing.com as inclusive. Asking for one day
-        # more and letting the window filter clip it makes the convention
-        # irrelevant, rather than losing the last day from Yahoo alone.
-        fetch_end = (
-            datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
-        ).isoformat()
+            # Sources disagree on the end date: Yahoo's daily bars treat it as
+            # exclusive, FT and investing.com as inclusive. Asking for one day
+            # more and letting the window filter clip it makes the convention
+            # irrelevant, rather than losing the last day from Yahoo alone.
+            fetch_end = (
+                datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
+            ).isoformat()
 
-        try:
-            quotes = scrape_fund_quotes(
-                holding.source, holding.lookup_id, holding.start, fetch_end
-            )
-        except Exception as error:
-            report.failures.append(f"{holding.identifier}: {error}")
-            report.entries.append(BackfillEntry.failed(holding.identifier, existing))
-            continue
-
-        wanted = sorted(
-            (
-                quote
-                for quote in quotes
-                if holding.start <= quote.date <= holding.end
-                and is_usable_price(quote.price)
-            ),
-            key=lambda quote: quote.date,
-        )
-
-        reported = {
-            quote.currency
-            for quote in wanted
-            if quote.currency and quote.currency != holding.currency
-        }
-        if reported:
-            report.failures.append(
-                f"{holding.identifier}: expected {holding.currency} but "
-                f"{holding.lookup_id} reported {', '.join(sorted(reported))}; "
-                f"the source may have resolved to a different listing"
-            )
-            report.entries.append(
-                BackfillEntry.failed(
-                    holding.identifier, existing, status="skipped, currency mismatch"
+            quotes, error = fetch_with_retries(
+                lambda: scrape_fund_quotes(
+                    holding.source,
+                    holding.lookup_id,
+                    holding.start,
+                    fetch_end,
+                    browser=browser,
                 )
             )
-            continue
+            if error:
+                report.failures.append(f"{holding.identifier}: {error}")
+                report.entries.append(
+                    BackfillEntry.failed(holding.identifier, existing)
+                )
+                continue
 
-        warning = check_quoting_unit(holding.identifier, wanted)
-        if warning:
-            report.warnings.append(warning)
-
-        for quote in wanted:
-            stored[(holding.identifier, quote.date)] = [
-                holding.identifier,
-                quote.date,
-                quote.price,
-                holding.currency,
-            ]
-
-        report.entries.append(
-            BackfillEntry.rebuilt(
-                holding.identifier,
-                before=len(existing),
-                deleted=0,
-                retained=len(existing),
-                inserted=[(quote.date, holding.currency) for quote in wanted],
-                status="imported",
+            wanted = sorted(
+                (
+                    quote
+                    for quote in quotes
+                    if holding.start <= quote.date <= holding.end
+                    and is_usable_price(quote.price)
+                ),
+                key=lambda quote: quote.date,
             )
-        )
+
+            reported = {
+                quote.currency
+                for quote in wanted
+                if quote.currency and quote.currency != holding.currency
+            }
+            if reported:
+                report.failures.append(
+                    f"{holding.identifier}: expected {holding.currency} but "
+                    f"{holding.lookup_id} reported {', '.join(sorted(reported))}; "
+                    f"the source may have resolved to a different listing"
+                )
+                report.entries.append(
+                    BackfillEntry.failed(
+                        holding.identifier,
+                        existing,
+                        status="skipped, currency mismatch",
+                    )
+                )
+                continue
+
+            warning = check_quoting_unit(holding.identifier, wanted)
+            if warning:
+                report.warnings.append(warning)
+
+            for quote in wanted:
+                stored[(holding.identifier, quote.date)] = [
+                    holding.identifier,
+                    quote.date,
+                    quote.price,
+                    holding.currency,
+                ]
+
+            report.entries.append(
+                BackfillEntry.rebuilt(
+                    holding.identifier,
+                    before=len(existing),
+                    deleted=0,
+                    retained=len(existing),
+                    inserted=[(quote.date, holding.currency) for quote in wanted],
+                    status="imported",
+                )
+            )
+    finally:
+        browser.close()
 
     write_history_csv(list(stored.values()), data_dir)
     return report
