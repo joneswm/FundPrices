@@ -1110,11 +1110,8 @@ def read_last_known_row(fund_id, data_dir):
     last price against the date that price actually belongs to.
     """
     candidates = read_stored_rows(fund_id, data_dir)
-
     if not candidates:
-        price = read_latest_price_file(fund_id, data_dir)
-        return [datetime.date.today().isoformat(), price, ""] if price else None
-
+        return None
     return max(candidates, key=lambda row: row[0])
 
 
