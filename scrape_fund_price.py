@@ -1134,12 +1134,17 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)
     current price, so the quote carries now's date and no currency. `now`
     (default: the current time) is handed to the fetchers, which judge by it
     whether a session or a day is over.
+
+    `start` and `end` are inclusive ISO dates for every source; no end means
+    up to the newest price. Yahoo's daily bars treat their end as exclusive,
+    so the day after `end` is what Yahoo is asked for: a caller never
+    compensates for the source.
     """
     now = now or datetime.datetime.now(datetime.timezone.utc)
     code = source.upper()
 
     if code == "YA":
-        return fetch_yahoo_quotes(fund_id, start, end, now=now)
+        return fetch_yahoo_quotes(fund_id, start, day_after(end), now=now)
 
     if code == "IV":
         return fetch_investing_quotes(fund_id, start, end, now=now)
@@ -1156,6 +1161,15 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)
 
     price = scrape_price_with_common_settings(browser.page(), url, selector)
     return [Quote(now.date().isoformat(), normalize_price(price), "")]
+
+
+def day_after(iso_date):
+    """Return the ISO date after `iso_date`; None stays None."""
+    if iso_date is None:
+        return None
+    return (
+        datetime.date.fromisoformat(iso_date) + datetime.timedelta(days=1)
+    ).isoformat()
 
 
 def write_latest_price_file(fund_id, price, data_dir):
@@ -2010,20 +2024,13 @@ def import_closed_holdings(holdings, data_dir=None, now=None):
         for holding in holdings:
             existing = [key for key in stored if key[0] == holding.identifier]
 
-            # Sources disagree on the end date: Yahoo's daily bars treat it as
-            # exclusive, FT and investing.com as inclusive. Asking for one day
-            # more and letting the window filter clip it makes the convention
-            # irrelevant, rather than losing the last day from Yahoo alone.
-            fetch_end = (
-                datetime.date.fromisoformat(holding.end) + datetime.timedelta(days=1)
-            ).isoformat()
-
+            # The window is inclusive at both ends, as the dispatch's is.
             quotes, error = fetch_with_retries(
                 lambda: scrape_fund_quotes(
                     holding.source,
                     holding.lookup_id,
                     holding.start,
-                    fetch_end,
+                    holding.end,
                     browser=browser,
                     now=now,
                 )
@@ -4749,10 +4756,10 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=
     """Export one symbol's dated closes from Yahoo as a CSV of its own.
 
     The --history mode, on the daily run's own path: the bars come from
-    fetch_yahoo_quotes through fetch_with_retries, so each row is dated as
-    Yahoo dates it, carries the currency and is formatted without float
-    noise, exactly as prices_history.csv would store it. Nothing else is
-    touched: not prices_history.csv, not latest_prices.csv, no .price file.
+    Yahoo through scrape_fund_quotes and fetch_with_retries, so each row is
+    dated as Yahoo dates it, carries the currency and is formatted without
+    float noise, exactly as prices_history.csv would store it. Nothing else
+    is touched: not prices_history.csv, not latest_prices.csv, no .price file.
 
     Args:
         symbol: Yahoo ticker (e.g. "AAPL", "IDTG.L")
@@ -4778,16 +4785,10 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=
     path = os.path.join(data_dir, f"history_{symbol}_{start_date}_{end_text}.csv")
     report = HistoryReport(symbol, path)
 
-    # Yahoo treats the end date as exclusive; asking for the day after makes
-    # the window inclusive at both ends, as closed_holdings.txt windows are.
-    fetch_end = None
-    if end_date:
-        fetch_end = (
-            datetime.date.fromisoformat(end_date) + datetime.timedelta(days=1)
-        ).isoformat()
-
+    # Inclusive at both ends, as closed_holdings.txt windows are; the
+    # dispatch asks Yahoo for the day after.
     quotes, error = fetch_with_retries(
-        lambda: fetch_yahoo_quotes(symbol, start_date, fetch_end, now=now)
+        lambda: scrape_fund_quotes("YA", symbol, start_date, end_date, now=now)
     )
     if error is None and not quotes:
         error = f"no prices between {start_date} and {end_text}"

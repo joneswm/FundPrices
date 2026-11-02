@@ -9432,7 +9432,7 @@ class TestHistoricalData(DataDirCase):
         The bars are float32, so 124.87 arrives as 124.87000274658203 and
         must be stored as 124.87, as the daily run stores it. The window is
         inclusive at both ends: Yahoo treats the end as exclusive, so the
-        fetch asks for the day after, as the closed-holding import does.
+        dispatch asks it for the day after, for every caller.
         """
         fake_ticker(
             mock_ticker,
