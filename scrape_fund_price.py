@@ -4805,9 +4805,9 @@ def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
         return f"Error: {str(e)}"
 
 
-def main():
-    """Main function to run the fund price scraper."""
-    args = parse_arguments()
+def main(argv=None):
+    """Run the scraper in the mode `argv` selects (sys.argv when None)."""
+    args = parse_arguments(argv)
 
     if args.backfill:
         error = validate_backfill_args(args)

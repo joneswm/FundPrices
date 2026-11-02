@@ -696,7 +696,6 @@ class TestFundPriceScraper(unittest.TestCase):
     )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
@@ -705,31 +704,18 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_write,
         mock_scrape,
         mock_read,
-        mock_parse,
         mock_pairs,
         mock_summary,
         mock_update,
     ):
         """Test main function orchestration."""
-        # Mock the arguments to return normal mode (no history)
-        mock_args = MagicMock()
-        mock_args.history = None
-        mock_args.backfill = False
-        mock_args.import_closed = False
-        mock_args.backfill_dividends = False
-        mock_parse.return_value = mock_args
-
-        # Mock the functions
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
         mock_scrape.return_value = ScrapeResults(
             [["TEST123", "2025-01-20", "100.00", "GBP"]]
         )
 
-        # Call main
-        main()
+        main([])
 
-        # Verify all functions were called
-        mock_parse.assert_called_once()
         mock_read.assert_called_once()
         mock_scrape.assert_called_once()
         mock_write.assert_called_once()
@@ -740,7 +726,6 @@ class TestFundPriceScraper(unittest.TestCase):
     )
     @patch("scrape_fund_price.write_summary")
     @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.write_results")
@@ -749,18 +734,11 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_write,
         mock_scrape,
         mock_read,
-        mock_parse,
         mock_pairs,
         mock_summary,
         mock_update,
     ):
         """Test main exits non-zero when fallback prices were used after failures."""
-        mock_args = MagicMock()
-        mock_args.history = None
-        mock_args.backfill = False
-        mock_args.import_closed = False
-        mock_args.backfill_dividends = False
-        mock_parse.return_value = mock_args
         mock_read.return_value = [FundSpec("FT", "TEST123", ())]
 
         class FailedResults(list):
@@ -769,7 +747,7 @@ class TestFundPriceScraper(unittest.TestCase):
         mock_scrape.return_value = FailedResults([["TEST123", "2025-01-20", "111.11"]])
 
         with self.assertRaises(SystemExit) as error:
-            main()
+            main([])
 
         self.assertEqual(error.exception.code, 1)
         mock_write.assert_called_once_with(mock_scrape.return_value)
@@ -1044,10 +1022,11 @@ class TestMainEntryPoint(unittest.TestCase):
     """Test the main() command-line entry point."""
 
     @patch("builtins.print")
-    def test_main_takes_the_argument_list(self, mock_print):
-        """Test main(argv) parses argv, as parse_arguments(args) does.
+    def test_main_history_without_start_date_errors(self, mock_print):
+        """Test --history without --start reports an error and stops.
 
-        A test can then drive a mode with the real flags instead of patching
+        main(argv) parses the list it is given, as parse_arguments(args)
+        does, so a test drives a mode with the real flags instead of patching
         parse_arguments with a namespace whose unset attributes are truthy.
         """
         main(["--history", "AAPL"])
@@ -1056,37 +1035,11 @@ class TestMainEntryPoint(unittest.TestCase):
         )
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_main_history_without_start_date_errors(self, mock_args, mock_print):
-        """Test --history without --start reports an error and stops."""
-        mock_args.return_value = MagicMock(
-            history="AAPL",
-            start=None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
-        main()
-        mock_print.assert_called_once_with(
-            "Error: --start date is required when using --history"
-        )
-
-    @patch("builtins.print")
     @patch("scrape_fund_price.fetch_historical_data")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_main_history_success_prints_path(self, mock_args, mock_fetch, mock_print):
+    def test_main_history_success_prints_path(self, mock_fetch, mock_print):
         """Test successful historical retrieval reports the saved file."""
-        mock_args.return_value = MagicMock(
-            history="AAPL",
-            start="2024-01-01",
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
         mock_fetch.return_value = "data/history_AAPL_2024-01-01_2024-12-31.csv"
-        main()
+        main(["--history", "AAPL", "--start", "2024-01-01"])
         mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
         mock_print.assert_called_once_with(
             "Historical data saved to: data/history_AAPL_2024-01-01_2024-12-31.csv"
@@ -1094,19 +1047,10 @@ class TestMainEntryPoint(unittest.TestCase):
 
     @patch("builtins.print")
     @patch("scrape_fund_price.fetch_historical_data")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_main_history_error_is_reported(self, mock_args, mock_fetch, mock_print):
+    def test_main_history_error_is_reported(self, mock_fetch, mock_print):
         """Test a failed historical retrieval surfaces the error message."""
-        mock_args.return_value = MagicMock(
-            history="BADSYM",
-            start="2024-01-01",
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
         mock_fetch.return_value = "Error: No data found for symbol BADSYM"
-        main()
+        main(["--history", "BADSYM", "--start", "2024-01-01"])
         mock_print.assert_called_once_with("Error: No data found for symbol BADSYM")
 
     def test_the_summary_reads_the_history_in_the_data_directory(self):
@@ -1129,19 +1073,6 @@ class TestMainEntryPoint(unittest.TestCase):
             enter(patch("scrape_fund_price.DATA_DIR", test_dir))
             enter(
                 patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start=None,
-                        end=None,
-                        backfill=False,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
-            enter(
-                patch(
                     "scrape_fund_price.read_fund_specs",
                     return_value=[FundSpec("YA", "TESTFUND")],
                 )
@@ -1156,7 +1087,7 @@ class TestMainEntryPoint(unittest.TestCase):
                 )
             )
             summary = enter(patch("scrape_fund_price.write_summary"))
-            main()
+            main([])
         [row] = summary.call_args.args[0]
         self.assertEqual(
             (row.name, row.new_date, row.new, row.old),
@@ -1661,10 +1592,8 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_results_are_written_before_failure_is_signalled(
         self,
-        mock_args,
         mock_read,
         mock_scrape,
         mock_write,
@@ -1673,14 +1602,6 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         mock_update,
     ):
         """Test output is written even when some funds failed."""
-        mock_args.return_value = MagicMock(
-            history=None,
-            start=None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
         mock_read.return_value = [("GF", "QQQ"), ("GF", "GRAB")]
         results = ScrapeResults(
             [["QQQ", "2026-09-18", "721.45", "USD"]],
@@ -1689,7 +1610,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         mock_scrape.return_value = results
 
         with self.assertRaises(SystemExit):
-            main()
+            main([])
 
         # The write must happen, otherwise a single failing fund would
         # discard a whole day of good prices.
@@ -1704,10 +1625,8 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     @patch("scrape_fund_price.write_results")
     @patch("scrape_fund_price.scrape_funds")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_clean_run_does_not_exit_non_zero(
         self,
-        mock_args,
         mock_read,
         mock_scrape,
         mock_write,
@@ -1716,20 +1635,12 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         mock_update,
     ):
         """Test a run with no failures completes normally."""
-        mock_args.return_value = MagicMock(
-            history=None,
-            start=None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
         mock_read.return_value = [("GF", "QQQ")]
         mock_scrape.return_value = ScrapeResults(
             [["QQQ", "2026-09-18", "721.45", "USD"]]
         )
 
-        main()
+        main([])
 
         mock_write.assert_called_once()
 
@@ -1742,19 +1653,6 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         stubs = {}
         with ExitStack() as stack:
             enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start=None,
-                        end=None,
-                        backfill=False,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
             enter(
                 patch(
                     "scrape_fund_price.read_fund_specs",
@@ -1781,7 +1679,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
                 stubs[name] = enter(patch(f"scrape_fund_price.{name}", **outcome))
             printed = enter(patch("builtins.print"))
             with self.assertRaises(SystemExit) as error:
-                main()
+                main([])
         stubs["exit_code"] = error.exception.code
         stubs["printed"] = [str(call.args[0]) for call in printed.call_args_list]
         return stubs
@@ -1846,19 +1744,6 @@ class TestFxInTheDailyRun(unittest.TestCase):
             enter(patch("scrape_fund_price.DATA_DIR", self.test_dir))
             enter(
                 patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start=None,
-                        end=None,
-                        backfill=False,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
-            enter(
-                patch(
                     "scrape_fund_price.read_fund_specs",
                     return_value=[FundSpec("YA", "QQQ")],
                 )
@@ -1878,7 +1763,7 @@ class TestFxInTheDailyRun(unittest.TestCase):
                 )
             )
             self.printed = enter(patch("builtins.print"))
-            main()
+            main([])
 
     def test_the_configured_pairs_are_snapped_and_written(self):
         """Test the snap gets the pairs and the write gets its rows."""
@@ -2400,27 +2285,20 @@ class TestBackfillMainMode(unittest.TestCase):
         shutil.rmtree(self.test_dir)
 
     @patch("builtins.print")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_invalid_invocation_exits_two_without_fetching(self, mock_args, mock_print):
+    def test_invalid_invocation_exits_two_without_fetching(self, mock_print):
         """Test a bad invocation is rejected before any network call."""
-        mock_args.return_value = MagicMock(backfill=True, start=None, history=None)
-
         with self.assertRaises(SystemExit) as error:
-            main()
+            main(["--backfill"])
 
         self.assertEqual(error.exception.code, 2)
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_successful_backfill_prints_the_report(
-        self, mock_args, mock_specs, mock_backfill, mock_print
+        self, mock_specs, mock_backfill, mock_print
     ):
         """Test the reconciliation report reaches stdout."""
-        mock_args.return_value = MagicMock(
-            backfill=True, start="2023-01-01", history=None
-        )
         mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
         report = BackfillReport()
         report.entries.append(
@@ -2438,28 +2316,24 @@ class TestBackfillMainMode(unittest.TestCase):
         )
         mock_backfill.return_value = report
 
-        main()
+        main(["--backfill", "--from", "2023-01-01"])
 
         self.assertTrue(any("QQQ" in str(c) for c in mock_print.call_args_list))
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_failures_exit_non_zero_after_writing(
-        self, mock_args, mock_specs, mock_backfill, mock_print
+        self, mock_specs, mock_backfill, mock_print
     ):
         """Test the job fails loudly, but only after the report is produced."""
-        mock_args.return_value = MagicMock(
-            backfill=True, start="2023-01-01", history=None
-        )
         mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
         report = BackfillReport()
         report.failures.append("QQQ: Error: Timeout")
         mock_backfill.return_value = report
 
         with self.assertRaises(SystemExit) as error:
-            main()
+            main(["--backfill", "--from", "2023-01-01"])
 
         self.assertEqual(error.exception.code, 1)
         self.assertTrue(mock_print.called)
@@ -2467,14 +2341,10 @@ class TestBackfillMainMode(unittest.TestCase):
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_report_is_added_to_the_actions_job_summary(
-        self, mock_args, mock_specs, mock_backfill, mock_print
+        self, mock_specs, mock_backfill, mock_print
     ):
         """Test the report appears on the workflow run page when in Actions."""
-        mock_args.return_value = MagicMock(
-            backfill=True, start="2023-01-01", history=None
-        )
         mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
         report = BackfillReport()
         report.entries.append(
@@ -2494,7 +2364,7 @@ class TestBackfillMainMode(unittest.TestCase):
 
         summary_path = os.path.join(self.test_dir, "summary.md")
         with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
-            main()
+            main(["--backfill", "--from", "2023-01-01"])
 
         with open(summary_path, encoding="utf-8") as f:
             written = f.read()
@@ -2504,20 +2374,16 @@ class TestBackfillMainMode(unittest.TestCase):
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
     @patch("scrape_fund_price.read_fund_specs")
-    @patch("scrape_fund_price.parse_arguments")
     def test_no_summary_written_outside_actions(
-        self, mock_args, mock_specs, mock_backfill, mock_print
+        self, mock_specs, mock_backfill, mock_print
     ):
         """Test a local run does not require the Actions environment."""
-        mock_args.return_value = MagicMock(
-            backfill=True, start="2023-01-01", history=None
-        )
         mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
         mock_backfill.return_value = BackfillReport()
 
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
         with patch.dict(os.environ, env, clear=True):
-            main()
+            main(["--backfill", "--from", "2023-01-01"])
 
         self.assertTrue(mock_print.called)
 
@@ -3976,36 +3842,26 @@ class TestClosedImportMainMode(unittest.TestCase):
     @patch("scrape_fund_price.import_closed_holdings")
     @patch("scrape_fund_price.read_closed_holdings")
     @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_import_mode_skips_the_daily_run(
-        self, mock_args, mock_scrape, mock_read, mock_import
-    ):
+    def test_import_mode_skips_the_daily_run(self, mock_scrape, mock_read, mock_import):
         """Test importing never triggers a scrape or an FX snap."""
-        mock_args.return_value = MagicMock(
-            backfill=False, history=None, import_closed=True
-        )
         mock_read.return_value = [
             ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2023-01-03", "2024-02-16")
         ]
         mock_import.return_value = BackfillReport()
-        main()
+        main(["--import-closed"])
         mock_import.assert_called_once()
         mock_scrape.assert_not_called()
 
     @patch("scrape_fund_price.import_closed_holdings")
     @patch("scrape_fund_price.read_closed_holdings")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_failures_exit_non_zero(self, mock_args, mock_read, mock_import):
+    def test_failures_exit_non_zero(self, mock_read, mock_import):
         """Test a partial import is visible to CI."""
-        mock_args.return_value = MagicMock(
-            backfill=False, history=None, import_closed=True
-        )
         mock_read.return_value = []
         report = BackfillReport()
         report.failures.append("BN4MYX3: no rows")
         mock_import.return_value = report
         with self.assertRaises(SystemExit):
-            main()
+            main(["--import-closed"])
 
 
 class TestClosedHoldingWindowEnds(unittest.TestCase):
@@ -4225,14 +4081,8 @@ class TestClosedHoldingCoverageGaps(unittest.TestCase):
 
     @patch("scrape_fund_price.import_closed_holdings")
     @patch("scrape_fund_price.read_closed_holdings", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
-    def test_import_mode_writes_the_actions_job_summary(
-        self, mock_args, _read, mock_import
-    ):
+    def test_import_mode_writes_the_actions_job_summary(self, _read, mock_import):
         """Test the reconciliation table reaches the Actions run page."""
-        mock_args.return_value = MagicMock(
-            backfill=False, history=None, import_closed=True
-        )
         report = BackfillReport()
         report.entries.append(
             {
@@ -4250,7 +4100,7 @@ class TestClosedHoldingCoverageGaps(unittest.TestCase):
         mock_import.return_value = report
         summary_path = os.path.join(self.test_dir, "step_summary.md")
         with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
-            main()
+            main(["--import-closed"])
         with open(summary_path, encoding="utf-8") as f:
             written = f.read()
         self.assertIn("Closed-holding import", written)
@@ -6670,16 +6520,6 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir)
 
-    def _daily_args(self):
-        return MagicMock(
-            history=None,
-            start=None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=False,
-        )
-
     def _run(self, update=None):
         """Run main() with prices faked, keeping the mocks that matter."""
         if update is None:
@@ -6696,11 +6536,6 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
             )
             enter(
                 patch(
-                    "scrape_fund_price.parse_arguments", return_value=self._daily_args()
-                )
-            )
-            enter(
-                patch(
                     "scrape_fund_price.read_fund_specs",
                     return_value=[FundSpec("YA", "QQQ")],
                 )
@@ -6712,7 +6547,7 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
             enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
             self.summary = enter(patch("scrape_fund_price.write_summary"))
             self.update = enter(patch("scrape_fund_price.update_dividends", **outcome))
-            main()
+            main([])
 
     def test_the_update_runs_after_the_prices_with_the_configuration(self):
         """Test update_dividends gets the funds and the validated schedules."""
@@ -6766,15 +6601,8 @@ class TestDividendsInTheDailyRun(unittest.TestCase):
 class TestDividendBackfillMainMode(unittest.TestCase):
     """Test main() with --backfill-dividends (SPEC-010, #85)."""
 
-    def _args(self, start="2024-01-01"):
-        return MagicMock(
-            history=None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=True,
-            start=start,
-        )
+    def _argv(self, start="2024-01-01"):
+        return ["--backfill-dividends"] + (["--from", start] if start else [])
 
     def _report(self, failures=()):
         report = BackfillReport()
@@ -6799,15 +6627,13 @@ class TestDividendBackfillMainMode(unittest.TestCase):
     @patch("scrape_fund_price.read_distributions", return_value=[])
     @patch("scrape_fund_price.read_fund_specs")
     @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.parse_arguments")
     def test_rebuilds_from_the_start_date_and_prints_the_report(
-        self, mock_args, mock_scrape, mock_specs, _dists, mock_backfill, mock_print
+        self, mock_scrape, mock_specs, _dists, mock_backfill, mock_print
     ):
         """Test the rebuild runs alone and its table reaches stdout."""
-        mock_args.return_value = self._args()
         mock_specs.return_value = [FundSpec("YA", "QQQ")]
         mock_backfill.return_value = self._report()
-        main()
+        main(self._argv())
         mock_scrape.assert_not_called()
         [call] = mock_backfill.call_args_list
         self.assertEqual(call.args[0][0].lookup_id, "QQQ")
@@ -6818,44 +6644,36 @@ class TestDividendBackfillMainMode(unittest.TestCase):
     @patch("scrape_fund_price.backfill_dividends")
     @patch("scrape_fund_price.read_distributions", return_value=[])
     @patch("scrape_fund_price.read_fund_specs", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
-    def test_no_start_date_rebuilds_everything(
-        self, mock_args, _specs, _dists, mock_backfill
-    ):
+    def test_no_start_date_rebuilds_everything(self, _specs, _dists, mock_backfill):
         """Test --from is optional."""
-        mock_args.return_value = self._args(start=None)
         mock_backfill.return_value = self._report()
-        main()
+        main(self._argv(start=None))
         self.assertIsNone(mock_backfill.call_args.args[2])
 
     @patch("scrape_fund_price.backfill_dividends")
     @patch("scrape_fund_price.read_distributions", return_value=[])
     @patch("scrape_fund_price.read_fund_specs", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
     def test_failures_exit_non_zero_after_the_report(
-        self, mock_args, _specs, _dists, mock_backfill
+        self, _specs, _dists, mock_backfill
     ):
         """Test a partial rebuild is visible to the workflow."""
-        mock_args.return_value = self._args()
         mock_backfill.return_value = self._report(failures=["BAD: dividends: down"])
         with self.assertRaises(SystemExit) as error:
-            main()
+            main(self._argv())
         self.assertEqual(error.exception.code, 1)
 
     @patch("scrape_fund_price.backfill_dividends")
     @patch("scrape_fund_price.read_distributions", return_value=[])
     @patch("scrape_fund_price.read_fund_specs", return_value=[])
-    @patch("scrape_fund_price.parse_arguments")
     def test_the_report_reaches_the_actions_job_summary(
-        self, mock_args, _specs, _dists, mock_backfill
+        self, _specs, _dists, mock_backfill
     ):
         """Test the rebuild is visible on the run page."""
-        mock_args.return_value = self._args()
         mock_backfill.return_value = self._report()
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "step_summary.md")
             with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": path}):
-                main()
+                main(self._argv())
             with open(path, encoding="utf-8") as f:
                 written = f.read()
         self.assertIn("Dividend rebuild from 2024-01-01", written)
@@ -6863,14 +6681,10 @@ class TestDividendBackfillMainMode(unittest.TestCase):
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_dividends")
-    @patch("scrape_fund_price.parse_arguments")
-    def test_an_invalid_invocation_exits_with_two(
-        self, mock_args, mock_backfill, mock_print
-    ):
+    def test_an_invalid_invocation_exits_with_two(self, mock_backfill, mock_print):
         """Test a bad --from date stops before any work."""
-        mock_args.return_value = self._args(start="yesterday")
         with self.assertRaises(SystemExit) as error:
-            main()
+            main(self._argv(start="yesterday"))
         self.assertEqual(error.exception.code, 2)
         mock_backfill.assert_not_called()
 
@@ -8085,15 +7899,8 @@ class TestIssuerSourcesInMain(unittest.TestCase):
         with open(self.sources_file, "w") as f:
             f.write(text)
 
-    def _args(self, backfill):
-        return MagicMock(
-            history=None,
-            start="2024-01-01" if backfill else None,
-            end=None,
-            backfill=False,
-            import_closed=False,
-            backfill_dividends=backfill,
-        )
+    def _argv(self, backfill):
+        return ["--backfill-dividends", "--from", "2024-01-01"] if backfill else []
 
     def _main(self, backfill=False):
         with ExitStack() as stack:
@@ -8101,12 +7908,6 @@ class TestIssuerSourcesInMain(unittest.TestCase):
             enter(patch("scrape_fund_price.DIVIDEND_SOURCES_FILE", self.sources_file))
             enter(
                 patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
-            )
-            enter(
-                patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=self._args(backfill),
-                )
             )
             enter(
                 patch(
@@ -8133,7 +7934,7 @@ class TestIssuerSourcesInMain(unittest.TestCase):
                     return_value=BackfillReport(),
                 )
             )
-            main()
+            main(self._argv(backfill))
 
     def test_the_daily_run_passes_the_validated_sources(self):
         """Test update_dividends gets them by keyword."""
@@ -9377,19 +9178,6 @@ class TestUkCpiInMain(unittest.TestCase):
             enter = stack.enter_context
             enter(
                 patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start=None,
-                        end=None,
-                        backfill=False,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
-            enter(
-                patch(
                     "scrape_fund_price.read_fund_specs",
                     return_value=[FundSpec("YA", "QQQ")],
                 )
@@ -9408,7 +9196,7 @@ class TestUkCpiInMain(unittest.TestCase):
             )
             enter(patch("builtins.print"))
             self.update = enter(patch("scrape_fund_price.update_uk_cpi", **outcome))
-            main()
+            main([])
 
     def test_the_daily_run_updates_the_index_once(self):
         """Test update_uk_cpi runs in the normal mode."""
@@ -9433,19 +9221,6 @@ class TestUkCpiInMain(unittest.TestCase):
         """Test --backfill and the rest never touch the ONS."""
         with ExitStack() as stack:
             enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start="2024-01-01",
-                        end=None,
-                        backfill=True,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
             enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
             enter(
                 patch(
@@ -9454,7 +9229,7 @@ class TestUkCpiInMain(unittest.TestCase):
             )
             enter(patch("builtins.print"))
             update = enter(patch("scrape_fund_price.update_uk_cpi"))
-            main()
+            main(["--backfill", "--from", "2024-01-01"])
         update.assert_not_called()
 
 
@@ -9848,19 +9623,6 @@ class TestUkBankRateInMain(unittest.TestCase):
             enter = stack.enter_context
             enter(
                 patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start=None,
-                        end=None,
-                        backfill=False,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
-            enter(
-                patch(
                     "scrape_fund_price.read_fund_specs",
                     return_value=[FundSpec("YA", "QQQ")],
                 )
@@ -9881,7 +9643,7 @@ class TestUkBankRateInMain(unittest.TestCase):
             self.update = enter(
                 patch("scrape_fund_price.update_uk_bank_rate", **outcome)
             )
-            main()
+            main([])
 
     def test_the_daily_run_updates_the_rate_once(self):
         """Test update_uk_bank_rate runs in the normal mode."""
@@ -9906,19 +9668,6 @@ class TestUkBankRateInMain(unittest.TestCase):
         """Test --backfill and the rest never touch the Bank's page."""
         with ExitStack() as stack:
             enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.parse_arguments",
-                    return_value=MagicMock(
-                        history=None,
-                        start="2024-01-01",
-                        end=None,
-                        backfill=True,
-                        import_closed=False,
-                        backfill_dividends=False,
-                    ),
-                )
-            )
             enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
             enter(
                 patch(
@@ -9927,7 +9676,7 @@ class TestUkBankRateInMain(unittest.TestCase):
             )
             enter(patch("builtins.print"))
             update = enter(patch("scrape_fund_price.update_uk_bank_rate"))
-            main()
+            main(["--backfill", "--from", "2024-01-01"])
         update.assert_not_called()
 
 
