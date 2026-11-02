@@ -575,7 +575,7 @@ class TestSourceCodeCanonicalisation(DataDirCase):
         self.assertEqual(holding.source, "YA")
 
     def test_dividend_collection_shares_the_alias(self):
-        """Test a (source, identifier) pair spelt GF is still fetched from Yahoo."""
+        """Test a spec spelt GF is still fetched from Yahoo."""
         event = scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")
         with patch.object(
             scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: [event]
@@ -584,7 +584,8 @@ class TestSourceCodeCanonicalisation(DataDirCase):
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
             ):
                 results = scrape_fund_price.collect_dividends(
-                    [("GF", "QQQ")], date(2026, 10, 26)
+                    scrape_fund_price.Universe.from_specs([FundSpec("GF", "QQQ")]),
+                    date(2026, 10, 26),
                 )
         self.assertEqual(len(results), 1)
 
@@ -4882,7 +4883,9 @@ class TestDividendCollection(unittest.TestCase):
 
         with patch.object(scrape_fund_price, "fetch_yahoo_dividends", fake_events):
             with patch.object(scrape_fund_price, "fetch_yahoo_declared", fake_declared):
-                return scrape_fund_price.collect_dividends(specs, self.TODAY, start)
+                return scrape_fund_price.collect_dividends(
+                    scrape_fund_price.Universe.from_specs(specs), self.TODAY, start
+                )
 
     def test_rows_are_published_under_every_alias(self):
         """Test one fetch, every identifier, Source YA, no pay date."""
@@ -4920,16 +4923,10 @@ class TestDividendCollection(unittest.TestCase):
             with patch.object(
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
-                scrape_fund_price.collect_dividends(specs, self.TODAY)
+                scrape_fund_price.collect_dividends(
+                    scrape_fund_price.Universe.from_specs(specs), self.TODAY
+                )
         self.assertEqual(calls, ["QQQ"])
-
-    def test_plain_pairs_are_accepted(self):
-        """Test callers may pass (source, identifier) pairs."""
-        results = self._collect(
-            [("YA", "QQQ")],
-            events={"QQQ": [scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")]},
-        )
-        self.assertEqual(len(results), 1)
 
     def test_the_window_start_is_passed_to_the_fetch(self):
         """Test the caller decides how far back to read."""
@@ -4943,10 +4940,9 @@ class TestDividendCollection(unittest.TestCase):
             with patch.object(
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
-                scrape_fund_price.collect_dividends(
-                    [FundSpec("YA", "QQQ")], self.TODAY, "2025-09-01"
-                )
-                scrape_fund_price.collect_dividends([FundSpec("YA", "QQQ")], self.TODAY)
+                qqq = scrape_fund_price.Universe.from_specs([FundSpec("YA", "QQQ")])
+                scrape_fund_price.collect_dividends(qqq, self.TODAY, "2025-09-01")
+                scrape_fund_price.collect_dividends(qqq, self.TODAY)
         self.assertEqual(seen, ["2025-09-01", None])
 
     def test_events_after_today_are_ignored(self):
@@ -4984,7 +4980,10 @@ class TestDividendCollection(unittest.TestCase):
                 scrape_fund_price, "fetch_yahoo_declared", lambda s, t: None
             ):
                 results = scrape_fund_price.collect_dividends(
-                    [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")], self.TODAY
+                    scrape_fund_price.Universe.from_specs(
+                        [FundSpec("YA", "BAD"), FundSpec("YA", "QQQ")]
+                    ),
+                    self.TODAY,
                 )
         self.assertEqual(attempts.count("BAD"), scrape_fund_price.MAX_PRICE_ATTEMPTS)
         self.assertEqual(results.failures, ["BAD: dividends: Network error"])
@@ -5559,7 +5558,7 @@ class TestBuildDividendUpcoming(DividendRunCase):
         currencies=None,
     ):
         return scrape_fund_price.build_dividend_upcoming(
-            specs,
+            scrape_fund_price.Universe.from_specs(specs),
             list(distributions),
             history or {},
             [list(row) for row in stored],
@@ -6026,7 +6025,9 @@ class TestDividendSummary(DividendRunCase):
 
     def _build(self, previous, upcoming, specs=None):
         specs = specs or [FundSpec("YA", "QQQ")]
-        return scrape_fund_price.build_dividend_summary(previous, upcoming, specs)
+        return scrape_fund_price.build_dividend_summary(
+            previous, upcoming, scrape_fund_price.Universe.from_specs(specs)
+        )
 
     def test_a_new_ex_date_is_listed(self):
         """Test the headline case: nothing before, a row today."""
@@ -8059,7 +8060,8 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
                 fetch.return_value = scrape_fund_price.IssuerTable("USD", (), "IS")
                 scrape_fund_price.collect_issuer_tables(
-                    [self.QQQ], [FundSpec("YA", "QQQ")]
+                    [self.QQQ],
+                    scrape_fund_price.Universe.from_specs([FundSpec("YA", "QQQ")]),
                 )
         clear.assert_called_once_with()
 

@@ -532,6 +532,45 @@ def as_fund_spec(entry):
     return FundSpec(SOURCE_ALIASES.get(source.upper(), source), lookup_id, aliases)
 
 
+class Universe(NamedTuple):
+    """The configured instruments and their identifiers, mapped once per run.
+
+    An instrument is fetched under its lookup id and published under every
+    identifier in its spec's `publish_ids`; `lookup_of` maps each published
+    identifier to the lookup id, and `publish_ids_of` each lookup id back to
+    the identifiers, lookup id first.
+    """
+
+    specs: tuple  # canonical FundSpec instances, in configuration order
+    lookup_of: dict
+    publish_ids_of: dict
+    all_identifiers: frozenset
+
+    @classmethod
+    def from_specs(cls, specs):
+        """Build the map from FundSpec instances (or (source, id) pairs)."""
+        specs = tuple(as_fund_spec(entry) for entry in specs)
+        lookup_of = {
+            identifier: spec.lookup_id
+            for spec in specs
+            for identifier in spec.publish_ids
+        }
+        publish_ids_of = {spec.lookup_id: spec.publish_ids for spec in specs}
+        return cls(specs, lookup_of, publish_ids_of, frozenset(lookup_of))
+
+    def published(self, identifier):
+        """Return every identifier the instrument behind `identifier` is published under.
+
+        A line in distributions.txt may use the lookup id or an alias; either
+        way the rows go out under all of them. An identifier funds.txt does
+        not publish (a closed holding) has only itself.
+        """
+        lookup_id = self.lookup_of.get(identifier)
+        if lookup_id is None:
+            return (identifier,)
+        return self.publish_ids_of[lookup_id]
+
+
 def configured_identifiers(specs, closed_file=None):
     """Return every identifier a distributions.txt line may name.
 
@@ -542,9 +581,7 @@ def configured_identifiers(specs, closed_file=None):
     if closed_file is None:
         closed_file = CLOSED_HOLDINGS_FILE
 
-    identifiers = {
-        identifier for entry in specs for identifier in as_fund_spec(entry).publish_ids
-    }
+    identifiers = set(Universe.from_specs(specs).all_identifiers)
     if os.path.isfile(closed_file):
         identifiers.update(h.identifier for h in read_closed_holdings(closed_file))
     return identifiers
@@ -648,11 +685,7 @@ def read_dividend_sources(filename=None, specs=None):
 
     instrument_of = None
     if specs is not None:
-        instrument_of = {
-            identifier: as_fund_spec(entry).lookup_id
-            for entry in specs
-            for identifier in as_fund_spec(entry).publish_ids
-        }
+        instrument_of = Universe.from_specs(specs).lookup_of
 
     sources = []
     seen = {}
@@ -2314,7 +2347,7 @@ def merge_dividend_rows(stored, incoming):
         stored[(row[0], row[1])] = list(row)
 
 
-def collect_dividends(specs, today, start=None):
+def collect_dividends(universe, today, start=None):
     """Fetch Yahoo's dividend events and declared dividends for each YA fund.
 
     One fetch per instrument, published under every alias. Only YA has a
@@ -2324,14 +2357,13 @@ def collect_dividends(specs, today, start=None):
     failing the run every day for an optional fact would hide real failures.
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        universe: The configured instruments (Universe)
         today: The run date; events dated after it are ignored
         start: Inclusive ISO start of the events window, None for all of them
     """
     results = DividendResults()
 
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in universe.specs:
         if spec.source != "YA":
             continue
 
@@ -3132,7 +3164,7 @@ class IssuerResults:
         self.failures = []
 
 
-def collect_issuer_tables(sources, specs):
+def collect_issuer_tables(sources, universe):
     """Fetch each configured instrument's distribution table, once.
 
     Retried by `fetch_with_retries()` and paced; one instrument failing, by
@@ -3140,18 +3172,12 @@ def collect_issuer_tables(sources, specs):
 
     Args:
         sources: DividendSource lines from dividend_sources.txt
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        universe: The configured instruments (Universe)
     """
-    instrument_of = {}
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        for identifier in spec.publish_ids:
-            instrument_of[identifier] = spec.lookup_id
-
     results = IssuerResults()
     clear_issuer_caches()
     for index, source in enumerate(sources):
-        lookup_id = instrument_of[source.identifier]
+        lookup_id = universe.lookup_of[source.identifier]
         results.requested.add(lookup_id)
         if index:
             time.sleep(ISSUER_PAUSE_SECONDS)
@@ -3164,7 +3190,7 @@ def collect_issuer_tables(sources, specs):
     return results
 
 
-def merge_issuer_tables(history, specs, tables, currencies, today, start=None):
+def merge_issuer_tables(history, universe, tables, currencies, today, start=None):
     """Apply each fetched table to its instrument's rows under every alias.
 
     Returns:
@@ -3172,8 +3198,7 @@ def merge_issuer_tables(history, specs, tables, currencies, today, start=None):
         the instruments that have one
     """
     declared = {}
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in universe.specs:
         table = tables.get(spec.lookup_id)
         if table is None:
             continue
@@ -3451,7 +3476,7 @@ def merge_by_ex_date(rows_by_fund, identifiers):
 
 
 def build_dividend_upcoming(
-    specs, distributions, history, stored, declared, today, currencies
+    universe, distributions, history, stored, declared, today, currencies
 ):
     """Build dividends_upcoming.csv from the day's inputs.
 
@@ -3462,7 +3487,7 @@ def build_dividend_upcoming(
     is computed once on the lookup identifier and published under every alias.
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        universe: The configured instruments (Universe)
         distributions: Distribution lines from distributions.txt
         history: dividends_history.csv rows keyed on (Fund, ExDate)
         stored: The previous run's upcoming rows
@@ -3479,8 +3504,7 @@ def build_dividend_upcoming(
     schedule_for = {dist.identifier: dist for dist in distributions}
 
     rows = []
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in universe.specs:
         identifiers = spec.publish_ids
 
         instrument_history = merge_by_ex_date(history_by_fund, identifiers)
@@ -3531,35 +3555,22 @@ def first_currency(identifiers, currencies):
     return next((currencies[i] for i in identifiers if currencies.get(i)), "")
 
 
-def published_identifiers(identifier, specs):
-    """Return every identifier the instrument behind `identifier` is published under.
-
-    A line in distributions.txt may use the lookup id or an alias; either way
-    the rows go out under all of them. A closed holding has only itself.
-    """
-    for entry in specs:
-        spec = as_fund_spec(entry)
-        if identifier in spec.publish_ids:
-            return spec.publish_ids
-    return (identifier,)
-
-
-def config_history_rows(distributions, specs, currencies, today):
+def config_history_rows(distributions, universe, currencies, today):
     """Return the `config` history rows of every distributions.txt line."""
     rows = []
     for dist in distributions:
-        identifiers = published_identifiers(dist.identifier, specs)
+        identifiers = universe.published(dist.identifier)
         currency = first_currency(identifiers, currencies)
         for row in distribution_history_rows(dist, currency, today):
             rows.extend([identifier] + row[1:] for identifier in identifiers)
     return rows
 
 
-def publish_upcoming(specs, distributions, history, declared, data_dir, today):
+def publish_upcoming(universe, distributions, history, declared, data_dir, today):
     """Rebuild dividends_upcoming.csv and return (previous rows, new rows)."""
     previous = read_dividend_upcoming(data_dir)
     upcoming = build_dividend_upcoming(
-        specs,
+        universe,
         distributions,
         history,
         previous,
@@ -3588,7 +3599,7 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
     never deletes (a rebuild does that: backfill_dividends).
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        specs: FundSpec instances from funds.txt
         distributions: Distribution lines from distributions.txt
         data_dir: Directory for output files (default: DATA_DIR)
         today: The run date (default: today)
@@ -3607,28 +3618,29 @@ def update_dividends(specs, distributions, data_dir=None, today=None, sources=()
     window = datetime.timedelta(days=DIVIDEND_WINDOW_DAYS)
     start = None if first_run else (today - window).isoformat()
 
-    results = collect_dividends(specs, today, start)
-    issuers = collect_issuer_tables(sources, specs)
+    universe = Universe.from_specs(specs)
+    results = collect_dividends(universe, today, start)
+    issuers = collect_issuer_tables(sources, universe)
     results.failures.extend(issuers.failures)
     history = read_dividend_history(data_dir)
     merge_dividend_rows(history, results)
     currencies = stored_currencies(data_dir)
     merge_dividend_rows(
-        history, config_history_rows(distributions, specs, currencies, today)
+        history, config_history_rows(distributions, universe, currencies, today)
     )
     results.declared.update(
-        merge_issuer_tables(history, specs, issuers.tables, currencies, today)
+        merge_issuer_tables(history, universe, issuers.tables, currencies, today)
     )
     write_dividend_history(list(history.values()), data_dir)
 
     previous, upcoming = publish_upcoming(
-        specs, distributions, history, results.declared, data_dir, today
+        universe, distributions, history, results.declared, data_dir, today
     )
-    results.summary = build_dividend_summary(previous, upcoming, specs)
+    results.summary = build_dividend_summary(previous, upcoming, universe)
     return results
 
 
-def rebuild_issuer_rows(history, spec, table, currencies, today, start):
+def rebuild_issuer_rows(history, universe, spec, table, currencies, today, start):
     """Rebuild the `IS` rows of an instrument that has no Yahoo route.
 
     The instrument's `IS` rows from `start` are replaced by what the issuer
@@ -3655,7 +3667,7 @@ def rebuild_issuer_rows(history, spec, table, currencies, today, start):
         counts.append((identifier, existing, doomed))
 
     tables = {} if table is None else {spec.lookup_id: table}
-    declared = merge_issuer_tables(history, [spec], tables, currencies, today, start)
+    declared = merge_issuer_tables(history, universe, tables, currencies, today, start)
     if table is None:
         items = [BackfillEntry.failed(ident, existing) for ident, existing, _ in counts]
         return items, declared
@@ -3697,7 +3709,7 @@ def backfill_dividends(
     the issuers' announced ones).
 
     Args:
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        specs: FundSpec instances from funds.txt
         distributions: Distribution lines from distributions.txt
         start: Inclusive ISO date to rebuild from, None for everything
         data_dir: Directory for output files (default: DATA_DIR)
@@ -3712,20 +3724,20 @@ def backfill_dividends(
     today = today or datetime.date.today()
 
     os.makedirs(data_dir, exist_ok=True)
+    universe = Universe.from_specs(specs)
     history = read_dividend_history(data_dir)
     report = BackfillReport()
-    issuers = collect_issuer_tables(sources, specs)
+    issuers = collect_issuer_tables(sources, universe)
     report.failures.extend(issuers.failures)
     currencies = stored_currencies(data_dir)
     declared = {}
 
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in universe.specs:
         table = issuers.tables.get(spec.lookup_id)
         if spec.source != "YA":
             if spec.lookup_id in issuers.requested:
                 items, announced = rebuild_issuer_rows(
-                    history, spec, table, currencies, today, start
+                    history, universe, spec, table, currencies, today, start
                 )
                 report.entries.extend(items)
                 declared.update(announced)
@@ -3770,17 +3782,16 @@ def backfill_dividends(
                 )
             )
 
+        tables = {} if table is None else {spec.lookup_id: table}
         declared.update(
-            merge_issuer_tables(
-                history, [spec], issuers.tables, currencies, today, start
-            )
+            merge_issuer_tables(history, universe, tables, currencies, today, start)
         )
 
     merge_dividend_rows(
-        history, config_history_rows(distributions, specs, currencies, today)
+        history, config_history_rows(distributions, universe, currencies, today)
     )
     write_dividend_history(list(history.values()), data_dir)
-    publish_upcoming(specs, distributions, history, declared, data_dir, today)
+    publish_upcoming(universe, distributions, history, declared, data_dir, today)
     return report
 
 
@@ -4346,7 +4357,7 @@ class DividendSummaryRow(NamedTuple):
     status: str
 
 
-def build_dividend_summary(previous, upcoming, specs):
+def build_dividend_summary(previous, upcoming, universe):
     """List the upcoming dividends that are news today (SPEC-010).
 
     A row is news when its (Fund, ExDate) was not in the previous file or its
@@ -4358,12 +4369,11 @@ def build_dividend_summary(previous, upcoming, specs):
     Args:
         previous: The previous run's dividends_upcoming.csv rows
         upcoming: Today's rows
-        specs: FundSpec instances, or plain (source, identifier) pairs
+        universe: The configured instruments (Universe)
     """
     before = {(row[0], row[1]): (row[2], row[5]) for row in previous}
     rows = []
-    for entry in specs:
-        spec = as_fund_spec(entry)
+    for spec in universe.specs:
         for row in sorted(upcoming, key=lambda row: row[1]):
             if row[0] != spec.lookup_id:
                 continue
