@@ -1,68 +1,69 @@
 # Troubleshooting Guide
 
-This document provides solutions for common issues encountered with the Fund Price Scraping project.
+Solutions for common problems with the Fund Price Scraping project. For how the system
+is put together see [architecture](architecture.md); for how it runs see
+[deployment](deployment.md).
+
+## How failures are reported
+
+Knowing the contract makes most problems quick to read:
+
+- A fetcher **raises** when it cannot get a price. `fetch_with_retries()` retries it up to
+  `MAX_PRICE_ATTEMPTS` (3) times.
+- A fund that fails every attempt is recorded on the result object's `failures` list, as
+  `<identifier>: <error>`, and its last known price is carried into `latest_prices.csv`
+  under its original date. Nothing is invented for today.
+- **No error text is ever written to a data file.** A price column holding anything but a
+  number is a bug, not an expected state.
+- Everything obtainable is written first. Only then are the failures printed, one
+  `Error: <failure>` line each, and the process exits non-zero.
+- A step that crashes as a whole is reported with its name in front, for example
+  `prices: <error>`, `fx: <error>`, `uk_cpi: <error>` or `uk_bank_rate: <error>`, so the
+  other steps still write their files.
+
+Result rows are `[identifier, date, price, currency]`.
 
 ## Common Issues and Solutions
 
 ### 1. Playwright Browser Issues
 
+Playwright is only a fallback: Yahoo, investing.com and the FT's dated HTTP endpoint need
+no browser, and the browser is started lazily when an FT lookup has failed. If a run
+needed no fallback, a missing browser is harmless.
+
 #### Issue: "Browser not found" or "Executable doesn't exist"
 **Symptoms:**
 ```
-Error: Executable doesn't exist at /path/to/chromium
+Executable doesn't exist at /path/to/chromium
 ```
 
 **Solutions:**
 ```bash
-# Install Playwright browsers
 playwright install chromium
-
-# Install all browsers
-playwright install
-
-# Install with specific version
-playwright install chromium@latest
 ```
 
-#### Issue: Browser crashes or hangs
+#### Issue: Browser hangs or times out
 **Symptoms:**
-- Browser process becomes unresponsive
-- Memory usage increases significantly
-- Timeout errors
+- A fund that fell back to scraping takes minutes and then fails
+- Timeout errors from `wait_for_selector`
 
 **Solutions:**
-```bash
-# Check system resources
-free -h
-df -h
-
-# Restart with fresh browser instance
-pkill -f chromium
-python scrape_fund_price.py
-
-# Use headless mode to reduce resource usage
-# (Already enabled by default)
-```
+- Establish first why the FT HTTP endpoint failed: the scraping fallback only runs after a
+  `Warning: FT historical lookup failed for ...` line.
+- Kill a stuck Chromium and re-run: `pkill -f chromium`.
+- If FT changed its page, the selector lives in `get_source_config()`; see
+  [Wrong CSS selectors](#issue-wrong-css-selectors).
 
 ### 2. Network and Connectivity Issues
 
 #### Issue: Connection timeout errors
-**Symptoms:**
-```
-TimeoutError: Navigation timeout of 30000 ms exceeded
-```
-
 **Solutions:**
 ```bash
-# Check internet connectivity
-ping google.com
-
-# Test specific fund URLs manually
+# Check that the source answers
 curl -I "https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86"
-
-# Increase timeout values in code
-# Modify scrape_price_with_common_settings function
 ```
+A one-off timeout is absorbed by the retries. If a fund fails on every run, the failure
+line names it.
 
 #### Issue: SSL/TLS certificate errors
 **Symptoms:**
@@ -72,29 +73,17 @@ SSL: CERTIFICATE_VERIFY_FAILED
 
 **Solutions:**
 ```bash
-# Update certificates
-sudo apt-get update && sudo apt-get install ca-certificates
-
-# For Python SSL issues
 pip install --upgrade certifi
-
-# Test SSL connection
 openssl s_client -connect markets.ft.com:443
 ```
 
 #### Issue: Rate limiting or IP blocking
 **Symptoms:**
-- HTTP 429 (Too Many Requests)
-- HTTP 403 (Forbidden)
-- CAPTCHA challenges
+- HTTP 429 (Too Many Requests) or 403 (Forbidden) in a failure line
+- A source that works from your machine but not from GitHub Actions
 
-**Solutions:**
-```bash
-# Add delays between requests
-# Implement exponential backoff
-# Use different User-Agent strings
-# Consider using proxy servers
-```
+**Solutions:** wait and re-run. The two daily runs give a second attempt within hours,
+and the last known price is carried meanwhile.
 
 ### 3. Data and File Issues
 
@@ -104,171 +93,75 @@ openssl s_client -connect markets.ft.com:443
 FileNotFoundError: [Errno 2] No such file or directory: 'funds.txt'
 ```
 
-**Solutions:**
-```bash
-# Check if files exist
-ls -la funds.txt
-ls -la data/
+**Solutions:** the configuration files and `data/` are read from the working directory,
+so run from the repository root. `data/` is created on demand.
 
-# Create missing files
-touch funds.txt
-mkdir -p data
+#### Issue: A configuration file is rejected
+**Symptoms:** the run stops before any network call with a message naming a line.
 
-# Check file permissions
-ls -la funds.txt
-chmod 644 funds.txt
-```
+**Solutions:** `funds.txt`, `fx_pairs.txt`, `closed_holdings.txt`, `distributions.txt` and
+`dividend_sources.txt` are validated up front. Fix the line named; the formats are in the
+[README](../../README.md#configuration). A repeated identifier, an empty or
+self-referencing alias, or a slash-spelled FX pair (`GBP/USD`) are the usual causes.
 
 #### Issue: CSV file corruption or empty files
 **Symptoms:**
 - Empty CSV files
 - Malformed CSV data
-- Encoding issues
 
-**Solutions:**
+**Solutions:** the `data/` files are tracked in git, so restore rather than delete:
 ```bash
-# Check file contents
-head -5 data/latest_prices.csv
-file data/latest_prices.csv
-
-# Recreate data directory
-rm -rf data/
-mkdir data
-python scrape_fund_price.py
-
-# Check for disk space
-df -h
+git status data/
+git checkout -- data/latest_prices.csv
 ```
-
-#### Issue: Permission denied errors
-**Symptoms:**
-```
-PermissionError: [Errno 13] Permission denied: 'data/latest_prices.csv'
-```
-
-**Solutions:**
-```bash
-# Check directory permissions
-ls -la data/
-chmod 755 data/
-
-# Check file ownership
-ls -la data/latest_prices.csv
-sudo chown $USER:$USER data/latest_prices.csv
-
-# Run with appropriate permissions
-sudo python scrape_fund_price.py
-```
+Do not delete `data/`: `prices_history.csv` holds closed-holding rows that a daily run
+never fetches again. To rebuild ordinary history from the sources use
+`python scrape_fund_price.py --backfill --from 2021-12-01`.
 
 ### 4. Configuration Issues
 
 #### Issue: Invalid fund identifiers
 **Symptoms:**
-- Empty results for specific funds
-- "Not found" errors
+- A fund fails every run
 - Wrong price data
 
 **Solutions:**
 ```bash
-# Verify fund identifiers
-# Check fund URLs manually in browser
-# Validate fund format in funds.txt
-
-# Test individual fund
+# Look at what the source returns for one identifier
 python -c "
-from scrape_fund_price import get_source_config
-url, selector = get_source_config('FT', 'GB00B1FXTF86')
-print(f'URL: {url}')
-print(f'Selector: {selector}')
+from scrape_fund_price import fetch_yahoo_quotes
+for quote in fetch_yahoo_quotes('IDTG.L', '2026-10-01'):
+    print(quote)
 "
 ```
+Use `fetch_ft_quotes` for an `FT` line. Each quote is a `Quote(date, price, currency)`.
 
 #### Issue: Wrong CSS selectors
 **Symptoms:**
-- Price data not found
-- Empty price values
-- Selector timeout errors
+- A fund on the scraping fallback fails with a selector timeout
 
 **Solutions:**
 ```bash
-# Inspect page source manually
-# Check if website structure changed
-# Update selectors in get_source_config function
-
-# Test selectors
+# What the fallback would load
 python -c "
-from playwright.sync_api import sync_playwright
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    page.goto('https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86')
-    elements = page.locator('.mod-ui-data-list__value').all()
-    print(f'Found {len(elements)} elements')
-    browser.close()
+from scrape_fund_price import get_source_config
+print(get_source_config('FT', 'GB00B1FXTF86'))
 "
 ```
+Open the URL in a browser and check the selector still matches. If it does not, update it
+in `get_source_config()`, test first.
 
-### 5. Performance Issues
-
-#### Issue: Slow execution
-**Symptoms:**
-- Long execution times
-- High memory usage
-- System becomes unresponsive
-
-**Solutions:**
-```bash
-# Monitor system resources
-top
-htop
-
-# Run with reduced concurrency
-# Modify scrape_funds function to process sequentially
-
-# Check for memory leaks
-python -c "
-import psutil
-import os
-process = psutil.Process(os.getpid())
-print(f'Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB')
-"
-```
-
-#### Issue: High CPU usage
-**Symptoms:**
-- CPU usage near 100%
-- System becomes slow
-- Browser processes consuming resources
-
-**Solutions:**
-```bash
-# Check running processes
-ps aux | grep python
-ps aux | grep chromium
-
-# Kill stuck processes
-pkill -f chromium
-pkill -f python
-
-# Restart with fresh environment
-```
-
-### 6. GitHub Actions Issues
+### 5. GitHub Actions Issues
 
 #### Issue: Workflow fails to start
 **Symptoms:**
 - No workflow runs appearing
-- "Workflow not found" errors
 
 **Solutions:**
-```bash
-# Check workflow file syntax
-# Verify .github/workflows/scrape.yml exists (backfill.yml and test.yml sit beside it)
-# Check GitHub Actions permissions in repository settings
-
-# Test workflow locally
-act -j scrape
-```
+- Verify `.github/workflows/scrape.yml` exists (`backfill.yml` and `test.yml` sit beside
+  it) and that Actions is enabled in the repository settings.
+- Scheduled runs start hours late and can be skipped; a manual run from the Actions tab
+  (`workflow_dispatch`) is always available.
 
 #### Issue: A run is red but the data was committed
 **Symptoms:**
@@ -294,34 +187,20 @@ against a second one before relying on it. `closed_holdings.txt` records worked 
 
 #### Issue: Workflow runs but fails
 **Symptoms:**
-- Workflow starts but fails with errors
-- Missing dependencies in CI environment
+- The job fails before the scraper runs, or the tests fail
 
 **Solutions:**
-```bash
-# Check workflow logs in GitHub Actions tab
-# Verify all dependencies are installed
-# Check file paths and permissions
-
-# Test locally with same environment
-docker run -it --rm -v $(pwd):/workspace python:3.9 bash
-cd /workspace
-pip install -r requirements.txt
-playwright install chromium
-python test_scrape_fund_price.py
-```
+- Read the failing step in the Actions tab. A dependency problem shows at "Install
+  dependencies"; a scrape failure shows at "Run scraper" with the `Error: ...` lines.
+- Reproduce with the same requirements:
+  `pip install -r requirements.txt && ./run_tests.sh unit`.
 
 ## Debugging Techniques
 
-### 1. Enable Verbose Logging
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-# Add debug prints in code
-print(f"Scraping {source}:{fund_id}")
-print(f"URL: {url}")
-print(f"Selector: {selector}")
+### 1. Run the tests
+```bash
+./run_tests.sh unit        # mocks only, seconds
+./run_tests.sh live        # hits the live sources; skips a source that is down
 ```
 
 ### 2. Test Individual Components
@@ -329,113 +208,48 @@ print(f"Selector: {selector}")
 # Test fund reading
 python -c "from scrape_fund_price import read_fund_ids; print(read_fund_ids('funds.txt'))"
 
-# Test source configuration
-python -c "from scrape_fund_price import get_source_config; print(get_source_config('FT', 'GB00B1FXTF86'))"
-
-# Test single fund scraping
+# Test one fund with the same retry behaviour as the daily run
 python -c "
-from scrape_fund_price import scrape_funds
-funds = [('FT', 'GB00B1FXTF86')]
-results = scrape_funds(funds)
-print(results)
+from scrape_fund_price import FundSpec, scrape_funds
+results = scrape_funds([FundSpec('YA', 'IDTG.L')], data_dir='/tmp/fp-debug')
+print(list(results), results.failures)
 "
 ```
+Use a scratch `data_dir` so the repository's `.price` files are untouched.
 
 ### 3. Browser Debugging
-```python
-# Run with visible browser
-browser = p.chromium.launch(headless=False, slow_mo=1000)
-
-# Take screenshots
-page.screenshot(path="debug.png")
-
-# Get page content
-content = page.content()
-with open("page_source.html", "w") as f:
-    f.write(content)
-```
+Only the FT fallback uses a browser. To watch it, temporarily change `headless=True` to
+`headless=False` in `LazyBrowser.page()`; do not commit that.
 
 ### 4. Network Debugging
 ```bash
-# Monitor network traffic
-tcpdump -i any -w network.pcap
-
-# Check DNS resolution
 nslookup markets.ft.com
-
-# Test HTTP requests
 curl -v "https://markets.ft.com/data/funds/tearsheet/summary?s=GB00B1FXTF86"
 ```
 
 ## Recovery Procedures
 
-### 1. Complete Reset
+### 1. Restore a bad day's data
+The data is in git history:
 ```bash
-# Stop all processes
-pkill -f python
-pkill -f chromium
+git log --oneline -- data/latest_prices.csv
+git checkout <commit> -- data/latest_prices.csv
+```
+or revert the "Update fund prices" commit. Latest prices never step backwards, so repair
+stored history with `--backfill` rather than expecting a later run to overwrite a newer
+row with an older one.
 
-# Clean up data
-rm -rf data/
-mkdir data
-
-# Reinstall dependencies
-pip uninstall playwright coverage
+### 2. Reinstall the environment
+```bash
 pip install -r requirements.txt
 playwright install chromium
-
-# Test installation
-python test_scrape_fund_price.py
-```
-
-### 2. Partial Recovery
-```bash
-# Keep data, reset configuration
-cp data/latest_prices.csv data/latest_prices.csv.backup
-rm data/latest_prices.csv
-
-# Re-run scraper
-python scrape_fund_price.py
-```
-
-### 3. Data Recovery
-```bash
-# Restore from backup
-cp data/latest_prices.csv.backup data/latest_prices.csv
-
-# Or restore from Git history
-git checkout HEAD~1 -- data/latest_prices.csv
+./run_tests.sh unit
 ```
 
 ## Getting Help
 
-### 1. Check Logs
-```bash
-# Application logs
-tail -f logs/scraper.log
-
-# System logs
-journalctl -u fund-prices -f
-
-# GitHub Actions logs
-# Check Actions tab in GitHub repository
-```
-
-### 2. Community Resources
-- GitHub Issues: Report bugs and request features
-- Playwright Documentation: https://playwright.dev/python/
-- Python Documentation: https://docs.python.org/
-
-### 3. Diagnostic Information
-When reporting issues, include:
-```bash
-# System information
-uname -a
-python --version
-pip list
-
-# Application status
-ls -la data/
-head -5 data/latest_prices.csv
-tail -10 logs/scraper.log
-```
+- Check the failing run in the GitHub Actions tab, and `data/daily_summary.md`.
+- Report bugs and request features as
+  [GitHub Issues](https://github.com/joneswm/FundPrices/issues).
+- When reporting, include `python --version`, the `Error: ...` lines from the run and the
+  relevant line of the configuration file.
