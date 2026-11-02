@@ -2338,7 +2338,7 @@ def is_removable_row(row):
     return not currency
 
 
-def backfill_history(specs, start, data_dir=None):
+def backfill_history(specs, start, data_dir=None, pairs=None):
     """Rebuild stored history from source data, from `start` onwards.
 
     Deletes rather than upserting: carry-forward and scrape-dated rows sit on
@@ -2353,6 +2353,8 @@ def backfill_history(specs, start, data_dir=None):
         specs: FundSpec instances to rebuild
         start: Inclusive ISO start date
         data_dir: Directory for output files (default: DATA_DIR)
+        pairs: FX pairs to rebuild afterwards; None reads fx_pairs.txt, an
+            empty list skips the FX rebuild
 
     Returns:
         BackfillReport
@@ -2445,7 +2447,8 @@ def backfill_history(specs, start, data_dir=None):
     for row in latest.values():
         write_latest_price_file(row[0], row[2], data_dir)
 
-    pairs = read_fx_pairs()
+    if pairs is None:
+        pairs = read_fx_pairs()
     if pairs:
         backfill_fx(pairs, start, data_dir, report=report)
 
