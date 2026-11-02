@@ -1,25 +1,26 @@
-from playwright.sync_api import sync_playwright
-import datetime
+import argparse
 import csv
+import datetime
 import decimal
 import html
 import io
 import json
 import math
 import os
+import re
+import statistics
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
-import numpy as np
-import requests
-import yfinance as yf
-import argparse
-import re
-import statistics
 from html.parser import HTMLParser
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
+
+import numpy as np
+import requests
+import yfinance as yf
+from playwright.sync_api import sync_playwright
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"

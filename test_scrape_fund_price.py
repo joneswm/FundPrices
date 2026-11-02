@@ -1,59 +1,58 @@
-import unittest
-import tempfile
-import os
-import shutil
-from contextlib import ExitStack, contextmanager
-from unittest.mock import patch, MagicMock
 import csv
+import datetime
 import decimal
 import html
 import json
+import os
+import shutil
+import tempfile
+import unittest
 import urllib.parse
-import datetime
+from contextlib import ExitStack, contextmanager
 from datetime import date, timedelta
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import scrape_fund_price
-
 from scrape_fund_price import (
-    get_source_config,
-    scrape_funds,
-    write_results,
-    fetch_historical_data,
-    parse_arguments,
-    main,
-    Quote,
-    format_yahoo_price,
-    fetch_yahoo_quotes,
-    fetch_ft_quotes,
-    ScrapeResults,
-    FundSpec,
-    read_fund_specs,
-    backfill_history,
-    validate_backfill_args,
     BackfillReport,
-    check_quoting_unit,
-    read_fx_pairs,
-    fetch_fx_quotes,
-    fetch_yahoo_hourly,
-    new_york_fx_closes,
-    write_fx_results,
-    snap_fx_rates,
-    backfill_fx,
-    build_price_summary,
-    build_fx_summary,
-    render_summary_markdown,
-    write_summary,
-    canonical_source,
-    scrape_fund_quotes,
-    write_history_files,
-    write_fx_files,
-    write_latest_price_file,
     ClosedHolding,
-    read_closed_holdings,
+    FundSpec,
+    Quote,
+    ScrapeResults,
+    backfill_fx,
+    backfill_history,
+    build_fx_summary,
+    build_price_summary,
+    canonical_source,
+    check_quoting_unit,
+    fetch_ft_quotes,
+    fetch_fx_quotes,
+    fetch_historical_data,
     fetch_investing_quotes,
+    fetch_yahoo_hourly,
+    fetch_yahoo_quotes,
+    format_yahoo_price,
+    get_source_config,
     import_closed_holdings,
+    main,
+    new_york_fx_closes,
+    parse_arguments,
+    read_closed_holdings,
+    read_fund_specs,
+    read_fx_pairs,
     read_history_rows,
+    render_summary_markdown,
+    scrape_fund_quotes,
+    scrape_funds,
+    snap_fx_rates,
+    validate_backfill_args,
+    write_fx_files,
+    write_fx_results,
+    write_history_files,
+    write_latest_price_file,
+    write_results,
+    write_summary,
 )
 
 # Point the module's default output directory at a scratch location for the
