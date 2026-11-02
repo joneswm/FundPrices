@@ -893,7 +893,7 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
             an ISIN lookup lets FT choose the listing, and it has resolved an
             LSE USD holding to its German EUR line.
         start: Inclusive ISO start date
-        end: Inclusive ISO end date, or None for today
+        end: Inclusive ISO end date, or None for now's date
         now: Aware datetime to judge whether a row's day is over (default:
             the current time)
 
@@ -906,7 +906,8 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
         ValueError: the internal id could not be found, or no rows were
             returned. Callers fall back to scraping the summary page.
     """
-    end = end or datetime.date.today().isoformat()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    end = end or now.date().isoformat()
 
     page = http_get(FT_HISTORICAL_PAGE.format(isin=isin))
 
@@ -1011,7 +1012,7 @@ INVESTING_HEADERS = {
 }
 
 
-def fetch_investing_quotes(pair_id, start, end=None):
+def fetch_investing_quotes(pair_id, start, end=None, now=None):
     """Fetch dated daily closes for a delisted line from investing.com.
 
     Used for a fund that was liquidated and has since disappeared from Yahoo
@@ -1022,7 +1023,9 @@ def fetch_investing_quotes(pair_id, start, end=None):
     Args:
         pair_id: investing.com's internal numeric id for the listing
         start: Inclusive ISO start date
-        end: Inclusive ISO end date, or None for today
+        end: Inclusive ISO end date, or None for now's date
+        now: Aware datetime whose date an open end stands for (default: the
+            current time)
 
     Returns:
         list[Quote], oldest first, with no currency: the endpoint does not
@@ -1031,7 +1034,8 @@ def fetch_investing_quotes(pair_id, start, end=None):
     Raises:
         ValueError: no usable rows were returned for the window.
     """
-    end = end or datetime.date.today().isoformat()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    end = end or now.date().isoformat()
 
     response = http_get(
         INVESTING_HISTORICAL_URL.format(pair_id=pair_id, start=start, end=end),
@@ -1122,24 +1126,27 @@ def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
     return None, last_error
 
 
-def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
+def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None):
     """Return dated quotes for one fund from its configured source.
 
     YA, FT and IV use dated HTTP routes. An FT failure falls back to scraping
     its summary page rather than losing the fund; that page shows only the
-    current price, so the quote carries the run date and no currency.
+    current price, so the quote carries now's date and no currency. `now`
+    (default: the current time) is handed to the fetchers, which judge by it
+    whether a session or a day is over.
     """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
     code = source.upper()
 
     if code == "YA":
-        return fetch_yahoo_quotes(fund_id, start, end)
+        return fetch_yahoo_quotes(fund_id, start, end, now=now)
 
     if code == "IV":
-        return fetch_investing_quotes(fund_id, start, end)
+        return fetch_investing_quotes(fund_id, start, end, now=now)
 
     if code == "FT":
         try:
-            return fetch_ft_quotes(fund_id, start, end)
+            return fetch_ft_quotes(fund_id, start, end, now=now)
         except Exception as error:
             log.warning(f"FT historical lookup failed for {fund_id}: {error}")
 
@@ -1148,7 +1155,7 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
         raise ValueError(f"Unsupported source {source} for {fund_id}")
 
     price = scrape_price_with_common_settings(browser.page(), url, selector)
-    return [Quote(datetime.date.today().isoformat(), normalize_price(price), "")]
+    return [Quote(now.date().isoformat(), normalize_price(price), "")]
 
 
 def write_latest_price_file(fund_id, price, data_dir):
@@ -1157,21 +1164,22 @@ def write_latest_price_file(fund_id, price, data_dir):
         f.write(price + "\n")
 
 
-def scrape_funds(funds, data_dir=None):
+def scrape_funds(funds, data_dir=None, now=None):
     """Scrape a window of dated prices for each fund and return results.
 
     Args:
         funds: FundSpec instances, or plain (source, identifier) pairs
         data_dir: Directory for per-fund price files (default: DATA_DIR)
+        now: Aware datetime the window runs back from and sessions are
+            judged by (default: the current time)
     """
     if data_dir is None:
         data_dir = DATA_DIR
+    now = now or datetime.datetime.now(datetime.timezone.utc)
 
     os.makedirs(data_dir, exist_ok=True)
     results = ScrapeResults()
-    start = (
-        datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
-    ).isoformat()
+    start = (now.date() - datetime.timedelta(days=SNAP_WINDOW_DAYS)).isoformat()
     browser = LazyBrowser()
     stored = newest_stored_rows(data_dir)
 
@@ -1182,7 +1190,7 @@ def scrape_funds(funds, data_dir=None):
             # identifier, so aliases cost no extra network calls.
             quotes, error = fetch_with_retries(
                 lambda: scrape_fund_quotes(
-                    spec.source, spec.lookup_id, start, browser=browser
+                    spec.source, spec.lookup_id, start, browser=browser, now=now
                 )
             )
 
@@ -1316,7 +1324,7 @@ def write_history_csv(rows, data_dir):
     )
 
 
-def write_history_files(rows, data_dir, latest=None):
+def write_history_files(rows, data_dir, latest=None, now=None):
     """Write the history, latest-price and rolling-window CSVs.
 
     Shared by the daily run and the backfill so both produce byte-identical
@@ -1327,6 +1335,8 @@ def write_history_files(rows, data_dir, latest=None):
         data_dir: Output directory
         latest: Optional fund -> row mapping for latest_prices.csv; computed
             from `rows` when omitted
+        now: Aware datetime whose date ends the rolling window when no latest
+            row has a usable date (default: the current time)
     """
     ordered = write_history_csv(rows, data_dir)
 
@@ -1342,17 +1352,15 @@ def write_history_files(rows, data_dir, latest=None):
         writer.writerow(HISTORY_HEADER)
         writer.writerows(latest[fund] for fund in sorted(latest))
 
-    reference_date = (
-        max((row[1] for row in latest.values()), default=None)
-        or datetime.date.today().isoformat()
-    )
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    reference_date = max((row[1] for row in latest.values()), default="")
     # A carried row is a stored row, and a stored date that does not parse
     # is tolerated per row below; tolerate it here too rather than lose the
     # whole run's output to one bad row.
     try:
         reference = datetime.date.fromisoformat(reference_date)
     except ValueError:
-        reference = datetime.date.today()
+        reference = now.date()
     cutoff = reference - datetime.timedelta(days=ROLLING_HISTORY_DAYS - 1)
 
     rolling_rows = []
@@ -1372,7 +1380,7 @@ def write_history_files(rows, data_dir, latest=None):
         writer.writerows(rolling_rows)
 
 
-def write_results(results, data_dir=None):
+def write_results(results, data_dir=None, now=None):
     """Write dated results to CSV files.
 
     History is keyed on (Fund, Date): an incoming row replaces an existing row
@@ -1383,6 +1391,8 @@ def write_results(results, data_dir=None):
     Args:
         results: List of [fund_id, date, price, currency] rows
         data_dir: Directory for output files (default: DATA_DIR)
+        now: Aware datetime handed to write_history_files (default: the
+            current time)
     """
     if data_dir is None:
         data_dir = DATA_DIR
@@ -1412,7 +1422,7 @@ def write_results(results, data_dir=None):
         fund: keep_newer_stored_row(fund, row, stored) for fund, row in latest.items()
     }
 
-    write_history_files(list(history_rows.values()), data_dir, latest=latest)
+    write_history_files(list(history_rows.values()), data_dir, latest=latest, now=now)
 
 
 # ===========================================================================
@@ -1513,7 +1523,7 @@ def new_york_fx_closes(bars, now=None):
     return [(day.isoformat(), best[day][1]) for day in sorted(best)]
 
 
-def fetch_fx_quotes(pair, start, end=None, today=None, now=None):
+def fetch_fx_quotes(pair, start, end=None, now=None):
     """Fetch dated FX rates for a pair, as GBP per 1 unit of the base currency.
 
     A day's rate is the 17:00 New York close from Yahoo's hourly bars (#80);
@@ -1526,20 +1536,21 @@ def fetch_fx_quotes(pair, start, end=None, today=None, now=None):
         pair: Six-letter pair, e.g. "USDGBP"
         start: Inclusive ISO start date
         end: Exclusive ISO end date, or None for the latest completed day
-        today: The current date (default: today)
-        now: The current time as an aware datetime (default: now)
+        now: The current time as an aware datetime (default: now); the
+            hourly history is measured back from its date
 
     Returns:
         list[Quote], oldest first, whose `currency` carries the pair name
     """
     symbol = f"{pair}=X"
-    today = today or datetime.date.today()
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    today = now.date()
     hourly_from = (today - datetime.timedelta(days=FX_HOURLY_HISTORY_DAYS)).isoformat()
     quotes = []
 
     if start < hourly_from:
         daily_end = min(end, hourly_from) if end else hourly_from
-        for quote in fetch_yahoo_quotes(symbol, start, daily_end):
+        for quote in fetch_yahoo_quotes(symbol, start, daily_end, now=now):
             if datetime.date.fromisoformat(quote.date).weekday() >= 5:
                 continue
             quotes.append(Quote(quote.date, format_fx_rate(quote.price), pair))
@@ -1554,26 +1565,28 @@ def fetch_fx_quotes(pair, start, end=None, today=None, now=None):
     return quotes
 
 
-def snap_fx_rates(pairs, data_dir=None):
+def snap_fx_rates(pairs, data_dir=None, now=None):
     """Fetch a window of dated rates for each pair.
 
     Failures are isolated per pair, so one dead pair does not cost the day's
-    other rates.
+    other rates. The window runs back from `now` (default: the current
+    time), which also decides whose closes have passed.
 
     Returns:
         ScrapeResults of [pair, date, rate] rows
     """
     if data_dir is None:
         data_dir = DATA_DIR
+    now = now or datetime.datetime.now(datetime.timezone.utc)
 
     os.makedirs(data_dir, exist_ok=True)
     results = ScrapeResults()
-    start = (
-        datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
-    ).isoformat()
+    start = (now.date() - datetime.timedelta(days=SNAP_WINDOW_DAYS)).isoformat()
 
     for pair in pairs:
-        quotes, error = fetch_with_retries(lambda: fetch_fx_quotes(pair, start))
+        quotes, error = fetch_with_retries(
+            lambda: fetch_fx_quotes(pair, start, now=now)
+        )
         if error:
             results.failures.append(f"{pair}: {error}")
             continue
@@ -1784,7 +1797,7 @@ def is_removable_row(row):
     return not currency
 
 
-def backfill_fx(pairs, start, data_dir=None, report=None):
+def backfill_fx(pairs, start, data_dir=None, report=None, now=None):
     """Rebuild stored FX rates from source data, from `start` onwards.
 
     Uses the same rule as the price rebuild: a pair that fetches successfully
@@ -1796,6 +1809,8 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
         start: Inclusive ISO start date
         data_dir: Directory for output files (default: DATA_DIR)
         report: Existing BackfillReport to add to, or None for a new one
+        now: Aware datetime the fetches judge each day's close by (default:
+            the current time)
 
     Returns:
         BackfillReport
@@ -1808,7 +1823,9 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
     stored = read_fx_rows(os.path.join(data_dir, "fx_history.csv"))
 
     for pair in pairs:
-        quotes, error = fetch_with_retries(lambda: fetch_fx_quotes(pair, start))
+        quotes, error = fetch_with_retries(
+            lambda: fetch_fx_quotes(pair, start, now=now)
+        )
         existing = [key for key in stored if key[0] == pair]
 
         if error:
@@ -1837,7 +1854,7 @@ def backfill_fx(pairs, start, data_dir=None, report=None):
     return report
 
 
-def backfill_history(specs, start, data_dir=None, pairs=None):
+def backfill_history(specs, start, data_dir=None, pairs=None, now=None):
     """Rebuild stored history from source data, from `start` onwards.
 
     Deletes rather than upserting: carry-forward and scrape-dated rows sit on
@@ -1854,6 +1871,8 @@ def backfill_history(specs, start, data_dir=None, pairs=None):
         data_dir: Directory for output files (default: DATA_DIR)
         pairs: FX pairs to rebuild afterwards; None reads fx_pairs.txt, an
             empty list skips the FX rebuild
+        now: Aware datetime the fetches judge sessions by (default: the
+            current time)
 
     Returns:
         BackfillReport
@@ -1872,7 +1891,7 @@ def backfill_history(specs, start, data_dir=None, pairs=None):
             spec = as_fund_spec(entry)
             quotes, error = fetch_with_retries(
                 lambda: scrape_fund_quotes(
-                    spec.source, spec.lookup_id, start, browser=browser
+                    spec.source, spec.lookup_id, start, browser=browser, now=now
                 )
             )
 
@@ -1941,7 +1960,7 @@ def backfill_history(specs, start, data_dir=None, pairs=None):
         for fund, row in latest_rows_by_fund(rows).items()
         if fund in configured
     }
-    write_history_files(rows, data_dir, latest=latest)
+    write_history_files(rows, data_dir, latest=latest, now=now)
 
     for row in latest.values():
         write_latest_price_file(row[0], row[2], data_dir)
@@ -1949,12 +1968,12 @@ def backfill_history(specs, start, data_dir=None, pairs=None):
     if pairs is None:
         pairs = read_fx_pairs()
     if pairs:
-        backfill_fx(pairs, start, data_dir, report=report)
+        backfill_fx(pairs, start, data_dir, report=report, now=now)
 
     return report
 
 
-def import_closed_holdings(holdings, data_dir=None):
+def import_closed_holdings(holdings, data_dir=None, now=None):
     """Import one-off history for instruments that are no longer held.
 
     Writes prices_history.csv and nothing else. latest_prices.csv, the 90-day
@@ -1973,6 +1992,8 @@ def import_closed_holdings(holdings, data_dir=None):
     Args:
         holdings: ClosedHolding instances to import
         data_dir: Directory for output files (default: DATA_DIR)
+        now: Aware datetime the fetches judge sessions by (default: the
+            current time)
 
     Returns:
         BackfillReport
@@ -2004,6 +2025,7 @@ def import_closed_holdings(holdings, data_dir=None):
                     holding.start,
                     fetch_end,
                     browser=browser,
+                    now=now,
                 )
             )
             if error:
@@ -4551,23 +4573,25 @@ def validate_iso_date(value, flag):
     return f"Invalid {flag} date format. Use YYYY-MM-DD"
 
 
-def validate_start_date(value, flag="--from"):
+def validate_start_date(value, flag="--from", now=None):
     """Return an error message for an unusable start date, else None.
 
     `flag` names the option in the message: the rebuilds take --from, the
-    history export --start (the two are one argument).
+    history export --start (the two are one argument). A date after now's
+    (default: the current time) is in the future.
     """
     error = validate_iso_date(value, flag)
     if error:
         return error
 
-    if datetime.date.fromisoformat(value) > datetime.date.today():
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if datetime.date.fromisoformat(value) > now.date():
         return f"{flag} date is in the future"
 
     return None
 
 
-def validate_backfill_args(args):
+def validate_backfill_args(args, now=None):
     """Return an error message for an invalid backfill invocation, else None."""
     if not args.backfill:
         return None
@@ -4578,10 +4602,10 @@ def validate_backfill_args(args):
     if not args.start:
         return "--from is required when using --backfill"
 
-    return validate_start_date(args.start)
+    return validate_start_date(args.start, now=now)
 
 
-def validate_dividend_backfill_args(args):
+def validate_dividend_backfill_args(args, now=None):
     """Return an error message for an invalid dividend rebuild, else None."""
     if not getattr(args, "backfill_dividends", False):
         return None
@@ -4592,10 +4616,10 @@ def validate_dividend_backfill_args(args):
             "--history or --import-closed"
         )
 
-    return validate_start_date(args.start) if args.start else None
+    return validate_start_date(args.start, now=now) if args.start else None
 
 
-def validate_history_args(args):
+def validate_history_args(args, now=None):
     """Return an error message for an invalid --history export, else None.
 
     Checked before any network call, like the rebuilds: the window must be
@@ -4613,7 +4637,7 @@ def validate_history_args(args):
     if not args.start:
         return "--start is required when using --history"
 
-    error = validate_start_date(args.start, "--start")
+    error = validate_start_date(args.start, "--start", now=now)
     if error:
         return error
 
@@ -4721,7 +4745,7 @@ class HistoryReport:
         return "\n".join(lines)
 
 
-def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
+def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=None):
     """Export one symbol's dated closes from Yahoo as a CSV of its own.
 
     The --history mode, on the daily run's own path: the bars come from
@@ -4735,10 +4759,12 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
         start_date: Inclusive ISO start date
         end_date: Inclusive ISO end date, or None for up to the latest bar
         data_dir: Output directory (default: DATA_DIR)
+        now: Aware datetime sessions are judged by, whose date names an
+            open window (default: the current time)
 
     Returns:
         HistoryReport. `path` is history_<symbol>_<start>_<end>.csv under
-        `data_dir` (today's date standing in for a missing end) and `rows`
+        `data_dir` (now's date standing in for a missing end) and `rows`
         the [symbol, date, price, currency] rows written. A symbol that
         fails after the retries, or returns no bars at all (Yahoo answers an
         unknown ticker with an empty frame), is on `failures` and no file is
@@ -4746,8 +4772,9 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
     """
     if data_dir is None:
         data_dir = DATA_DIR
+    now = now or datetime.datetime.now(datetime.timezone.utc)
 
-    end_text = end_date or datetime.date.today().isoformat()
+    end_text = end_date or now.date().isoformat()
     path = os.path.join(data_dir, f"history_{symbol}_{start_date}_{end_text}.csv")
     report = HistoryReport(symbol, path)
 
@@ -4760,7 +4787,7 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
         ).isoformat()
 
     quotes, error = fetch_with_retries(
-        lambda: fetch_yahoo_quotes(symbol, start_date, fetch_end)
+        lambda: fetch_yahoo_quotes(symbol, start_date, fetch_end, now=now)
     )
     if error is None and not quotes:
         error = f"no prices between {start_date} and {end_text}"
@@ -4808,29 +4835,36 @@ def publish_report(report, heading):
         raise SystemExit(1)
 
 
-def main(argv=None):
-    """Run the scraper in the mode `argv` selects (sys.argv when None)."""
+def main(argv=None, now=None):
+    """Run the scraper in the mode `argv` selects (sys.argv when None).
+
+    `now` (default: the current time) is read once and handed to every step,
+    so a run judges sessions, windows and its own date by one instant.
+    """
     args = parse_arguments(argv)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
 
     if args.backfill:
-        error = validate_backfill_args(args)
+        error = validate_backfill_args(args, now=now)
         if error:
             print(f"Error: {error}")
             raise SystemExit(2)
 
         specs = read_fund_specs(FUNDS_FILE)
-        report = backfill_history(specs, args.start, pairs=read_fx_pairs())
+        report = backfill_history(specs, args.start, pairs=read_fx_pairs(), now=now)
         # Everything obtainable has been written before signalling failure.
         publish_report(report, f"Backfill from {args.start}")
         return
 
     if args.import_closed:
-        report = import_closed_holdings(read_closed_holdings(CLOSED_HOLDINGS_FILE))
+        report = import_closed_holdings(
+            read_closed_holdings(CLOSED_HOLDINGS_FILE), now=now
+        )
         publish_report(report, "Closed-holding import")
         return
 
     if args.backfill_dividends:
-        error = validate_dividend_backfill_args(args)
+        error = validate_dividend_backfill_args(args, now=now)
         if error:
             print(f"Error: {error}")
             raise SystemExit(2)
@@ -4845,12 +4879,12 @@ def main(argv=None):
         return
 
     if args.history:
-        error = validate_history_args(args)
+        error = validate_history_args(args, now=now)
         if error:
             print(f"Error: {error}")
             raise SystemExit(2)
 
-        report = fetch_historical_data(args.history, args.start, args.end)
+        report = fetch_historical_data(args.history, args.start, args.end, now=now)
         publish_report(
             report,
             f"History of {args.history} from {args.start} to {args.end or 'today'}",
@@ -4872,8 +4906,8 @@ def main(argv=None):
     # non-zero only after everything obtainable has been written.
     results = ScrapeResults()
     try:
-        results = scrape_funds(funds)
-        write_results(results)
+        results = scrape_funds(funds, now=now)
+        write_results(results, now=now)
     except Exception as error:
         results.failures.append(f"prices: {error}")
     failures.extend(results.failures)
@@ -4885,7 +4919,7 @@ def main(argv=None):
     if pairs:
         fx_results = ScrapeResults()
         try:
-            fx_results = snap_fx_rates(pairs)
+            fx_results = snap_fx_rates(pairs, now=now)
             write_fx_results(fx_results)
         except Exception as error:
             fx_results.failures.append(f"fx: {error}")
@@ -4916,7 +4950,7 @@ def main(argv=None):
 
     # Built from what was just written, so it reflects a partial run too;
     # a day with failures is exactly when the summary is most useful.
-    run_date = datetime.date.today().isoformat()
+    run_date = now.date().isoformat()
     history = list(
         read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
     )

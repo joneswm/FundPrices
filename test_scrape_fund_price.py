@@ -2625,7 +2625,7 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         for row in self.FRIDAY:
             write_latest_price_file(row[0], row[2], self.test_dir)
         quotes = {row[0]: [Quote(row[1], row[2], row[3])] for row in self.THURSDAY}
-        mock_quotes.side_effect = lambda symbol, start, end=None: quotes[symbol]
+        mock_quotes.side_effect = lambda symbol, start, end, now: quotes[symbol]
         results = scrape_funds([("YA", s) for s in quotes], self.test_dir)
         write_results(results, self.test_dir)
         self.assertEqual(self._read("latest_prices.csv"), self.FRIDAY)
@@ -2916,7 +2916,7 @@ class TestBackfillRebuild(BackfillCase):
             ],
         )
 
-        def side_effect(source, fund_id, start, end=None, browser=None):
+        def side_effect(source, fund_id, start, end=None, browser=None, now=None):
             if fund_id == "QQQ":
                 raise Exception("Network error")
             return [Quote("2026-09-18", "2.795", "USD")]
@@ -3103,7 +3103,7 @@ class TestBackfillRebuild(BackfillCase):
         with patch("scrape_fund_price.read_fx_pairs", return_value=["USDGBP"]):
             report = backfill_history([], "2026-09-01", self.test_dir)
         mock_fx.assert_called_once_with(
-            ["USDGBP"], "2026-09-01", self.test_dir, report=report
+            ["USDGBP"], "2026-09-01", self.test_dir, report=report, now=None
         )
 
     @patch("scrape_fund_price.backfill_fx")
@@ -3123,7 +3123,7 @@ class TestBackfillRebuild(BackfillCase):
         ):
             report = backfill_history([], "2026-09-01", self.test_dir, pairs=["USDGBP"])
         mock_fx.assert_called_once_with(
-            ["USDGBP"], "2026-09-01", self.test_dir, report=report
+            ["USDGBP"], "2026-09-01", self.test_dir, report=report, now=None
         )
 
     @patch("scrape_fund_price.backfill_fx")
@@ -3430,9 +3430,10 @@ class TestBackfillMainMode(DataDirCase):
 
         main(["--backfill", "--from", "2023-01-01"])
 
-        mock_backfill.assert_called_once_with(
-            mock_specs.return_value, "2023-01-01", pairs=["USDGBP"]
+        self.assertEqual(
+            mock_backfill.call_args.args, (mock_specs.return_value, "2023-01-01")
         )
+        self.assertEqual(mock_backfill.call_args.kwargs["pairs"], ["USDGBP"])
         printed = mock_print.call_args.args[0]
         self.assertIn(self.QQQ_ROW, printed.splitlines())
 
@@ -3607,7 +3608,7 @@ class TestClosedHoldingImport(DataDirCase):
     def test_a_failed_fetch_is_reported_and_isolated(self, mock_quotes):
         """Test one dead source does not cost the other holdings their import."""
 
-        def side_effect(source, lookup_id, start, end=None, browser=None):
+        def side_effect(source, lookup_id, start, end=None, browser=None, now=None):
             if lookup_id == "BKCH.L":
                 raise ValueError("no rows")
             return [Quote("2023-01-03", "849.00", "GBX")]
@@ -3871,11 +3872,10 @@ class TestNewYorkFxCloses(unittest.TestCase):
 class TestFxQuoteFetching(unittest.TestCase):
     """Test FX rate retrieval."""
 
-    TODAY = date(2026, 10, 19)
     NOW = utc(2026, 10, 19, 12)
 
     def fetch(self, pair, start):
-        return fetch_fx_quotes(pair, start, today=self.TODAY, now=self.NOW)
+        return fetch_fx_quotes(pair, start, now=self.NOW)
 
     @patch("scrape_fund_price.fetch_yahoo_hourly")
     def test_requests_the_yahoo_fx_ticker_hourly(self, mock_hourly):
@@ -3925,7 +3925,7 @@ class TestFxQuoteFetching(unittest.TestCase):
         ]
         mock_hourly.return_value = [(utc(2026, 10, 16, 20), 0.75023)]
         quotes = self.fetch("USDGBP", "2021-12-01")
-        hourly_from = (self.TODAY - timedelta(days=729)).isoformat()
+        hourly_from = (self.NOW.date() - timedelta(days=729)).isoformat()
         self.assertEqual(
             mock_daily.call_args.args, ("USDGBP=X", "2021-12-01", hourly_from)
         )
@@ -4062,7 +4062,7 @@ class TestFxFailureIsolation(DataDirCase):
     def test_one_failing_pair_does_not_block_the_others(self, mock_quotes):
         """Test a dead pair does not cost the rest of the day's rates."""
 
-        def side_effect(pair, start, end=None):
+        def side_effect(pair, start, now):
             if pair == "USDGBP":
                 raise Exception("Network error")
             return [Quote("2026-09-18", "0.426700", pair)]
@@ -4226,7 +4226,7 @@ class TestFxInTheDailyRun(DataDirCase):
         """Test the snap gets the pairs and the write gets its rows."""
         rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
         ran = self._run(rates)
-        ran["snap_fx_rates"].assert_called_once_with(self.PAIRS)
+        self.assertEqual(ran["snap_fx_rates"].call_args.args, (self.PAIRS,))
         ran["write_fx_results"].assert_called_once_with(rates)
         ran["write_summary"].assert_called_once()
         self.assertIsNone(ran["exit_code"])
@@ -9109,7 +9109,7 @@ class TestMainEntryPoint(DataDirCase):
             rows=[["AAPL", "2024-01-02", "184.08", "USD"]]
         )
         main(["--history", "AAPL", "--start", "2024-01-01"])
-        mock_fetch.assert_called_once_with("AAPL", "2024-01-01", None)
+        self.assertEqual(mock_fetch.call_args.args, ("AAPL", "2024-01-01", None))
         printed = mock_print.call_args.args[0].splitlines()
         self.assertIn(
             "| AAPL | 1 | 2024-01-02 | 2024-01-02 | USD "
@@ -9189,7 +9189,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
 
         # The write must happen, otherwise a single failing fund would
         # discard a whole day of good prices.
-        stubs["write_results"].assert_called_once_with(results)
+        self.assertEqual(stubs["write_results"].call_args.args, (results,))
         self.assertEqual(error.exception.code, 1)
 
     def test_clean_run_does_not_exit_non_zero(self):
@@ -9197,7 +9197,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         results = ScrapeResults([["QQQ", "2026-09-18", "721.45", "USD"]])
         with daily_run_stubs(specs=self.SPECS[:1], scrape_funds=results) as stubs:
             main([])
-        stubs["write_results"].assert_called_once_with(results)
+        self.assertEqual(stubs["write_results"].call_args.args, (results,))
 
     def _crashing_run(self, crash):
         """Run the daily mode with every step stubbed and `crash` raising.
