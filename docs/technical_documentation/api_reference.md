@@ -539,6 +539,14 @@ Yahoo route has its `IS` rows rebuilt alone and its own line in the report; `con
 stay; an instrument that fails keeps what it had. Rebuilds the upcoming file without a
 calendar lookup, taking the issuers' declared rows. Returns a `BackfillReport`.
 
+It is a thin writer around two steps: `fetch_rebuild_events(run, start=None)` fetches
+Yahoo's events for each `YA` instrument (returns lookup id to its events dated
+`run.today` or earlier, and the `"<id>: dividends: <error>"` failures), and
+`rebuild_dividend_rows(run, history, distributions, events, issuers, *, start=None)`
+computes the rebuilt history without fetching or writing anything, returning
+`(history, entries, declared)`: the new history (the argument is not changed), the
+`BackfillEntry` of each identifier and the issuers' declared dividends.
+
 ## Issuer Dividend Dates
 
 SPEC-011. `dividend_sources.txt` names, per instrument, an issuer page that lists every

@@ -5896,6 +5896,30 @@ class TestDividendBackfill(DividendRunCase):
 
         return self._run(specs, events, distributions=distributions, runner=runner)
 
+    def test_the_rebuild_step_fetches_nothing_and_keeps_its_input(self):
+        """Test rebuild_dividend_rows works on what it is given and returns."""
+        row = self.row("QQQ", "2026-03-24", "", "0.6", "USD", "YA")
+        stored = {("QQQ", "2026-03-24"): row}
+        run = dividend_run([FundSpec("YA", "QQQ"), FundSpec("YA", "BAD")])
+        events = {"QQQ": [self.EVENT("2026-03-25", "0.65", "USD")]}
+        with patch.object(scrape_fund_price, "fetch_yahoo_dividends") as fetch:
+            history, entries, declared = scrape_fund_price.rebuild_dividend_rows(
+                run,
+                stored,
+                [],
+                events,
+                scrape_fund_price.IssuerResults(),
+                start="2026-01-01",
+            )
+        fetch.assert_not_called()
+        self.assertEqual(stored, {("QQQ", "2026-03-24"): row})
+        self.assertEqual(list(history), [("QQQ", "2026-03-25")])
+        self.assertEqual(
+            [(entry.identifier, entry.status) for entry in entries],
+            [("QQQ", "rebuilt"), ("BAD", "failed, kept existing")],
+        )
+        self.assertEqual(declared, {})
+
     def test_the_rebuild_replaces_source_rows_from_the_start_date(self):
         """Test rows Yahoo no longer reports go, and earlier ones stay."""
         self.write_history(

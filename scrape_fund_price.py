@@ -3715,6 +3715,110 @@ def rebuild_issuer_rows(run, history, spec, table, start):
     return history, items, declared
 
 
+def fetch_rebuild_events(run, start=None):
+    """Fetch Yahoo's dividend events of each YA instrument, for the rebuild.
+
+    Retried by `fetch_with_retries()`; one instrument failing never stops the
+    others.
+
+    Returns:
+        (lookup identifier -> its DividendEvents dated the run's day or
+        earlier, for the instruments that fetched; the
+        "<identifier>: dividends: <error>" lines of those that did not)
+    """
+    events, failures = {}, []
+    for spec in run.universe.specs:
+        if spec.source != "YA":
+            continue
+        fetched, error = fetch_with_retries(
+            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
+        )
+        if error:
+            failures.append(f"{spec.lookup_id}: dividends: {error}")
+            continue
+        events[spec.lookup_id] = [
+            event for event in fetched if event.ex_date <= run.today.isoformat()
+        ]
+    return events, failures
+
+
+def rebuild_dividend_rows(run, history, distributions, events, issuers, *, start=None):
+    """Return what --backfill-dividends makes of the history, fetching nothing.
+
+    For each YA instrument that fetched, its `YA` rows from `start` (all of
+    them without one) are replaced by `events`, and where its issuer's page
+    fetched its issuer rows too, the table being applied last; one whose
+    fetch failed keeps every row. An instrument with no Yahoo route has its
+    issuer rows rebuilt alone (rebuild_issuer_rows). The `config` rows of
+    `distributions` are merged last.
+
+    Args:
+        run: The DividendRun
+        history: dividends_history.csv rows keyed on (Fund, ExDate); not changed
+        distributions: Distribution lines from distributions.txt
+        events: fetch_rebuild_events' lookup identifier -> DividendEvents
+        issuers: The run's IssuerResults
+        start: Inclusive ISO date to rebuild from, None for everything
+
+    Returns:
+        (the rebuilt history, the BackfillEntry of each identifier, lookup
+        identifier -> the DeclaredDividend its issuer announced)
+    """
+    history = dict(history)
+    entries, declared = [], {}
+
+    for spec in run.universe.specs:
+        table = issuers.tables.get(spec.lookup_id)
+        if spec.source != "YA":
+            if spec.lookup_id in issuers.requested:
+                history, items, announced = rebuild_issuer_rows(
+                    run, history, spec, table, start
+                )
+                entries.extend(items)
+                declared.update(announced)
+            continue
+
+        fetched = events.get(spec.lookup_id)
+        owned = ("YA",) if table is None else ("YA",) + DIVIDEND_SOURCE_CODES
+
+        for identifier in spec.publish_ids:
+            existing = [key for key in history if key[0] == identifier]
+            if fetched is None:
+                entries.append(BackfillEntry.failed(identifier, existing))
+                continue
+
+            doomed = [
+                key
+                for key in existing
+                if history[key][5] in owned and key[1] >= (start or "")
+            ]
+            for key in doomed:
+                del history[key]
+            merge_dividend_rows(
+                history,
+                (
+                    [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
+                    for e in fetched
+                ),
+            )
+            entries.append(
+                BackfillEntry.rebuilt(
+                    identifier,
+                    before=len(existing),
+                    deleted=len(doomed),
+                    retained=len(existing) - len(doomed),
+                    inserted=[(e.ex_date, e.currency) for e in fetched],
+                )
+            )
+
+        tables = {} if table is None else {spec.lookup_id: table}
+        history, announced = merge_issuer_tables(run, history, tables, start)
+        declared.update(announced)
+
+    merge_dividend_rows(history, config_history_rows(run, distributions))
+    return history, entries, declared
+
+
 def backfill_dividends(
     specs, distributions, start=None, data_dir=None, today=None, sources=()
 ):
@@ -3743,67 +3847,16 @@ def backfill_dividends(
     """
     run = DividendRun.prepare(specs, data_dir, today)
     os.makedirs(run.data_dir, exist_ok=True)
-    history = read_dividend_history(run.data_dir)
     report = BackfillReport()
     issuers = collect_issuer_tables(run, sources)
-    report.failures.extend(issuers.failures)
-    declared = {}
+    events, failures = fetch_rebuild_events(run, start)
+    report.failures.extend(issuers.failures + failures)
 
-    for spec in run.universe.specs:
-        table = issuers.tables.get(spec.lookup_id)
-        if spec.source != "YA":
-            if spec.lookup_id in issuers.requested:
-                history, items, announced = rebuild_issuer_rows(
-                    run, history, spec, table, start
-                )
-                report.entries.extend(items)
-                declared.update(announced)
-            continue
-
-        events, error = fetch_with_retries(
-            lambda: fetch_yahoo_dividends(spec.lookup_id, start)
-        )
-        if error:
-            report.failures.append(f"{spec.lookup_id}: dividends: {error}")
-        else:
-            events = [e for e in events if e.ex_date <= run.today.isoformat()]
-        owned = ("YA",) if table is None else ("YA",) + DIVIDEND_SOURCE_CODES
-
-        for identifier in spec.publish_ids:
-            existing = [key for key in history if key[0] == identifier]
-            if error:
-                report.entries.append(BackfillEntry.failed(identifier, existing))
-                continue
-
-            doomed = [
-                key
-                for key in existing
-                if history[key][5] in owned and key[1] >= (start or "")
-            ]
-            for key in doomed:
-                del history[key]
-            merge_dividend_rows(
-                history,
-                (
-                    [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
-                    for e in events
-                ),
-            )
-            report.entries.append(
-                BackfillEntry.rebuilt(
-                    identifier,
-                    before=len(existing),
-                    deleted=len(doomed),
-                    retained=len(existing) - len(doomed),
-                    inserted=[(e.ex_date, e.currency) for e in events],
-                )
-            )
-
-        tables = {} if table is None else {spec.lookup_id: table}
-        history, announced = merge_issuer_tables(run, history, tables, start)
-        declared.update(announced)
-
-    merge_dividend_rows(history, config_history_rows(run, distributions))
+    stored = read_dividend_history(run.data_dir)
+    history, entries, declared = rebuild_dividend_rows(
+        run, stored, distributions, events, issuers, start=start
+    )
+    report.entries.extend(entries)
     write_dividend_history(list(history.values()), run.data_dir)
     publish_upcoming(run, distributions, history, declared)
     return report
