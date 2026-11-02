@@ -1,241 +1,117 @@
 # Test-Driven Development (TDD) Workflow
 
-This document defines the mandatory TDD workflow for the Fund Price Scraping project.
+This document defines the mandatory TDD workflow for the Fund Price Scraping project. The
+rule itself is section 1 of [`constitution.md`](../../constitution.md); this page is the
+practical detail. Templates and checklists are in [tdd_templates.md](tdd_templates.md).
 
-## 🚨 MANDATORY TDD PROCESS
-
-**ALL development MUST follow this exact workflow. No exceptions.**
+**ALL code changes follow this workflow. No exceptions.** Documentation-only changes use
+a `docs:` commit and need no test.
 
 ## The RED-GREEN-REFACTOR Cycle
 
-### 🔴 RED Phase: Write Failing Test
+### RED: write a failing test
 
-**Goal**: Write a test that describes the desired behavior and fails.
+**Goal**: a test that describes the desired behaviour and fails for the right reason.
 
-#### Steps:
-1. **Analyze Requirements**: Understand what needs to be implemented
-2. **Write Test**: Create a test that describes the expected behavior
-3. **Run Test**: Verify the test fails (RED)
-4. **Commit**: Commit the failing test
+1. Understand what needs to change, and which existing test class it belongs in.
+2. Write the test.
+3. Run it and read the failure. A test that fails because of a typo or an import error has
+   not yet proved anything; it must fail on the behaviour.
+4. Commit with the prefix `RED:`.
 
-#### Example:
-```python
-def test_get_source_config_bloomberg(self):
-    """Test Bloomberg source configuration."""
-    url, selector = get_source_config("BB", "TEST123")
-    expected_url = "https://www.bloomberg.com/quote/TEST123"
-    expected_selector = ".priceText__1853e8a5"
-    self.assertEqual(url, expected_url)
-    self.assertEqual(selector, expected_selector)
-```
+### GREEN: make it pass
 
-**Expected Result**: Test fails because Bloomberg source not implemented.
+**Goal**: the minimum code that passes the test.
 
-### 🟢 GREEN Phase: Make Test Pass
+1. Implement only what the test needs.
+2. Run the new test, then the whole suite.
+3. Commit with the prefix `GREEN:`. The suite must be green at every non-RED commit.
 
-**Goal**: Write the minimal code to make the test pass.
+### REFACTOR: improve the code
 
-#### Steps:
-1. **Write Minimal Code**: Implement only what's needed to pass the test
-2. **Run Test**: Verify the test passes (GREEN)
-3. **Commit**: Commit the passing implementation
+**Goal**: better structure with the suite green.
 
-#### Example:
-```python
-def get_source_config(source, fund_id):
-    if source.upper() == "FT":
-        url = f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}"
-        selector = ".mod-ui-data-list__value"
-    elif source.upper() == "YH":
-        url = f"https://sg.finance.yahoo.com/quote/{fund_id}/"
-        selector = 'span[data-testid="qsp-price"]'
-    elif source.upper() == "MS":
-        url = f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}"
-        selector = '#mainContent_quicktakeContent_fvOverview_lblNAV'
-    elif source.upper() == "BB":  # NEW: Minimal implementation
-        url = f"https://www.bloomberg.com/quote/{fund_id}"
-        selector = ".priceText__1853e8a5"
-    else:
-        return None, None
-    return url, selector
-```
+1. Remove duplication, improve names, tighten the code.
+2. Run the whole suite after each step.
+3. Commit with the prefix `REFACTOR:`.
 
-**Expected Result**: Test passes with minimal implementation.
+Reference the GitHub issue or spec in the commit (`Fixes #12`, `(SPEC-010)`); see
+[AGENTS.md](../../AGENTS.md) and constitution section 7 for the commit format.
 
-### 🔵 REFACTOR Phase: Improve Code
+## What a test looks like in this project
 
-**Goal**: Improve code quality while keeping tests green.
+The code under test follows one contract, and tests assert it:
 
-#### Steps:
-1. **Improve Code**: Refactor for better readability, performance, or structure
-2. **Run Tests**: Verify all tests still pass
-3. **Commit**: Commit the refactored code
+- **Fetchers raise.** A source that cannot get a price raises; it does not return an error
+  string and it does not return a placeholder.
+- **`fetch_with_retries()` retries.** Every fetch is retried up to `MAX_PRICE_ATTEMPTS`
+  (3). Do not reimplement retry logic in a new fetcher or its test.
+- **Failures are collected, not raised past the run.** The result object carries a
+  `failures` list (`<identifier>: <error>`, or a step prefix such as `uk_cpi: <error>`).
+  The run writes everything it obtained and only then exits non-zero.
+- **No error text ever reaches a data file.** A failed fetch leaves the previous file or
+  row in place.
+- **Result rows are `[identifier, date, price, currency]`**, with the date the source
+  reports.
 
-#### Example:
-```python
-def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for a given source and fund ID."""
-    source_configs = {
-        "FT": {
-            "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
-            "selector": ".mod-ui-data-list__value"
-        },
-        "YH": {
-            "url": f"https://sg.finance.yahoo.com/quote/{fund_id}/",
-            "selector": 'span[data-testid="qsp-price"]'
-        },
-        "MS": {
-            "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
-            "selector": '#mainContent_quicktakeContent_fvOverview_lblNAV'
-        },
-        "BB": {
-            "url": f"https://www.bloomberg.com/quote/{fund_id}",
-            "selector": ".priceText__1853e8a5"
-        }
-    }
-    
-    config = source_configs.get(source.upper())
-    if config:
-        return config["url"], config["selector"]
-    return None, None
-```
+Rather than repeat sketches that drift out of date, copy the shape of two real test
+classes in [`test_scrape_fund_price.py`](../../test_scrape_fund_price.py):
 
-**Expected Result**: All tests pass with improved code structure.
+- **`TestNewYorkFxCloses`**: a pure function (`new_york_fx_closes`) tested with a fixed
+  clock. The tests build hourly bars with a small `utc()` helper, pass `now=` explicitly,
+  and assert the exact result. Read `test_takes_the_bar_that_ends_at_five_pm_new_york` for
+  the basic shape, `test_follows_the_us_clock_change` for a boundary case, and
+  `test_the_rate_does_not_depend_on_when_the_job_runs` for a property of the contract.
+- **`TestUkCpiUpdate`**: a step that reads and writes a file, tested with the network
+  fetch patched. `setUp` makes a temporary directory, `tearDown` removes it, and `_run()`
+  patches `fetch_uk_cpi`. `test_the_first_run_writes_the_whole_series` is the happy path;
+  `test_a_failed_fetch_keeps_the_last_published_file` is the failure contract (file
+  byte-identical, one failure beginning `uk_cpi: `); and
+  `test_a_transient_failure_is_retried` shows the shared retry in action.
+
+New tests should read like these: one behaviour each, a name that says what is expected,
+and exact assertions on the real row or file shape.
 
 ## TDD Rules and Guidelines
 
-### ✅ DO's
+### DO
 
-1. **Write Tests First**: Always write the test before the implementation
-2. **Make Tests Fail**: Ensure tests fail initially (proves they test something real)
-3. **Minimal Implementation**: Write only the code needed to pass tests
-4. **Run Tests Frequently**: Run tests after every small change
-5. **Refactor Continuously**: Improve code while keeping tests green
-6. **Test Edge Cases**: Include boundary conditions and error scenarios
-7. **Use Descriptive Names**: Test names should clearly describe behavior
-8. **Mock External Dependencies**: Use mocks for network calls, file operations
+1. **Write the test first** and watch it fail
+2. **Write minimal code**: only what is needed to pass
+3. **Run the tests after every small change**
+4. **Refactor continuously**, with the suite green
+5. **Test edge cases**: boundaries, failures, weekends, bank holidays, the US clock change
+6. **Use descriptive names**: the name says the behaviour
+7. **Mock external dependencies**: unit tests never touch the network or the real `data/`
+8. **Inject the clock** (`now=`, `today=`) rather than depending on when the test runs
 
-### ❌ DON'Ts
+### DO NOT
 
-1. **Don't Write Code Without Tests**: Never implement features without tests
-2. **Don't Skip the RED Phase**: Always start with failing tests
-3. **Don't Over-Engineer**: Write minimal code to pass tests
-4. **Don't Ignore Failing Tests**: Fix failing tests immediately
-5. **Don't Write Tests After Code**: Tests must come first
-6. **Don't Skip Refactoring**: Always improve code quality
-7. **Don't Commit Failing Tests**: Only commit when tests pass (except RED phase)
+1. **Do not write code without a test that failed first**
+2. **Do not skip the RED phase** or write the test after the code
+3. **Do not over-engineer**
+4. **Do not ignore a failing test**: fix it now
+5. **Do not commit a failing test except in a RED commit**
+6. **Do not assert on an error string in a data file**: there must never be one
 
-## TDD Workflow with Cursor/VS Code
+## Running the tests
 
-### Keyboard Shortcuts for TDD
-
-| Shortcut | Action | TDD Phase |
-|----------|--------|-----------|
-| `Ctrl+Shift+T` | Run all tests | Verify RED/GREEN state |
-| `Ctrl+Shift+R` | Run current test | Quick verification |
-| `Ctrl+Shift+D` | Debug current test | Step through TDD cycle |
-| `F5` | Start debugging | Debug failing tests |
-| `Ctrl+Shift+F5` | Restart debugging | Restart TDD cycle |
-
-### TDD Workflow Steps in IDE
-
-1. **Write Test** (RED Phase)
-   - Create new test method
-   - Write test code
-   - Run test with `Ctrl+Shift+R` (should fail)
-
-2. **Implement Feature** (GREEN Phase)
-   - Write minimal implementation
-   - Run test with `Ctrl+Shift+R` (should pass)
-   - Run all tests with `Ctrl+Shift+T` (should all pass)
-
-3. **Refactor Code** (REFACTOR Phase)
-   - Improve code structure
-   - Run tests frequently with `Ctrl+Shift+T`
-   - Ensure all tests remain green
-
-## TDD Examples for Common Scenarios
-
-### Example 1: Adding New Fund Source
-
-```python
-# RED: Write failing test
-def test_get_source_config_reuters(self):
-    """Test Reuters source configuration."""
-    url, selector = get_source_config("RT", "TEST123")
-    expected_url = "https://www.reuters.com/markets/stocks/TEST123"
-    expected_selector = ".price-value"
-    self.assertEqual(url, expected_url)
-    self.assertEqual(selector, expected_selector)
-
-# GREEN: Minimal implementation
-def get_source_config(source, fund_id):
-    # ... existing code ...
-    elif source.upper() == "RT":
-        url = f"https://www.reuters.com/markets/stocks/{fund_id}"
-        selector = ".price-value"
-    # ... rest of function ...
-
-# REFACTOR: Improve structure
-# Move to configuration dictionary, add error handling, etc.
+```bash
+./run_tests.sh unit        # mocks only, seconds (the default)
+./run_tests.sh live        # live sources; a source that is down is skipped
+./run_tests.sh coverage    # unit tests with both coverage gates
+./run_tests.sh all         # everything
 ```
 
-### Example 2: Adding New Data Field
+A single class or method through unittest:
 
-```python
-# RED: Write failing test
-def test_scrape_funds_includes_currency(self):
-    """Test that scraped results include currency information."""
-    funds = [("FT", "GB00B1FXTF86")]
-    results = scrape_funds(funds, data_dir=self.test_dir)
-    
-    self.assertEqual(len(results), 1)
-    self.assertIn("currency", results[0])
-    self.assertIsNotNone(results[0]["currency"])
-
-# GREEN: Minimal implementation
-def scrape_funds(funds, data_dir=None):
-    # ... existing code ...
-    results.append({
-        "source": source,
-        "fund_id": fund_id,
-        "currency": "USD",  # Minimal implementation
-        "price": price,
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "success"
-    })
-
-# REFACTOR: Add proper currency detection
+```bash
+python -m unittest test_scrape_fund_price.TestNewYorkFxCloses -v
+python -m unittest test_scrape_fund_price.TestUkCpiUpdate.test_a_transient_failure_is_retried -v
 ```
 
-### Example 3: Error Handling
-
-```python
-# RED: Write failing test
-def test_scrape_funds_handles_invalid_source(self):
-    """Test that invalid source codes are handled gracefully."""
-    funds = [("INVALID", "TEST123")]
-    results = scrape_funds(funds, data_dir=self.test_dir)
-    
-    self.assertEqual(len(results), 1)
-    self.assertEqual(results[0]["price"], "N/A")
-    self.assertEqual(results[0]["status"], "error")
-
-# GREEN: Minimal implementation
-def scrape_funds(funds, data_dir=None):
-    # ... existing code ...
-    url, selector = get_source_config(source, fund_id)
-    if url and selector:
-        try:
-            price = scrape_price_with_common_settings(page, url, selector)
-        except Exception as e:
-            price = f"Error: {e}"
-    else:
-        price = "N/A"  # Handle invalid source
-    # ... rest of function ...
-
-# REFACTOR: Improve error handling and logging
-```
+Live tests are enabled by `FUNDPRICES_LIVE`, which `./run_tests.sh live` sets; without it
+they skip.
 
 ## TDD Quality Gates
 
@@ -243,59 +119,38 @@ def scrape_funds(funds, data_dir=None):
 
 Before committing any code, verify:
 
-- [ ] **RED Phase**: Test was written first and failed initially
-- [ ] **GREEN Phase**: Test now passes with minimal implementation
-- [ ] **REFACTOR Phase**: Code has been improved while keeping tests green
-- [ ] **All Tests Pass**: Run `python test_scrape_fund_price.py` successfully
-- [ ] **Coverage Maintained**: Test coverage remains above 90%
-- [ ] **Code Quality**: Code follows PEP 8 and project standards
-- [ ] **Documentation**: Docstrings and comments updated
+- [ ] **RED**: the test was written first and failed on the behaviour
+- [ ] **GREEN**: it now passes with a minimal implementation
+- [ ] **REFACTOR**: the code has been improved with the suite green
+- [ ] **All tests pass**: `./run_tests.sh unit`
+- [ ] **Coverage holds both gates**: 90% overall and 95% for `scrape_fund_price.py`
+- [ ] **Formatted**: `./format_code.sh`, or the pre-commit hooks
+- [ ] **Documentation**: docstrings, and the file that owns the fact, updated
 
 ### Continuous Integration
 
-The CI/CD pipeline enforces TDD:
+`test.yml` runs on every push and pull request, across Python 3.10, 3.12 and 3.14:
 
-- **Test Execution**: All tests must pass
-- **Coverage Threshold**: Minimum 90% test coverage
-- **Code Quality**: Linting and formatting checks
-- **TDD Compliance**: Code review ensures TDD workflow followed
+- **Test execution**: the whole suite must pass
+- **Coverage thresholds**: 90% overall, and 95% for `scrape_fund_price.py`
+
+CI does not lint or check formatting. Black, isort and flake8 run locally, through
+`./format_code.sh` and the pre-commit hooks in
+[dev_tools_config.md](dev_tools_config.md). TDD compliance (a failing test first) is
+checked by review of the commit history, not by CI.
 
 ## Troubleshooting TDD Issues
 
-### Common Problems
+1. **The test does not fail initially**: it is not testing the right thing, or the
+   behaviour already exists. Make the assertion more specific.
+2. **The test fails after implementation**: the implementation and the test disagree;
+   review both for consistency.
+3. **Tests pass but the feature does not work**: the test does not cover real use. Record
+   a real source response in `fixtures/` and test the parser against it, or add a live
+   test that skips when the source is down.
+4. **Refactoring breaks tests**: the tests are coupled to the implementation. Assert
+   behaviour (rows and files), not internals.
 
-1. **Test Doesn't Fail Initially**
-   - **Problem**: Test passes without implementation
-   - **Solution**: Test is not testing the right thing or implementation already exists
+Look at the existing tests for the pattern to follow before writing a new one.
 
-2. **Test Fails After Implementation**
-   - **Problem**: Implementation doesn't match test expectations
-   - **Solution**: Review test and implementation for consistency
-
-3. **Tests Pass But Feature Doesn't Work**
-   - **Problem**: Test doesn't cover real-world usage
-   - **Solution**: Add integration tests or improve test coverage
-
-4. **Refactoring Breaks Tests**
-   - **Problem**: Tests are too tightly coupled to implementation
-   - **Solution**: Focus tests on behavior, not implementation details
-
-### Getting Help
-
-- **Review TDD Examples**: Check existing test patterns in the codebase
-- **Ask Questions**: Discuss TDD approach with team members
-- **Study Resources**: Review TDD best practices and examples
-- **Practice**: Start with simple features to build TDD skills
-
-## TDD Benefits
-
-Following TDD provides:
-
-- **Better Code Quality**: Tests drive better design decisions
-- **Fewer Bugs**: Comprehensive test coverage catches issues early
-- **Faster Development**: Tests provide immediate feedback
-- **Easier Refactoring**: Tests ensure changes don't break existing functionality
-- **Better Documentation**: Tests serve as living documentation
-- **Confidence**: Tests provide confidence in code changes
-
-**Remember: TDD is not optional. It's mandatory for this project.**
+**Remember: TDD is not optional. It is mandatory for this project.**

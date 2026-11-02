@@ -1,305 +1,94 @@
 # Development Tools Configuration
 
-This document provides configuration files and setup instructions for development tools used in the FundPrices project.
+How the development tools are set up for the FundPrices project. The configuration lives
+in the files linked below; this page says what each is for and does not copy them, so it
+cannot drift out of date.
+
+## Formatting and Linting
+
+The project uses Black and isort (88-character lines, isort's `black` profile) for
+formatting and flake8 (`--max-line-length=88 --ignore=E203,W503`) for linting. There is no
+`pyproject.toml`, `setup.cfg` or `.flake8`: the options are on the command lines in the
+files below.
+
+| File | Purpose |
+|------|---------|
+| [`format_code.sh`](../../format_code.sh) | Runs Black, isort and flake8 over the repository |
+| [`.pre-commit-config.yaml`](../../.pre-commit-config.yaml) | The same three tools, plus whitespace, end-of-file, YAML, large-file and merge-conflict checks, on every commit |
+| [`Makefile`](../../Makefile) | `make format` and `make lint` run the same commands |
+
+Formatting and linting run **locally**, through these files. CI does not check them:
+`test.yml` runs the tests and the coverage gates only (see [tdd_workflow.md](tdd_workflow.md)).
 
 ## Pre-commit Hooks
 
-### Installation
 ```bash
 pip install pre-commit
-pre-commit install
+pre-commit install            # run the hooks on every commit
+pre-commit run --all-files    # run them by hand
 ```
 
-### Configuration (.pre-commit-config.yaml)
-```yaml
-repos:
-  - repo: https://github.com/psf/black
-    rev: 23.3.0
-    hooks:
-      - id: black
-        language_version: python3
-        args: [--line-length=88]
+The hooks are listed in [`.pre-commit-config.yaml`](../../.pre-commit-config.yaml).
 
-  - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-        args: [--profile=black, --line-length=88]
+## Makefile
 
-  - repo: https://github.com/pycqa/flake8
-    rev: 6.0.0
-    hooks:
-      - id: flake8
-        args: [--max-line-length=88, --ignore=E203,W503]
+[`Makefile`](../../Makefile) is the entry point for common commands. `make help` lists the
+targets with their descriptions. The ones used most:
 
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
-    hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-added-large-files
-      - id: check-merge-conflict
-```
-
-## Makefile for Development
-
-### Makefile
-```makefile
-.PHONY: help install test test-coverage format lint clean setup dev-setup validate
-
-help: ## Show this help message
-	@echo "FundPrices Development Commands"
-	@echo "=============================="
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
-
-install: ## Install dependencies
-	pip install -r requirements.txt
-	pip install black flake8 isort coverage pre-commit
-	playwright install chromium
-
-setup: ## Complete development environment setup
-	@echo "Setting up development environment..."
-	python -m venv venv
-	@echo "Virtual environment created. Please activate it:"
-	@echo "  source venv/bin/activate  # Linux/Mac"
-	@echo "  venv\\Scripts\\activate     # Windows"
-	@echo "Then run: make install"
-
-dev-setup: ## Run development environment setup script
-	@echo "Running development environment setup..."
-	@if [ -f "setup_dev_env.sh" ]; then \
-		chmod +x setup_dev_env.sh && ./setup_dev_env.sh; \
-	elif [ -f "setup_dev_env.bat" ]; then \
-		setup_dev_env.bat; \
-	else \
-		echo "Setup script not found"; \
-	fi
-
-validate: ## Validate development environment
-	python validate_dev_env.py
-
-test: ## Run tests
-	python test_scrape_fund_price.py
-
-test-coverage: ## Run tests with coverage
-	coverage run -m unittest test_scrape_fund_price.py
-	coverage report -m
-	coverage html
-
-format: ## Format code with Black and isort
-	black --line-length=88 .
-	isort --profile=black --line-length=88 .
-
-lint: ## Lint code with flake8
-	flake8 --max-line-length=88 --ignore=E203,W503 .
-
-clean: ## Clean up temporary files
-	find . -type f -name "*.pyc" -delete
-	find . -type d -name "__pycache__" -delete
-	find . -type d -name ".pytest_cache" -delete
-	rm -rf htmlcov/
-	rm -rf .coverage
-
-tdd-red: ## TDD RED Phase - Run tests to verify they fail
-	@echo "🔴 TDD RED Phase: Run tests to verify they fail"
-	python test_scrape_fund_price.py
-
-tdd-green: ## TDD GREEN Phase - Run tests to verify they pass
-	@echo "🟢 TDD GREEN Phase: Run tests to verify they pass"
-	python test_scrape_fund_price.py
-
-tdd-refactor: ## TDD REFACTOR Phase - Run tests to verify refactoring
-	@echo "🔵 TDD REFACTOR Phase: Run tests to verify refactoring"
-	python test_scrape_fund_price.py
-
-all-checks: format lint test ## Run all code quality checks
-	@echo "All checks completed successfully!"
-
-ci: ## Run CI pipeline locally
-	make format
-	make lint
-	make test-coverage
-	@echo "CI pipeline completed successfully!"
-```
-
-## Docker Development Environment
-
-### Dockerfile.dev
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install development tools
-RUN pip install --no-cache-dir black flake8 isort coverage pre-commit
-
-# Install Playwright browsers
-RUN playwright install chromium
-
-# Copy application files
-COPY . .
-
-# Create data directory
-RUN mkdir -p data
-
-# Set up pre-commit hooks
-RUN pre-commit install
-
-# Default command
-CMD ["python", "test_scrape_fund_price.py"]
-```
-
-### docker-compose.dev.yml
-```yaml
-version: '3.8'
-
-services:
-  fundprices-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    volumes:
-      - .:/app
-      - /app/venv
-    environment:
-      - PYTHONPATH=/app
-    command: tail -f /dev/null  # Keep container running for development
-    ports:
-      - "8000:8000"  # If you add a web interface later
-```
+| Target | Purpose |
+|--------|---------|
+| `make install` | Install the dependencies, the development tools and the Playwright browser |
+| `make test` | Run the tests |
+| `make test-coverage` | Run the tests with coverage |
+| `make format` | Black and isort |
+| `make lint` | flake8 |
+| `make validate` | `python validate_dev_env.py` |
 
 ## Development Scripts
 
-### run_tests.sh
-```bash
-#!/bin/bash
-# Test runner script with TDD workflow support
+| File | Purpose |
+|------|---------|
+| [`run_tests.sh`](../../run_tests.sh) | `./run_tests.sh unit \| live \| coverage \| all`; `unit` is the default and needs no virtual environment. The coverage gates (90% overall, 95% for `scrape_fund_price.py`) are in [`.coveragerc`](../../.coveragerc) |
+| [`format_code.sh`](../../format_code.sh) | Format and lint |
+| [`setup_dev_env.sh`](../../setup_dev_env.sh), [`setup_dev_env.bat`](../../setup_dev_env.bat) | Create the environment and install the dependencies and tools |
+| [`validate_dev_env.py`](../../validate_dev_env.py) | Check the environment is ready |
 
-set -e
+Live tests are switched on by the `FUNDPRICES_LIVE` environment variable, which
+`./run_tests.sh live` sets.
 
-echo "🧪 FundPrices Test Runner"
-echo "========================"
+## Dev Container
 
-# Check if virtual environment is active
-if [[ "$VIRTUAL_ENV" == "" ]]; then
-    echo "⚠️  Virtual environment not active. Activating..."
-    source venv/bin/activate
-fi
+[`.devcontainer/devcontainer.json`](../../.devcontainer/devcontainer.json) gives the same
+environment in VS Code and GitHub Codespaces: Python 3.12, the requirements and the
+Playwright browser installed on creation, and the editor extensions listed in
+[ide_setup.md](ide_setup.md).
 
-# Run tests based on argument
-case "${1:-all}" in
-    "red")
-        echo "🔴 TDD RED Phase: Running tests (should fail)"
-        python test_scrape_fund_price.py
-        ;;
-    "green")
-        echo "🟢 TDD GREEN Phase: Running tests (should pass)"
-        python test_scrape_fund_price.py
-        ;;
-    "refactor")
-        echo "🔵 TDD REFACTOR Phase: Running tests (should pass)"
-        python test_scrape_fund_price.py
-        ;;
-    "coverage")
-        echo "📊 Running tests with coverage"
-        coverage run -m unittest test_scrape_fund_price.py
-        coverage report -m
-        coverage html
-        echo "Coverage report generated in htmlcov/"
-        ;;
-    "all"|*)
-        echo "🧪 Running all tests"
-        python test_scrape_fund_price.py
-        ;;
-esac
+## VS Code Tasks
 
-echo "✅ Tests completed"
-```
-
-### format_code.sh
-```bash
-#!/bin/bash
-# Code formatting script
-
-set -e
-
-echo "🎨 Code Formatting"
-echo "=================="
-
-# Check if virtual environment is active
-if [[ "$VIRTUAL_ENV" == "" ]]; then
-    echo "⚠️  Virtual environment not active. Activating..."
-    source venv/bin/activate
-fi
-
-echo "📝 Formatting with Black..."
-black --line-length=88 .
-
-echo "📦 Sorting imports with isort..."
-isort --profile=black --line-length=88 .
-
-echo "🔍 Linting with flake8..."
-flake8 --max-line-length=88 --ignore=E203,W503 .
-
-echo "✅ Code formatting completed"
-```
-
-## VS Code Tasks Integration
-
-`.vscode/` is not tracked in git, so create `.vscode/tasks.json` yourself. A useful set of tasks:
-
-- **Run All Tests**: Execute complete test suite
-- **Run Tests with Coverage**: Generate coverage reports
-- **Format Code**: Apply Black and isort formatting
-- **Lint Code**: Run flake8 linting
-- **TDD Phase Tasks**: Specific tasks for RED/GREEN/REFACTOR phases
+`.vscode/` is not tracked in git. If you want tasks, create `.vscode/tasks.json` locally
+and have them call the commands above (`./run_tests.sh unit`, `./format_code.sh`).
 
 ## Development Workflow
 
-### Daily Development Workflow
-1. **Activate Environment**: `source venv/bin/activate`
-2. **Run Validation**: `python validate_dev_env.py`
-3. **Start TDD Cycle**: Use keyboard shortcuts or tasks
-4. **Format Code**: `make format` or `Ctrl+Shift+P` → "Format Document"
-5. **Run Tests**: `make test` or `Ctrl+Shift+T`
-6. **Commit Changes**: Follow TDD workflow
+### Daily workflow
+1. Activate the environment: `source venv/bin/activate`
+2. Check it is ready: `python validate_dev_env.py`
+3. Follow the TDD cycle ([tdd_workflow.md](tdd_workflow.md))
+4. Format: `./format_code.sh`
+5. Test: `./run_tests.sh unit`
+6. Commit, staging by filename
 
-### Pre-commit Workflow
-1. **Install Hooks**: `pre-commit install`
-2. **Automatic Checks**: Hooks run on every commit
-3. **Manual Run**: `pre-commit run --all-files`
-
-### CI/CD Integration
-The development tools integrate seamlessly with GitHub Actions:
-- **Test Execution**: Matches local test commands
-- **Code Quality**: Same linting and formatting rules
-- **Coverage Reporting**: Consistent coverage thresholds
-- **TDD Compliance**: Enforced through code review
+### Pre-commit workflow
+1. Install the hooks once: `pre-commit install`
+2. The hooks run on every commit
+3. Run them by hand with `pre-commit run --all-files`
 
 ## Troubleshooting
 
-### Common Issues
-1. **Virtual Environment Not Active**: Run `source venv/bin/activate`
-2. **Playwright Browsers Missing**: Run `playwright install chromium`
-3. **Dependencies Outdated**: Run `pip install -r requirements.txt --upgrade`
-4. **IDE Not Recognizing Config**: Restart VS Code/Cursor
+1. **Virtual environment not active**: `source venv/bin/activate`
+2. **Playwright browser missing**: `playwright install chromium`
+3. **Dependencies outdated**: `pip install -r requirements.txt --upgrade`
+4. **Editor not picking up the configuration**: restart VS Code or Cursor
 
-### Getting Help
-- **Validation Script**: `python validate_dev_env.py`
-- **Setup Script**: `./setup_dev_env.sh` or `setup_dev_env.bat`
-- **Documentation**: Check `docs/technical_documentation/ide_setup.md`
-- **TDD Workflow**: See `docs/technical_documentation/tdd_workflow.md`
-
-This comprehensive development environment ensures consistent, high-quality development practices across all contributors.
+Further help: `python validate_dev_env.py`, [ide_setup.md](ide_setup.md) and
+[tdd_workflow.md](tdd_workflow.md).
