@@ -1,15 +1,17 @@
 # Implementation Status
 
-This document tracks the implementation status of all features for the Fund Price Scraping project.
+This document is the frozen record of the 27 legacy user stories (US-001 to US-027) that guided
+the project before its migration to Spec Kit. It is not updated.
 
 > ## 📌 Task tracking has moved to GitHub Issues
 >
 > **Outstanding work for this project is tracked in [GitHub Issues](https://github.com/joneswm/FundPrices/issues), not in this file.**
 >
 > This document is retained as a **historical record** of completed work. Do not add new to-do items here —
-> [open an issue](https://github.com/joneswm/FundPrices/issues/new) instead.
+> [open an issue](https://github.com/joneswm/FundPrices/issues/new) instead. What each Spec Kit
+> specification delivered is recorded in [`specs/README.md`](../../specs/README.md), not here.
 
-**Note**: As of 2024-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory.
+**Note**: As of 2024-11-20, the project has migrated to Spec Kit for new features. Legacy user stories (US-XXX) are preserved below for historical reference. New features use Spec Kit format (SPEC-XXX) in the `specs/` directory, indexed in `specs/README.md`.
 
 ## Status Legend
 - ✅ **COMPLETED**: Fully implemented and tested
@@ -17,153 +19,6 @@ This document tracks the implementation status of all features for the Fund Pric
 - ❌ **NOT IMPLEMENTED**: Not yet implemented
 - 🔄 **IN PROGRESS**: Currently being worked on
 - 📋 **PLANNED**: Spec created, not started
-
-## Tracking Legend
-- **US-XXX**: Legacy user story (pre-Spec Kit migration)
-- **SPEC-XXX**: Spec Kit specification (post-migration)
-
----
-
-## Active Specifications (Spec Kit)
-
-### SPEC-014: Bank Rate Published Monthly as uk_bank_rate.csv
-**Status**: ✅ **COMPLETED** (on branch `uk-bank-rate`, not yet merged)  
-**Created**: 2026-11-01  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/014-uk-bank-rate/`  
-**Tracking**: [#93](https://github.com/joneswm/FundPrices/issues/93)
-
-**Implementation Details**:
-- ✅ `data/uk_bank_rate.csv` (`Month,Rate,Series,AsOf`): the Bank Rate in force at each month end, monthly from 2015-01 to the current month with no gaps, the rate as the Bank words it, `AsOf` the date the row was first published or last changed
-- ✅ One GET of the Bank's Bank Rate history page per run (the database CSV for IUMABEDR is disallowed by the Bank's robots.txt), retried like every other source; a changed rate for a past month replaces its row
-- ✅ A page that has changed (no table, a bad row, a duplicate date, history that stops after 2014) keeps the last published file and is listed in the run's failures as `uk_bank_rate: <error>`
-- ✅ Written in the normal mode only, after the UK CPI and independently of it
-
-**Evidence**: `parse_boe_bank_rate()`, `uk_bank_rate_by_month()`, `fetch_uk_bank_rate()` and `update_uk_bank_rate()` in `scrape_fund_price.py`; the classes `TestBankRateParsing` to `TestUkBankRateInMain` in `test_scrape_fund_price.py`, against one page recorded in `fixtures/boe_bank_rate.html`. Run `make test-coverage` for the figures.
-
----
-
-### SPEC-013: UK CPI Published Monthly as uk_cpi.csv
-**Status**: ✅ **COMPLETED** (on branch `uk-cpi`, not yet merged)  
-**Created**: 2026-10-27  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/013-uk-cpi/`  
-**Tracking**: [#91](https://github.com/joneswm/FundPrices/issues/91)
-
-**Implementation Details**:
-- ✅ `data/uk_cpi.csv` (`Month,Index,Series,AsOf`): the ONS series D7BT, monthly from 2015-01, the index as the ONS words it, `AsOf` the date the row was last published or revised
-- ✅ One GET of the ONS time-series JSON per run, retried like every other source; a revised month replaces the stored one
-- ✅ A response that has changed (another series, no months, a gap, a bad index) keeps the last published file and is listed in the run's failures as `uk_cpi: <error>`
-- ✅ Written in the normal mode only, after the dividends and independently of them
-
-**Evidence**: `parse_ons_cpi()`, `fetch_uk_cpi()` and `update_uk_cpi()` in `scrape_fund_price.py`; the classes `TestOnsCpiParsing` to `TestUkCpiInMain` in `test_scrape_fund_price.py`, against one response recorded in `fixtures/ons_d7bt_cpi.json`. Run `make test-coverage` for the figures.
-
----
-
-### SPEC-012: Pay Dates from Invesco, SSGA, Q4 Inc and etnet
-**Status**: ✅ **COMPLETED** (on branch `pay-date-sources`, not yet merged)  
-**Created**: 2026-10-27  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/012-pay-date-sources/`  
-**Tracking**: [#89](https://github.com/joneswm/FundPrices/issues/89)  
-**Research**: `docs/research/dividend_pay_date_sources.md`
-
-**Implementation Details**:
-- ✅ Four source codes in `dividend_sources.txt`: `IV` (Invesco API, CUSIP: QQQ), `SS` (SSGA workbook, ISIN: GLTL.L), `Q4` (Q4 Inc IR feed, host/MIC: KNSL), `ET` (etnet, HK code: 0639.HK), each validated before any network call
-- ✅ Wired as `IS` is: one request per instrument per run (the SSGA workbook once per run, shared), retried and paced, a changed response an isolated, reported failure that keeps the Yahoo row, rows ranked with `IS` above `YA`, a future ex-date a `declared` row
-- ✅ Rights-issue rows (etnet) skipped; a special and a final dividend on one ex-date are one row
-- ✅ No new dependency: the workbook is read with `zipfile` and `ElementTree`
-
-**Evidence**: `parse_invesco_distributions()`, `parse_ssga_distributions()`,
-`parse_q4_distributions()`, `parse_etnet_distributions()` and `fetch_issuer_table()` in
-`scrape_fund_price.py`; the classes `TestPayDateSourceConfiguration` to
-`TestPayDateSourcesInTheRun` in `test_scrape_fund_price.py`, against four documents recorded
-in `fixtures/`. Run `make test-coverage` for the figures.
-
-### SPEC-011: Dividend Pay Dates from the Issuer
-**Status**: ✅ **COMPLETED** (on branch `pay-dates`, not yet merged)  
-**Created**: 2026-10-26  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/011-pay-dates/`  
-**Tracking**: [#87](https://github.com/joneswm/FundPrices/issues/87) (option 2)  
-**Research**: `docs/research/dividend_pay_date_sources.md`
-
-**Implementation Details**:
-- ✅ `dividend_sources.txt`: `<identifier>,<source>,<source-id>`, validated with `funds.txt` before any network call; source `IS` is the iShares UK product page. Ships with the ten verified iShares instruments
-- ✅ The issuer's distribution table (ex, record and payable date, amount) is fetched once per instrument, retried and paced, and merged into `dividends_history.csv`: pay dates added, distributions Yahoo lacks inserted, Yahoo's amount kept when they agree and the issuer's when they differ, a Yahoo row a day out from the issuer's date corrected
-- ✅ A distribution the issuer has announced becomes the `declared` row of `dividends_upcoming.csv` with its pay date and stated amount, replacing the estimate and Yahoo's date; it is listed once in the summary's Dividends section
-- ✅ Source authority `IS` > `YA` > `config`: a day the issuer fails takes no pay date away; a failing page is reported and costs nothing else
-- ✅ `--backfill-dividends` rebuilds the `IS` rows too; an FT-priced fund (`IE00B0M63516`) is rebuilt from the issuer alone
-- ➡️ QQQ, GLTL.L, KNSL and 0639.HK: no source at the time; SPEC-012 added one for each (research page)
-
-**Evidence**: `read_dividend_sources()`, `parse_ishares_distributions()`, `apply_issuer_table()`,
-`collect_issuer_tables()`, `update_dividends()` and `backfill_dividends()` in
-`scrape_fund_price.py`; the classes `TestDividendSourceConfiguration` to
-`TestIssuerSourcesInMain` in `test_scrape_fund_price.py`, against two pages recorded in
-`fixtures/`. Run `make test-coverage` for the figures.
-
----
-
-### SPEC-010: The Dividend Calendar
-**Status**: ✅ **COMPLETED** (on branch `dividends-calendar`, awaiting merge)  
-**Created**: 2026-10-26  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/010-dividends/`  
-**Tracking**: [#85](https://github.com/joneswm/FundPrices/issues/85)
-
-**Implementation Details**:
-- ✅ `data/dividends_history.csv`: every past ex-date Yahoo knows for the `YA` instruments, in the price currency, under every alias, upserted on `(Fund, ExDate)`
-- ✅ `data/dividends_upcoming.csv`: the next ex-date, `declared` by Yahoo's calendar or `estimated` from the last twelve months
-- ✅ `distributions.txt`: hand-kept schedules for instruments no source covers, validated before any network call
-- ✅ A Dividends section in `daily_summary.md`
-- ✅ `--backfill-dividends [--from DATE]` rebuilds the Yahoo rows of the history
-
-**Evidence**: `update_dividends()`, `backfill_dividends()` and `read_distributions()` in
-`scrape_fund_price.py`; the classes `TestDistributionConfiguration`, `TestYahooDividendEvents`
-to `TestDividendBackfillMainMode` in `test_scrape_fund_price.py`. Run `make test-coverage`
-for the figures.
-
----
-
-### SPEC-002: Rolling 90-Day Price History
-**Status**: ✅ **COMPLETED**  
-**Created**: 2026-08-16  
-**Format**: Spec Kit (spec-first)  
-**Location**: `specs/002-rolling-price-history/`
-
-**Implementation Details**:
-- ✅ Full price history preserved in `prices_history.csv`
-- ✅ Derived `prices_history_90_days.csv` written each run
-- ✅ Inclusive 90-calendar-day window (`ROLLING_HISTORY_DAYS = 90`)
-- ✅ Empty runs still produce a valid rolling-history CSV
-- ✅ Unit tests cover the window boundary and the empty-run case
-
-**Evidence**: `write_results()` in `scrape_fund_price.py`; tests
-`test_write_results_limits_rolling_history_to_90_calendar_days` and
-`test_write_results_empty_results_creates_empty_rolling_history`.
-
-**Significance**: First feature written spec-first (SPEC-001 was retrospective),
-completing Phase 2 of the Spec Kit migration.
-
----
-
-### SPEC-001: Yahoo Finance API Integration
-**Status**: ✅ **COMPLETED**  
-**Format**: Spec Kit (Retrospective)  
-**Location**: `specs/001-yahoo-finance-api/`
-
-**Implementation Details**:
-- ✅ Replaced Google Finance web scraping with Yahoo Finance API
-- ✅ Uses yfinance library for reliable data access
-- ✅ Maintains backwards compatibility with funds.txt format
-- ✅ Comprehensive unit and functional tests
-- ✅ 100% coverage for new code
-
-**Evidence**: See `specs/001-yahoo-finance-api/` for complete specification, plan, tasks, and implementation notes.
-
-**Related**: Originally implemented as US-025
-
----
 
 ## Legacy User Stories (Pre-Spec Kit Migration)
 
@@ -652,12 +507,6 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 
 ### Overall Status
 
-#### Spec Kit Specifications
-- **Active Specs**: 11
-- **Completed**: 12 (SPEC-001 to SPEC-012; see [`specs/README.md`](../../specs/README.md))
-- **In Progress**: 0
-- **Planned**: 0
-
 #### Legacy User Stories
 - **Completed**: 27 user stories (100%)
 - **Partial**: 0 user stories (0%)
@@ -673,35 +522,13 @@ python scrape_fund_price.py --history MSFT --start 2024-11-01
 - ✅ Example spec documented (SPEC-001, retrospective)
 - ✅ Documentation updated
 - ✅ Phase 2: Parallel operation (delivered via SPEC-002, Rolling 90-Day Price History)
-- ✅ Phase 3 (partial): User stories archived to `docs/archive/user_stories/`
-- 🔗 Phase 3 remainder — tracked in [issue #6](https://github.com/joneswm/FundPrices/issues/6)
+- ✅ Phase 3: User stories archived to `docs/archive/user_stories/`; Spec Kit the primary approach ([issue #6](https://github.com/joneswm/FundPrices/issues/6), closed)
 
-### Completed Major Features
-- ✅ Multi-source dated price collection (Yahoo Finance API, FT, investing.com; scraping fallback)
-- ✅ True price dates and currencies, identifier aliases, FX rates, daily summary
-- ✅ History rebuild from source data, and one-off imports of closed holdings
-- ✅ Dividend calendar: past and upcoming dividends, declared or projected
-- ✅ Historical price data retrieval for any stock/fund
-- ✅ Automated daily collection via GitHub Actions
-- ✅ Comprehensive testing suite with both coverage gates enforced in CI
-- ✅ IDE Integration with VS Code/Cursor test support
-- ✅ **Test-Driven Development (TDD) enforcement**
-- ✅ **Spec-Driven Development (SDD) with Spec Kit**
-- ✅ Code quality standards and tools
-- ✅ Complete development environment setup
-- ✅ Complete documentation and templates
-- ✅ Project constitution codifying principles
+### Everything Since
 
-### Next Development
-
-For new features:
-1. **Open a [GitHub Issue](https://github.com/joneswm/FundPrices/issues/new)** — this is the source of truth for work to be done
-2. Create specification in `specs/XXX-feature-name/`, referencing the issue number
-3. Follow SPECIFY → PLAN → TASKS → IMPLEMENT workflow
-4. Use TDD (RED-GREEN-REFACTOR) for implementation
-5. Close the issue when the work ships
-
-See `specs/README.md` for specification guidelines.
+What each Spec Kit specification delivered is recorded in
+[`specs/README.md`](../../specs/README.md); open work is in
+[GitHub Issues](https://github.com/joneswm/FundPrices/issues).
 
 **Note**: This file is no longer updated with per-feature status. Current status lives in
 [GitHub Issues](https://github.com/joneswm/FundPrices/issues).

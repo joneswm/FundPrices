@@ -6,7 +6,7 @@ or describes current process.**
 For current information:
 
 - **Work to be done**: [GitHub Issues](https://github.com/joneswm/FundPrices/issues)
-- **Specifications**: [`specs/README.md`](../../specs/README.md)
+- **Specifications, and what each delivered**: [`specs/README.md`](../../specs/README.md)
 - **Project principles**: [`constitution.md`](../../constitution.md)
 - **Development process**: [`docs/technical_documentation/`](../technical_documentation/)
 
