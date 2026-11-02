@@ -3702,22 +3702,49 @@ class TestClosedHoldingWindowEnds(DataDirCase):
     """Test the last day of a window survives, whatever the source's convention.
 
     Yahoo's daily bars treat the end date as exclusive while FT and investing
-    .com treat it as inclusive, so passing the configured end straight through
+    .com treat it as inclusive. Passing the configured end straight to Yahoo
     silently dropped the final day from Yahoo holdings only: BKCH imported 284
-    rows ending 2024-02-15 for a window ending 2024-02-16. That the stored
-    rows are then clipped to the inclusive window is
+    rows ending 2024-02-15 for a window ending 2024-02-16.
+
+    The contract (#120): scrape_fund_quotes takes an inclusive end for every
+    source and adds the day for Yahoo itself, so the import, like every other
+    caller, passes the window's last day unchanged. That the stored rows are
+    then clipped to the inclusive window is
     TestClosedHoldingImport.test_quotes_outside_the_window_are_dropped.
     """
 
+    NOW = utc(2026, 11, 2, 12)
+    HOLDING = ClosedHolding("BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16")
+
     @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_sources_are_asked_past_the_window_end(self, mock_quotes):
-        """Test the fetch reaches beyond the end so nothing depends on it."""
+    def test_the_import_asks_for_the_window_as_configured(self, mock_quotes):
+        """Test the import hands the dispatch the inclusive end unchanged."""
         mock_quotes.return_value = [Quote("2024-02-16", "10.115", "USD")]
-        holding = ClosedHolding(
-            "BKCH", "YA", "BKCH.L", "USD", "2024-02-14", "2024-02-16"
+        import_closed_holdings([self.HOLDING], self.test_dir, now=self.NOW)
+        self.assertEqual(mock_quotes.call_args[0][2:4], ("2024-02-14", "2024-02-16"))
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_the_dispatch_asks_yahoo_for_the_day_after_the_end(self, mock_ticker):
+        """Test Yahoo's exclusive end is the dispatch's to compensate for."""
+        inst = fake_ticker(mock_ticker, [("2024-02-16", 10.115)], currency="USD")
+        quotes = scrape_fund_quotes(
+            "YA", "BKCH.L", "2024-02-14", "2024-02-16", now=self.NOW
         )
-        import_closed_holdings([holding], self.test_dir)
-        self.assertEqual(mock_quotes.call_args[0][3], "2024-02-17")
+        self.assertEqual(inst.history.call_args.kwargs["end"], "2024-02-17")
+        self.assertEqual(quotes, [Quote("2024-02-16", "10.115", "USD")])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_an_open_end_stays_open_for_yahoo(self, mock_ticker):
+        """Test no end still means up to the newest bar."""
+        inst = fake_ticker(mock_ticker, [("2024-02-16", 10.115)], currency="USD")
+        scrape_fund_quotes("YA", "BKCH.L", "2024-02-14", now=self.NOW)
+        self.assertIsNone(inst.history.call_args.kwargs["end"])
+
+    @patch("scrape_fund_price.fetch_ft_quotes", return_value=[])
+    def test_ft_is_asked_for_the_end_itself(self, mock_ft):
+        """Test FT's endpoint, inclusive already, gets the end unchanged."""
+        scrape_fund_quotes("FT", "SEAL:LSE:GBX", "2024-02-14", "2024-02-16")
+        self.assertEqual(mock_ft.call_args.args[2], "2024-02-16")
 
 
 class TestClosedImportMainMode(DataDirCase):
@@ -9450,6 +9477,17 @@ class TestHistoricalData(DataDirCase):
             report.path, self.path("history_AAPL_2026-10-01_2026-10-19.csv")
         )
         self.assertEqual(report.failures, [])
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_export_asks_the_dispatch_for_the_inclusive_window(self, mock_q):
+        """Test the export leaves Yahoo's exclusive end to the dispatch (#120)."""
+        mock_q.return_value = [Quote("2026-10-01", "1.5", "GBP")]
+        fetch_historical_data(
+            "AAA", "2026-10-01", "2026-10-10", self.test_dir, now=utc(2026, 11, 2, 9)
+        )
+        self.assertEqual(
+            mock_q.call_args.args, ("YA", "AAA", "2026-10-01", "2026-10-10")
+        )
 
     @patch("scrape_fund_price.fetch_yahoo_quotes")
     def test_a_failing_symbol_is_retried_then_reported_as_a_failure(self, mock_q):
