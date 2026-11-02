@@ -4154,20 +4154,9 @@ class TestFTUnfinishedDay(unittest.TestCase):
             "<td><span>0</span></td></tr>"
         )
 
-    @staticmethod
-    def _responses(rows):
-        """The FT page, then the ajax rows, as requests.get returns them."""
-        page_resp = MagicMock()
-        page_resp.text = FT_PAGE
-        page_resp.raise_for_status.return_value = None
-        ajax_resp = MagicMock()
-        ajax_resp.json.return_value = {"html": rows}
-        ajax_resp.raise_for_status.return_value = None
-        return [page_resp, ajax_resp]
-
     def _fetch(self, mock_get, days, now):
         rows = "".join(self._row(date.fromisoformat(d), "33.45") for d in days)
-        mock_get.side_effect = self._responses(rows)
+        mock_get.side_effect = TestFTQuoteFetching._responses(rows=rows)
         now = datetime.datetime.fromisoformat(now)
         return fetch_ft_quotes("IE00B0M63516", "2026-10-01", now=now)
 
@@ -6233,7 +6222,7 @@ class TestDividendBackfillMainMode(DataDirCase):
         mock_backfill.assert_not_called()
 
 
-class TestDividendSourceConfiguration(unittest.TestCase):
+class TestDividendSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt parsing and validation (SPEC-011, #87)."""
 
     SPECS = [
@@ -6242,16 +6231,8 @@ class TestDividendSourceConfiguration(unittest.TestCase):
         FundSpec("YA", "QQQ"),
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text, specs="default"):
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("dividend_sources.txt", text)
         if specs == "default":
             specs = self.SPECS
         return scrape_fund_price.read_dividend_sources(path, specs)
@@ -6279,14 +6260,12 @@ class TestDividendSourceConfiguration(unittest.TestCase):
 
     def test_a_missing_file_means_no_sources(self):
         """Test the file is optional."""
-        missing = os.path.join(self.test_dir, "none.txt")
+        missing = self.path("none.txt")
         self.assertEqual(scrape_fund_price.read_dividend_sources(missing, []), [])
 
     def test_the_default_file_is_the_configured_one(self):
         """Test the production call names no file."""
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write("QQQ,IS,1\n")
+        path = self.write_text("dividend_sources.txt", "QQQ,IS,1\n")
         with patch.object(scrape_fund_price, "DIVIDEND_SOURCES_FILE", path):
             [source] = scrape_fund_price.read_dividend_sources(specs=self.SPECS)
         self.assertEqual(source.identifier, "QQQ")
@@ -6378,12 +6357,12 @@ def ishares_page(rows, currency="GBP", product_id=1):
 class TestIsharesPageParsing(unittest.TestCase):
     """Test reading the distributions table of an iShares UK page (SPEC-011, #87)."""
 
-    def parse(self, text, product_id="251804"):
+    def _parse(self, text, product_id="251804"):
         return scrape_fund_price.parse_ishares_distributions(text, product_id)
 
     def test_the_recorded_igls_page(self):
         """Test the live page of iShares UK Gilts 0-5yr, newest last."""
-        table = self.parse(fixture_text("ishares_251804_igls.html"))
+        table = self._parse(fixture_text("ishares_251804_igls.html"))
         self.assertEqual(table.currency, "GBP")
         self.assertEqual(len(table.rows), 36)
         self.assertEqual(
@@ -6403,7 +6382,7 @@ class TestIsharesPageParsing(unittest.TestCase):
 
     def test_the_recorded_flos_page(self):
         """Test a GBP-hedged class of a dollar fund, with a zero amount."""
-        table = self.parse(fixture_text("ishares_290356_flos.html"), "290356")
+        table = self._parse(fixture_text("ishares_290356_flos.html"), "290356")
         self.assertEqual(table.currency, "GBP")
         self.assertEqual(len(table.rows), 18)
         self.assertEqual(
@@ -6417,29 +6396,29 @@ class TestIsharesPageParsing(unittest.TestCase):
     def test_the_share_class_currency_is_read_for_the_product(self):
         """Test another class's entry on the page is not taken."""
         page = ishares_page([(20260716, 20260717, 20260729, "1.5")], "USD", 7)
-        self.assertEqual(self.parse(page, "7").currency, "USD")
-        self.assertEqual(self.parse(page, "8").currency, "")
+        self.assertEqual(self._parse(page, "7").currency, "USD")
+        self.assertEqual(self._parse(page, "8").currency, "")
 
     def test_a_missing_pay_date_or_record_date_is_empty(self):
         """Test null cells are empty text."""
         page = ishares_page([(20260716, None, None, "1.5")])
-        [row] = self.parse(page).rows
+        [row] = self._parse(page).rows
         self.assertEqual(row, ("2026-07-16", "", "", "1.5"))
 
     def test_a_pay_date_before_the_ex_date_is_not_trusted(self):
         """Test a pay date that cannot be right is dropped."""
         page = ishares_page([(20260716, 20260717, 20260715, "1.5")])
-        self.assertEqual(self.parse(page).rows[0].pay_date, "")
+        self.assertEqual(self._parse(page).rows[0].pay_date, "")
 
     def test_a_pay_date_on_the_ex_date_is_kept(self):
         """Test same-day payment is allowed."""
         page = ishares_page([(20260716, 20260716, 20260716, "1.5")])
-        self.assertEqual(self.parse(page).rows[0].pay_date, "2026-07-16")
+        self.assertEqual(self._parse(page).rows[0].pay_date, "2026-07-16")
 
     def test_a_page_with_no_table_is_an_error(self):
         """Test an accumulating class, or a changed page, is not an empty table."""
         with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
-            self.parse("<html><body>nothing here</body></html>")
+            self._parse("<html><body>nothing here</body></html>")
 
     def test_a_table_without_dates_is_an_error(self):
         """Test the lists must be there."""
@@ -6449,7 +6428,7 @@ class TestIsharesPageParsing(unittest.TestCase):
         }
         page = f'<div data-x="{embedded(table)}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*no distributions table"):
-            self.parse(page)
+            self._parse(page)
 
     def test_a_ragged_table_is_an_error(self):
         """Test lists of different lengths are refused rather than zipped."""
@@ -6464,7 +6443,7 @@ class TestIsharesPageParsing(unittest.TestCase):
         }
         page = f'<div data-x="{embedded(table)}"></div>'
         with self.assertRaisesRegex(ValueError, "251804.*malformed"):
-            self.parse(page)
+            self._parse(page)
 
     def test_a_bad_ex_date_is_an_error(self):
         """Test a date that is not one stops the page, not just the row."""
@@ -6472,7 +6451,7 @@ class TestIsharesPageParsing(unittest.TestCase):
             with self.subTest(bad=bad):
                 page = ishares_page([(bad, 20260717, 20260729, "1.5")])
                 with self.assertRaisesRegex(ValueError, "251804.*malformed"):
-                    self.parse(page)
+                    self._parse(page)
 
     def test_a_bad_amount_is_an_error(self):
         """Test the amount must be a decimal."""
@@ -6480,41 +6459,39 @@ class TestIsharesPageParsing(unittest.TestCase):
             with self.subTest(bad=bad):
                 page = ishares_page([(20260716, 20260717, 20260729, bad)])
                 with self.assertRaisesRegex(ValueError, "251804.*malformed"):
-                    self.parse(page)
+                    self._parse(page)
 
     def test_an_empty_table_has_no_rows(self):
         """Test a new fund with no distribution yet."""
-        self.assertEqual(self.parse(ishares_page([])).rows, ())
+        self.assertEqual(self._parse(ishares_page([])).rows, ())
 
 
 class TestIsharesPageFetch(unittest.TestCase):
     """Test the one request per instrument (SPEC-011, #87)."""
 
-    def test_one_get_of_the_product_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_product_page(self, mock_get):
         """Test the url carries the product id and the call has a timeout."""
         response = MagicMock(text=ishares_page([(20260716, 20260717, 20260729, "2.5")]))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_ishares_distributions("251804")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_ishares_distributions("251804")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.ishares.com/uk/individual/en/products/251804",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[0].amount, "2.5")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_ishares_distributions("251804")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_ishares_distributions("251804")
 
     def test_the_dispatcher_calls_the_source_for_its_code(self):
         """Test fetch_issuer_table routes IS to the iShares fetch."""
@@ -6537,43 +6514,43 @@ def issuer_table(*rows, currency="GBP"):
 class TestIssuerAmounts(unittest.TestCase):
     """Test the issuer's amount in the stored row's currency (SPEC-011, #87)."""
 
-    def convert(self, text, class_currency, target):
+    def _convert(self, text, class_currency, target):
         return scrape_fund_price.issuer_amount(text, class_currency, target)
 
     def test_an_equal_currency_is_unchanged(self):
         """Test GBP for a GBP row."""
-        amount = self.convert("2.4146", "GBP", "GBP")
+        amount = self._convert("2.4146", "GBP", "GBP")
         self.assertEqual((amount.text, amount.currency), ("2.4146", "GBP"))
 
     def test_pounds_become_pence_for_a_pence_row(self):
         """Test the factor of 100 and the rounding it brings."""
-        amount = self.convert("0.0991", "GBP", "GBp")
+        amount = self._convert("0.0991", "GBP", "GBp")
         self.assertEqual((amount.text, amount.currency), ("9.91", "GBp"))
         self.assertEqual(amount.tolerance, decimal.Decimal("0.005"))
-        self.assertEqual(self.convert("0.1", "GBP", "GBp").text, "10")
+        self.assertEqual(self._convert("0.1", "GBP", "GBp").text, "10")
 
     def test_a_page_that_names_no_currency_is_taken_in_the_row_currency(self):
         """Test the shipped pages without a share-class entry."""
-        self.assertEqual(self.convert("1.5", "", "USD").currency, "USD")
-        self.assertEqual(self.convert("0.015", "", "GBp").text, "1.5")
+        self.assertEqual(self._convert("1.5", "", "USD").currency, "USD")
+        self.assertEqual(self._convert("0.015", "", "GBp").text, "1.5")
 
     def test_no_target_currency_takes_the_issuers(self):
         """Test an instrument with no stored currency."""
-        amount = self.convert("1.5", "USD", "")
+        amount = self._convert("1.5", "USD", "")
         self.assertEqual((amount.text, amount.currency), ("1.5", "USD"))
 
     def test_different_currencies_cannot_be_compared(self):
         """Test USD against GBP is no amount."""
-        self.assertIsNone(self.convert("1.5", "USD", "GBP"))
-        self.assertIsNone(self.convert("1.5", "USD", "GBp"))
+        self.assertIsNone(self._convert("1.5", "USD", "GBP"))
+        self.assertIsNone(self._convert("1.5", "USD", "GBp"))
 
     def test_zero_is_no_amount(self):
         """Test the 0.0 rows the issuer lists for a fund's first, empty period."""
-        self.assertIsNone(self.convert("0.0", "GBP", "GBP"))
+        self.assertIsNone(self._convert("0.0", "GBP", "GBP"))
 
     def test_the_tolerance_is_half_the_last_decimal_place(self):
         """Test agreement means equal within the issuer's rounding."""
-        amount = self.convert("0.0128", "GBP", "GBp")
+        amount = self._convert("0.0128", "GBP", "GBp")
         self.assertTrue(scrape_fund_price.amounts_agree("1.2841", amount))
         self.assertTrue(scrape_fund_price.amounts_agree("1.28", amount))
         self.assertFalse(scrape_fund_price.amounts_agree("1.29", amount))
@@ -6585,19 +6562,19 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     TODAY = date(2026, 10, 26)
 
-    def apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
+    def _apply(self, history, table, currency="GBP", identifier="IGLS.L", start=None):
         return scrape_fund_price.apply_issuer_table(
             history, identifier, table, currency, self.TODAY, start
         )
 
     @staticmethod
-    def keyed(*rows):
+    def _keyed(*rows):
         return {(row[0], row[1]): list(row) for row in rows}
 
     def test_a_yahoo_row_gains_its_pay_date(self):
         """Test the point of the spec."""
-        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
-        written = self.apply(
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        written = self._apply(
             history, issuer_table(("2026-07-16", "2026-07-17", "2026-07-29", "2.4146"))
         )
         self.assertEqual(written, 1)
@@ -6608,8 +6585,8 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_yahoos_amount_is_kept_when_they_agree(self):
         """Test the more precise figure stays."""
-        history = self.keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
-        self.apply(
+        history = self._keyed(["IWDG.L", "2017-07-13", "", "1.2841", "GBp", "YA"])
+        self._apply(
             history,
             issuer_table(("2017-07-13", "", "2017-07-27", "0.0128")),
             identifier="IWDG.L",
@@ -6621,8 +6598,8 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_the_issuers_amount_wins_when_they_differ(self):
         """Test IWDG.L 2020-01-16: Yahoo 1.77p, the issuer 1.75p."""
-        history = self.keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
-        self.apply(
+        history = self._keyed(["IWDG.L", "2020-01-16", "", "1.77", "GBp", "YA"])
+        self._apply(
             history,
             issuer_table(("2020-01-16", "", "2020-01-30", "0.0175")),
             identifier="IWDG.L",
@@ -6632,8 +6609,8 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_an_amount_in_another_currency_is_left_alone(self):
         """Test the dates are taken and the figure that cannot be compared stays."""
-        history = self.keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
-        self.apply(
+        history = self._keyed(["X", "2026-07-16", "", "2.4", "USD", "YA"])
+        self._apply(
             history,
             issuer_table(("2026-07-16", "", "2026-07-29", "1.9")),
             identifier="X",
@@ -6645,8 +6622,8 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_a_zero_issuer_amount_leaves_the_stored_amount(self):
         """Test IDTG.L 2019-12-12: Yahoo 0.0037, the issuer 0.0."""
-        history = self.keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
-        self.apply(
+        history = self._keyed(["IDTG.L", "2019-12-12", "", "0.0037", "GBP", "YA"])
+        self._apply(
             history,
             issuer_table(("2019-12-12", "", "2019-12-30", "0.0")),
             identifier="IDTG.L",
@@ -6655,16 +6632,16 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_a_blank_pay_date_keeps_the_stored_one(self):
         """Test the issuer cannot take a date away."""
-        history = self.keyed(
+        history = self._keyed(
             ["IGLS.L", "2026-07-16", "2026-07-30", "2.4146", "GBP", "YA"]
         )
-        self.apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
+        self._apply(history, issuer_table(("2026-07-16", "", "", "2.4146")))
         self.assertEqual(history[("IGLS.L", "2026-07-16")][2], "2026-07-30")
 
     def test_a_row_yahoo_lacks_is_inserted_in_the_price_currency(self):
         """Test the gaps in Yahoo's history (INXG.L lacks 18)."""
         history = {}
-        self.apply(
+        self._apply(
             history,
             issuer_table(("2026-05-21", "2026-05-22", "2026-05-29", "0.0991")),
             currency="GBp",
@@ -6678,7 +6655,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_an_inserted_row_without_a_price_currency_takes_the_issuers(self):
         """Test an instrument with no stored price."""
         history = {}
-        self.apply(
+        self._apply(
             history,
             issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
             currency="",
@@ -6688,8 +6665,8 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_nothing_is_inserted_without_a_usable_amount(self):
         """Test a zero, or an amount that cannot be put in the currency."""
         history = {}
-        self.apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
-        self.apply(
+        self._apply(history, issuer_table(("2017-11-16", "", "2017-11-30", "0.0")))
+        self._apply(
             history,
             issuer_table(("2026-05-21", "", "2026-05-29", "0.5"), currency="USD"),
         )
@@ -6697,14 +6674,14 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_a_blank_stored_currency_is_filled(self):
         """Test Yahoo gave none."""
-        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
-        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
         self.assertEqual(history[("IGLS.L", "2026-07-16")][4], "GBP")
 
     def test_a_date_a_day_out_is_one_dividend(self):
         """Test FLOS.L and IUAG.L 2021: Yahoo 11-12, the issuer 11-11."""
-        history = self.keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
-        written = self.apply(
+        history = self._keyed(["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"])
+        written = self._apply(
             history,
             issuer_table(("2021-11-11", "2021-11-12", "2021-11-25", "0.071")),
             identifier="FLOS.L",
@@ -6712,16 +6689,16 @@ class TestApplyIssuerTable(unittest.TestCase):
         self.assertEqual(written, 2)  # the new row, and the twin removed
         self.assertEqual(
             history,
-            self.keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
+            self._keyed(["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"]),
         )
 
     def test_a_twin_is_removed_beside_an_exact_match(self):
         """Test the YA twin Yahoo's window would re-insert every day."""
-        history = self.keyed(
+        history = self._keyed(
             ["FLOS.L", "2021-11-11", "2021-11-25", "7.1", "GBp", "IS"],
             ["FLOS.L", "2021-11-12", "", "7.1", "GBp", "YA"],
         )
-        self.apply(
+        self._apply(
             history,
             issuer_table(("2021-11-11", "", "2021-11-25", "0.071")),
             identifier="FLOS.L",
@@ -6730,15 +6707,15 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_a_near_row_with_another_amount_is_a_different_dividend(self):
         """Test a special dividend two days away stays."""
-        history = self.keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
-        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._keyed(["IGLS.L", "2026-07-18", "", "9.9", "GBP", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
         self.assertIn(("IGLS.L", "2026-07-18"), history)
         self.assertIn(("IGLS.L", "2026-07-16"), history)
 
     def test_a_near_row_that_is_itself_an_issuer_date_stays(self):
         """Test a monthly payer's neighbours are not twins."""
-        history = self.keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
-        self.apply(
+        history = self._keyed(["X", "2026-06-02", "", "1.0", "GBP", "YA"])
+        self._apply(
             history,
             issuer_table(
                 ("2026-06-02", "", "2026-06-20", "1.0"),
@@ -6750,20 +6727,20 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_another_funds_and_other_sources_rows_are_not_twins(self):
         """Test only this fund's Yahoo rows are candidates."""
-        history = self.keyed(
+        history = self._keyed(
             ["OTHER", "2026-07-17", "", "2.4146", "GBP", "YA"],
             ["IGLS.L", "2026-07-17", "2026-07-30", "2.4146", "GBP", "config"],
         )
-        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
         self.assertIn(("OTHER", "2026-07-17"), history)
         self.assertIn(("IGLS.L", "2026-07-17"), history)
 
     def test_a_config_row_on_the_same_date_gives_way(self):
         """Test the issuer beats the owner's schedule."""
-        history = self.keyed(
+        history = self._keyed(
             ["IGLS.L", "2026-07-16", "2026-07-30", "2.4", "GBP", "config"]
         )
-        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
         self.assertEqual(
             history[("IGLS.L", "2026-07-16")],
             ["IGLS.L", "2026-07-16", "2026-07-29", "2.4146", "GBP", "IS"],
@@ -6772,7 +6749,7 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_future_rows_are_not_history(self):
         """Test a declared dividend belongs to the upcoming file."""
         history = {}
-        written = self.apply(
+        written = self._apply(
             history, issuer_table(("2026-10-27", "", "2026-11-10", "2.4146"))
         )
         self.assertEqual((written, history), (0, {}))
@@ -6780,13 +6757,13 @@ class TestApplyIssuerTable(unittest.TestCase):
     def test_today_is_history(self):
         """Test the boundary matches Yahoo's."""
         history = {}
-        self.apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
+        self._apply(history, issuer_table(("2026-10-26", "", "2026-11-09", "2.4146")))
         self.assertIn(("IGLS.L", "2026-10-26"), history)
 
     def test_rows_before_the_start_date_are_not_touched(self):
         """Test a rebuild from a date."""
         history = {}
-        self.apply(
+        self._apply(
             history,
             issuer_table(
                 ("2025-07-17", "", "2025-07-30", "2.4917"),
@@ -6798,30 +6775,30 @@ class TestApplyIssuerTable(unittest.TestCase):
 
     def test_a_second_apply_changes_nothing(self):
         """Test idempotence."""
-        history = self.keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
+        history = self._keyed(["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"])
         table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
-        self.apply(history, table)
+        self._apply(history, table)
         before = {key: list(row) for key, row in history.items()}
-        self.assertEqual(self.apply(history, table), 0)
+        self.assertEqual(self._apply(history, table), 0)
         self.assertEqual(history, before)
 
     def test_a_damaged_history_row_is_skipped_not_fatal(self):
         """Test an unreadable ex-date among the neighbours."""
-        history = self.keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
-        self.apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
+        history = self._keyed(["IGLS.L", "soon", "", "2.4146", "GBP", "YA"])
+        self._apply(history, issuer_table(("2026-07-16", "", "2026-07-29", "2.4146")))
         self.assertIn(("IGLS.L", "soon"), history)
         self.assertIn(("IGLS.L", "2026-07-16"), history)
 
     def test_the_recorded_igls_page_agrees_with_yahoos_rows(self):
         """Test the real table over the rows the committed history holds."""
-        history = self.keyed(
+        history = self._keyed(
             ["IGLS.L", "2026-07-16", "", "2.4146", "GBP", "YA"],
             ["IGLS.L", "2026-01-15", "", "2.5662", "GBP", "YA"],
         )
         table = scrape_fund_price.parse_ishares_distributions(
             fixture_text("ishares_251804_igls.html"), "251804"
         )
-        self.apply(history, table)
+        self._apply(history, table)
         self.assertEqual(len(history), 36)
         self.assertEqual(
             history[("IGLS.L", "2026-01-15")],
@@ -6870,7 +6847,7 @@ class TestIssuerDeclaredDividend(unittest.TestCase):
 
     TODAY = date(2026, 10, 26)
 
-    def declared(self, table, currency="GBP"):
+    def _declared(self, table, currency="GBP"):
         return scrape_fund_price.issuer_declared(table, currency, self.TODAY)
 
     def test_the_earliest_future_row_is_declared(self):
@@ -6881,7 +6858,7 @@ class TestIssuerDeclaredDividend(unittest.TestCase):
             ("2027-01-14", "", "2027-01-27", "2.6"),
         )
         self.assertEqual(
-            self.declared(table),
+            self._declared(table),
             scrape_fund_price.DeclaredDividend(
                 "2026-11-12", "2026-11-25", "2.5", "GBP"
             ),
@@ -6890,17 +6867,17 @@ class TestIssuerDeclaredDividend(unittest.TestCase):
     def test_today_is_history_not_declared(self):
         """Test the boundary matches apply_issuer_table."""
         table = issuer_table(("2026-10-26", "", "2026-11-09", "2.5"))
-        self.assertIsNone(self.declared(table))
+        self.assertIsNone(self._declared(table))
 
     def test_no_future_row_is_none(self):
         """Test nothing is declared until the issuer says so."""
         table = issuer_table(("2026-07-16", "", "2026-07-29", "2.4146"))
-        self.assertIsNone(self.declared(table))
+        self.assertIsNone(self._declared(table))
 
     def test_the_amount_is_in_the_price_currency(self):
         """Test pounds become pence for a pence line."""
         table = issuer_table(("2026-11-12", "", "2026-11-25", "0.0991"))
-        declared = self.declared(table, "GBp")
+        declared = self._declared(table, "GBp")
         self.assertEqual((declared.amount, declared.currency), ("9.91", "GBp"))
 
     def test_an_amount_that_cannot_be_stated_is_empty(self):
@@ -6910,14 +6887,14 @@ class TestIssuerDeclaredDividend(unittest.TestCase):
                 table = issuer_table(
                     ("2026-11-12", "", "2026-11-25", text), currency=currency
                 )
-                declared = self.declared(table, "GBP")
+                declared = self._declared(table, "GBP")
                 self.assertEqual((declared.amount, declared.currency), ("", ""))
                 self.assertEqual(declared.ex_date, "2026-11-12")
 
     def test_a_row_without_a_pay_date_is_declared_without_one(self):
         """Test the ex-date alone is a declaration."""
         table = issuer_table(("2026-11-12", "", "", "2.5"))
-        self.assertEqual(self.declared(table).pay_date, "")
+        self.assertEqual(self._declared(table).pay_date, "")
 
 
 class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
@@ -6925,7 +6902,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
 
     TODAY = date(2026, 10, 26)
 
-    def rows(self, declared, estimate=None, stored=()):
+    def _rows(self, declared, estimate=None, stored=()):
         return scrape_fund_price.upcoming_rows_for(
             "IGLS.L",
             [list(row) for row in stored],
@@ -6942,7 +6919,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
             "2026-11-12", "2026-11-25", "2.5", "GBp"
         )
         self.assertEqual(
-            self.rows(declared),
+            self._rows(declared),
             [
                 [
                     "IGLS.L",
@@ -6959,7 +6936,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
     def test_a_declaration_without_an_amount_still_carries_the_last_paid(self):
         """Test Yahoo's declaration, as in SPEC-010."""
         declared = scrape_fund_price.DeclaredDividend("2026-11-12", "2026-11-25")
-        [row] = self.rows(declared)
+        [row] = self._rows(declared)
         self.assertEqual(row[3:5], ["0.33", "GBP"])
 
     def test_it_replaces_the_estimate_and_an_earlier_declaration(self):
@@ -6972,7 +6949,7 @@ class TestDeclaredRowsCarryTheStatedAmount(unittest.TestCase):
         declared = scrape_fund_price.DeclaredDividend(
             "2026-11-12", "2026-11-25", "2.5", "GBP"
         )
-        rows = self.rows(declared, estimate, stored)
+        rows = self._rows(declared, estimate, stored)
         self.assertEqual(
             [(row[1], row[5]) for row in rows], [("2026-11-12", "declared")]
         )
@@ -6998,10 +6975,12 @@ class IssuerRunCase(DividendRunCase):
         runner=None,
         distributions=(),
     ):
-        """Run update_dividends (or `runner`), `tables` keyed by source id."""
+        """Run update_dividends (or `runner`), `tables` keyed by source id.
+
+        The pacing pauses are recorded on `self.sleeps` by DataDirCase.
+        """
         tables = tables or {}
         self.fetched = []
-        self.sleeps = []
 
         def fake_fetch(source):
             self.fetched.append(source.source_id)
@@ -7016,14 +6995,9 @@ class IssuerRunCase(DividendRunCase):
             )
 
         with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
-            with patch.object(scrape_fund_price.time, "sleep", self.sleeps.append):
-                return self._run(
-                    specs,
-                    events,
-                    declared,
-                    distributions,
-                    runner=runner or update,
-                )
+            return self._run(
+                specs, events, declared, distributions, runner=runner or update
+            )
 
 
 class TestDailyIssuerDates(IssuerRunCase):
@@ -7392,56 +7366,44 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
         )
 
 
-class TestIssuerSourcesInMain(unittest.TestCase):
+class TestIssuerSourcesInMain(DataDirCase):
     """Test main() reads and passes dividend_sources.txt (SPEC-011, #87)."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.sources_file = os.path.join(self.test_dir, "dividend_sources.txt")
-        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        with open(self.sources_file, "w") as f:
-            f.write(text)
+        self.write_text("dividend_sources.txt", text)
 
     def _argv(self, backfill):
         return ["--backfill-dividends", "--from", "2024-01-01"] if backfill else []
 
     def _main(self, backfill=False):
+        """Run main() on the test directory's files, the run's steps stubbed.
+
+        distributions.txt is pointed at a file that does not exist, so the
+        committed schedules are not validated against the one stubbed fund.
+        """
         with ExitStack() as stack:
             enter = stack.enter_context
-            enter(patch("scrape_fund_price.DIVIDEND_SOURCES_FILE", self.sources_file))
-            enter(
-                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
-            )
             enter(
                 patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "IGLS.L")],
+                    "scrape_fund_price.DIVIDEND_SOURCES_FILE",
+                    self.path("dividend_sources.txt"),
                 )
             )
-            self.scrape = enter(
-                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
-            )
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            enter(patch("scrape_fund_price.write_summary"))
-            enter(patch("builtins.print"))
-            self.update = enter(
+            enter(
                 patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
+                    "scrape_fund_price.DISTRIBUTIONS_FILE",
+                    self.path("distributions.txt"),
                 )
             )
-            self.rebuild = enter(
-                patch(
-                    "scrape_fund_price.backfill_dividends",
-                    return_value=BackfillReport(),
+            stubs = enter(
+                daily_run_stubs(
+                    specs=[FundSpec("YA", "IGLS.L")],
+                    backfill_dividends=BackfillReport(),
                 )
             )
+            self.scrape = stubs["scrape_funds"]
+            self.update = stubs["update_dividends"]
+            self.rebuild = stubs["backfill_dividends"]
             main(self._argv(backfill))
 
     def test_the_daily_run_passes_the_validated_sources(self):
@@ -7525,7 +7487,7 @@ def make_xlsx(rows, sheet_name="Open Fund", inline=False):
     return buffer.getvalue()
 
 
-class TestPayDateSourceConfiguration(unittest.TestCase):
+class TestPayDateSourceConfiguration(DataDirCase):
     """Test dividend_sources.txt accepts the four new codes (SPEC-012, #89)."""
 
     SPECS = [
@@ -7535,16 +7497,8 @@ class TestPayDateSourceConfiguration(unittest.TestCase):
         FundSpec("YA", "0639.HK"),
     ]
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _read(self, text):
-        path = os.path.join(self.test_dir, "dividend_sources.txt")
-        with open(path, "w") as f:
-            f.write(text)
+        path = self.write_text("dividend_sources.txt", text)
         return scrape_fund_price.read_dividend_sources(path, self.SPECS)
 
     def test_the_four_codes_are_known(self):
@@ -7612,17 +7566,17 @@ class TestPayDateSourceConfiguration(unittest.TestCase):
 class TestInvescoParsing(unittest.TestCase):
     """Test reading Invesco's distribution API (IV, SPEC-012, #89)."""
 
-    def parse(self, text, cusip="46090E103"):
+    def _parse(self, text, cusip="46090E103"):
         return scrape_fund_price.parse_invesco_distributions(text, cusip)
 
     @staticmethod
-    def payload(rows, currency="USD"):
+    def _payload(rows, currency="USD"):
         return json.dumps(
             {"cusip": "X", "currencyCode": currency, "distributions": rows}
         )
 
     @staticmethod
-    def row(ex="2026-09-21", record="2026-09-21", pay="2026-10-08", amount=0.75143):
+    def _row(ex="2026-09-21", record="2026-09-21", pay="2026-10-08", amount=0.75143):
         return {
             "exDate": ex,
             "recordDate": record,
@@ -7632,7 +7586,7 @@ class TestInvescoParsing(unittest.TestCase):
 
     def test_the_recorded_qqq_response(self):
         """Test the real response: oldest first, newest with its pay date."""
-        table = self.parse(fixture_text("invesco_46090E103_qqq.json"))
+        table = self._parse(fixture_text("invesco_46090E103_qqq.json"))
         self.assertEqual(table.source, "IV")
         self.assertEqual(table.currency, "USD")
         self.assertEqual(len(table.rows), 89)
@@ -7649,23 +7603,23 @@ class TestInvescoParsing(unittest.TestCase):
 
     def test_a_missing_pay_date_is_empty_and_one_before_the_ex_date_too(self):
         """Test the SPEC-011 rule: no pay date, or one before the ex-date, is absent."""
-        text = self.payload(
+        text = self._payload(
             [
-                self.row("2026-01-05", pay=None),
-                self.row("2026-04-06", pay="2026-04-01"),
+                self._row("2026-01-05", pay=None),
+                self._row("2026-04-06", pay="2026-04-01"),
             ]
         )
-        self.assertEqual([r.pay_date for r in self.parse(text).rows], ["", ""])
+        self.assertEqual([r.pay_date for r in self._parse(text).rows], ["", ""])
 
     def test_two_cash_rows_on_one_ex_date_are_one_distribution(self):
         """Test the history is keyed on the ex-date, so the amounts add."""
-        text = self.payload(
+        text = self._payload(
             [
-                self.row("2026-03-02", pay="2026-03-10", amount=0.5),
-                self.row("2026-03-02", pay="2026-03-12", amount=0.25),
+                self._row("2026-03-02", pay="2026-03-10", amount=0.5),
+                self._row("2026-03-02", pay="2026-03-12", amount=0.25),
             ]
         )
-        [row] = self.parse(text).rows
+        [row] = self._parse(text).rows
         self.assertEqual((row.pay_date, row.amount), ("2026-03-12", "0.75"))
 
     def test_no_table_is_an_error(self):
@@ -7673,76 +7627,74 @@ class TestInvescoParsing(unittest.TestCase):
         for text in ("not json", "[]", "{}", '{"distributions": {}}'):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(ValueError, "Invesco"):
-                    self.parse(text)
+                    self._parse(text)
 
     def test_malformed_rows_are_errors(self):
         """Test a bad date or amount never becomes a row."""
         bad = [
-            self.row(ex="21/09/2026"),
-            self.row(ex=None),
-            self.row(amount="x"),
-            self.row(amount=None),
-            self.row(amount=-1),
-            self.row(pay="soon"),
+            self._row(ex="21/09/2026"),
+            self._row(ex=None),
+            self._row(amount="x"),
+            self._row(amount=None),
+            self._row(amount=-1),
+            self._row(pay="soon"),
             "text",
         ]
         for row in bad:
             with self.subTest(row=row):
                 with self.assertRaisesRegex(ValueError, "Invesco"):
-                    self.parse(self.payload([row]))
+                    self._parse(self._payload([row]))
 
     def test_an_empty_list_is_an_empty_table(self):
         """Test a fund with no distributions yet."""
-        self.assertEqual(self.parse(self.payload([])).rows, ())
+        self.assertEqual(self._parse(self._payload([])).rows, ())
 
     def test_the_currency_may_be_absent(self):
         """Test the row's currency then decides, as for iShares."""
-        self.assertEqual(self.parse(self.payload([], currency=None)).currency, "")
+        self.assertEqual(self._parse(self._payload([], currency=None)).currency, "")
 
 
 class TestInvescoFetch(unittest.TestCase):
     """Test the one request per instrument for IV (SPEC-012, #89)."""
 
-    def test_one_get_of_the_distribution_endpoint(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_distribution_endpoint(self, mock_get):
         """Test the url carries the CUSIP and the call has a timeout."""
         response = MagicMock(text=fixture_text("invesco_46090E103_qqq.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_invesco_distributions("46090E103")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_invesco_distributions("46090E103")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
             "46090E103/distribution?idType=cusip&productType=ETF",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-10-08")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_invesco_distributions("46090E103")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_invesco_distributions("46090E103")
 
 
 class TestQ4Parsing(unittest.TestCase):
     """Test reading a Q4 Inc investor-relations dividend feed (Q4, SPEC-012, #89)."""
 
-    def parse(self, text, symbol="KNSL"):
+    def _parse(self, text, symbol="KNSL"):
         return scrape_fund_price.parse_q4_distributions(text, symbol)
 
     @staticmethod
-    def payload(rows):
+    def _payload(rows):
         return json.dumps({"GetDividendListResult": rows})
 
     @staticmethod
-    def row(ex="08/28/2026", record="08/28/2026", pay="09/14/2026", amount=0.25):
+    def _row(ex="08/28/2026", record="08/28/2026", pay="09/14/2026", amount=0.25):
         def stamp(value):
             return None if value is None else f"{value} 00:00:00"
 
@@ -7758,7 +7710,7 @@ class TestQ4Parsing(unittest.TestCase):
 
     def test_the_recorded_knsl_response(self):
         """Test the real response: oldest first, newest with its pay date."""
-        table = self.parse(fixture_text("q4_knsl_dividends.json"))
+        table = self._parse(fixture_text("q4_knsl_dividends.json"))
         self.assertEqual(table.source, "Q4")
         self.assertEqual(table.currency, "USD")
         self.assertEqual(len(table.rows), 41)
@@ -7772,21 +7724,21 @@ class TestQ4Parsing(unittest.TestCase):
 
     def test_rows_are_sorted_by_ex_date(self):
         """Test the order does not depend on the feed's."""
-        text = self.payload([self.row("08/28/2026"), self.row("05/28/2026")])
+        text = self._payload([self._row("08/28/2026"), self._row("05/28/2026")])
         self.assertEqual(
-            [r.ex_date for r in self.parse(text).rows], ["2026-05-28", "2026-08-28"]
+            [r.ex_date for r in self._parse(text).rows], ["2026-05-28", "2026-08-28"]
         )
 
     def test_a_missing_pay_date_is_empty(self):
         """Test a declared dividend whose pay date is not set."""
-        [row] = self.parse(self.payload([self.row(pay=None)])).rows
+        [row] = self._parse(self._payload([self._row(pay=None)])).rows
         self.assertEqual(row.pay_date, "")
 
     def test_mixed_currencies_are_an_error(self):
         """Test a table is in one currency."""
-        other = dict(self.row("05/28/2026"), Currency="CAD")
+        other = dict(self._row("05/28/2026"), Currency="CAD")
         with self.assertRaisesRegex(ValueError, "Q4.*currenc"):
-            self.parse(self.payload([self.row(), other]))
+            self._parse(self._payload([self._row(), other]))
 
     def test_a_changed_response_is_an_error(self):
         """Test the shape check."""
@@ -7794,73 +7746,70 @@ class TestQ4Parsing(unittest.TestCase):
             "not json",
             "{}",
             '{"GetDividendListResult": null}',
-            self.payload([self.row(ex="2026-08-28")]),
-            self.payload([self.row(amount="n/a")]),
-            self.payload([self.row(amount=-1)]),
-            self.payload([self.row(ex=None)]),
-            self.payload(["x"]),
+            self._payload([self._row(ex="2026-08-28")]),
+            self._payload([self._row(amount="n/a")]),
+            self._payload([self._row(amount=-1)]),
+            self._payload([self._row(ex=None)]),
+            self._payload(["x"]),
         ]
         for text in bad:
             with self.subTest(text=text):
                 with self.assertRaisesRegex(ValueError, "Q4"):
-                    self.parse(text)
+                    self._parse(text)
 
     def test_an_empty_list_is_an_empty_table(self):
         """Test a company with no dividends."""
-        table = self.parse(self.payload([]))
+        table = self._parse(self._payload([]))
         self.assertEqual((table.rows, table.currency), ((), ""))
 
 
 class TestQ4Fetch(unittest.TestCase):
     """Test the one request per instrument for Q4 (SPEC-012, #89)."""
 
-    def test_one_get_of_the_feed(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_feed(self, mock_get):
         """Test the url is built from the host/MIC and the symbol."""
         response = MagicMock(text=fixture_text("q4_knsl_dividends.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_q4_distributions(
-                "ir.kinsalecapitalgroup.com/XNYS", "KNSL"
-            )
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_q4_distributions(
+            "ir.kinsalecapitalgroup.com/XNYS", "KNSL"
+        )
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://ir.kinsalecapitalgroup.com/feed/StockQuote.svc/"
             "GetDividendList?exchange=XNYS&symbol=KNSL&pageSize=-1",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-09-14")
 
-    def test_the_symbol_is_url_encoded(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_the_symbol_is_url_encoded(self, mock_get):
         """Test an identifier with a punctuation mark cannot change the query."""
         response = MagicMock(text='{"GetDividendListResult": []}')
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "A&B")
-        self.assertIn("symbol=A%26B&", get.call_args.args[0])
+        mock_get.return_value = response
+        scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "A&B")
+        self.assertIn("symbol=A%26B&", mock_get.call_args.args[0])
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "KNSL")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "KNSL")
 
 
 class TestEtnetParsing(unittest.TestCase):
     """Test reading etnet's dividend records (ET, SPEC-012, #89)."""
 
-    def parse(self, text, code="639"):
+    def _parse(self, text, code="639"):
         return scrape_fund_price.parse_etnet_distributions(text, code)
 
     @staticmethod
-    def page(*rows):
+    def _page(*rows):
         """Build a page like etnet's from (announced, particular, ex, pay) rows."""
 
         def line(announced, particular, ex, pay):
@@ -7881,7 +7830,7 @@ class TestEtnetParsing(unittest.TestCase):
 
     def test_the_recorded_shougang_page(self):
         """Test the real page: cash dividends only, oldest first."""
-        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        table = self._parse(fixture_text("etnet_639_dividends.html"))
         self.assertEqual(table.source, "ET")
         self.assertEqual(table.currency, "HKD")
         self.assertEqual(
@@ -7895,7 +7844,7 @@ class TestEtnetParsing(unittest.TestCase):
 
     def test_the_rights_issue_is_not_a_dividend(self):
         """Test the Rts row (ex 2024-10-10) is skipped, its neighbours kept."""
-        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        table = self._parse(fixture_text("etnet_639_dividends.html"))
         ex_dates = [r.ex_date for r in table.rows]
         self.assertIn("2024-10-03", ex_dates)
         self.assertIn("2024-06-07", ex_dates)
@@ -7903,84 +7852,82 @@ class TestEtnetParsing(unittest.TestCase):
 
     def test_a_special_and_a_final_dividend_on_one_ex_date_add_up(self):
         """Test 2018-06-04: Fin 0.072 and Sp 0.063 are one entitlement date."""
-        table = self.parse(fixture_text("etnet_639_dividends.html"))
+        table = self._parse(fixture_text("etnet_639_dividends.html"))
         [row] = [r for r in table.rows if r.ex_date == "2018-05-31"]
         self.assertEqual((row.pay_date, row.amount), ("2018-07-12", "0.135"))
 
     def test_no_dividend_rows_are_skipped(self):
         """Test the 'No Int Div' placeholders carry no dates."""
-        text = self.page(
+        text = self._page(
             ("--", "No Int Div", "--", "--"),
             ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026"),
         )
-        self.assertEqual([r.ex_date for r in self.parse(text).rows], ["2026-09-18"])
+        self.assertEqual([r.ex_date for r in self._parse(text).rows], ["2026-09-18"])
 
     def test_a_missing_pay_date_is_empty(self):
         """Test an announced dividend whose payable date is not yet set."""
-        text = self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "--"))
-        [row] = self.parse(text).rows
+        text = self._page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "--"))
+        [row] = self._parse(text).rows
         self.assertEqual(row.pay_date, "")
 
     def test_a_page_with_no_cash_dividend_is_an_empty_table(self):
         """Test a listed company that has never paid."""
-        table = self.parse(self.page(("--", "No Fin Div", "--", "--")))
+        table = self._parse(self._page(("--", "No Fin Div", "--", "--")))
         self.assertEqual((table.rows, table.currency), ((), ""))
 
     def test_a_changed_page_is_an_error(self):
         """Test a page without the dividend table, or with bad cells."""
         bad = [
             "<html>no table</html>",
-            self.page(("27/08/2026", "Int Div HKD 0.1", "2026-09-18", "05/11/2026")),
-            self.page(("27/08/2026", "Int Div HKD 0.1", "31/02/2026", "05/11/2026")),
-            self.page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "soon")),
-            self.page(
+            self._page(("27/08/2026", "Int Div HKD 0.1", "2026-09-18", "05/11/2026")),
+            self._page(("27/08/2026", "Int Div HKD 0.1", "31/02/2026", "05/11/2026")),
+            self._page(("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "soon")),
+            self._page(
                 ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026")
             ).replace('<td align="left">2026/12</td>', ""),
         ]
         for text in bad:
             with self.subTest(text=text[:60]):
                 with self.assertRaisesRegex(ValueError, "etnet"):
-                    self.parse(text)
+                    self._parse(text)
 
     def test_mixed_currencies_are_an_error(self):
         """Test a table is in one currency."""
-        text = self.page(
+        text = self._page(
             ("27/08/2026", "Int Div HKD 0.1", "18/09/2026", "05/11/2026"),
             ("27/03/2026", "Fin Div USD 0.1", "08/07/2026", "23/07/2026"),
         )
         with self.assertRaisesRegex(ValueError, "etnet.*currenc"):
-            self.parse(text)
+            self._parse(text)
 
 
 class TestEtnetFetch(unittest.TestCase):
     """Test the one request per instrument for ET (SPEC-012, #89)."""
 
-    def test_one_get_of_the_dividend_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_dividend_page(self, mock_get):
         """Test the url carries the HK code and the call has a timeout."""
         response = MagicMock(text=fixture_text("etnet_639_dividends.html"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_etnet_distributions("639")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_etnet_distributions("639")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.etnet.com.hk/www/eng/stocks/realtime/"
             "quote_dividend.php?code=639",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-11-05")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_etnet_distributions("639")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_etnet_distributions("639")
 
 
 class TestSsgaParsing(unittest.TestCase):
@@ -8002,7 +7949,7 @@ class TestSsgaParsing(unittest.TestCase):
     ]
 
     @classmethod
-    def line(
+    def _line(
         cls,
         isin="IE00B6YX5L24",
         ex="03/08/2026",
@@ -8026,12 +7973,12 @@ class TestSsgaParsing(unittest.TestCase):
             "Semi-Annually",
         ]
 
-    def parse(self, content, isin="IE00B6YX5L24"):
+    def _parse(self, content, isin="IE00B6YX5L24"):
         return scrape_fund_price.parse_ssga_distributions(content, isin)
 
     def test_the_recorded_workbook(self):
         """Test the real workbook: GLTL.L's fund, oldest first."""
-        table = self.parse(fixture_bytes("ssga_historical_distributions.xlsx"))
+        table = self._parse(fixture_bytes("ssga_historical_distributions.xlsx"))
         self.assertEqual(table.source, "SS")
         self.assertEqual(table.currency, "GBP")
         self.assertEqual(
@@ -8050,61 +7997,61 @@ class TestSsgaParsing(unittest.TestCase):
         content = make_xlsx(
             [
                 self.HEADER,
-                self.line(isin="IE00OTHER000", amount="9"),
-                self.line(),
+                self._line(isin="IE00OTHER000", amount="9"),
+                self._line(),
             ]
         )
-        [row] = self.parse(content).rows
+        [row] = self._parse(content).rows
         self.assertEqual(row.amount, "0.8811")
 
     def test_inline_strings_and_numeric_cells_are_read(self):
         """Test a workbook written without a shared-strings table."""
-        line = self.line(amount=0.8811)
+        line = self._line(amount=0.8811)
         content = make_xlsx([self.HEADER, line], inline=True)
-        [row] = self.parse(content).rows
+        [row] = self._parse(content).rows
         self.assertEqual(row.amount, "0.8811")
 
     def test_the_columns_are_found_by_header_not_by_position(self):
         """Test a reordered workbook still reads."""
         order = [3, 4, 6, 8, 9, 10]
         header = [self.HEADER[i] for i in order]
-        line = [self.line()[i] for i in order]
-        [row] = self.parse(make_xlsx([header, line])).rows
+        line = [self._line()[i] for i in order]
+        [row] = self._parse(make_xlsx([header, line])).rows
         self.assertEqual((row.ex_date, row.pay_date), ("2026-08-03", "2026-08-17"))
 
     def test_a_missing_pay_date_is_empty(self):
         """Test an announced distribution whose payment date is blank."""
-        content = make_xlsx([self.HEADER, self.line(pay=None)])
-        [row] = self.parse(content).rows
+        content = make_xlsx([self.HEADER, self._line(pay=None)])
+        [row] = self._parse(content).rows
         self.assertEqual(row.pay_date, "")
 
     def test_a_fund_with_no_rows_is_an_error(self):
         """Test a wrong ISIN or a changed workbook is not an empty table."""
         with self.assertRaisesRegex(ValueError, "SSGA.*IE00B6YX5L24"):
-            self.parse(make_xlsx([self.HEADER, self.line(isin="IE00OTHER000")]))
+            self._parse(make_xlsx([self.HEADER, self._line(isin="IE00OTHER000")]))
 
     def test_a_changed_workbook_is_an_error(self):
         """Test the shape checks."""
         bad = {
             "not a workbook": b"<html>moved</html>",
             "no header": make_xlsx([["a", "b"], ["c", "d"]]),
-            "bad ex-date": make_xlsx([self.HEADER, self.line(ex="2026-08-03")]),
-            "bad pay date": make_xlsx([self.HEADER, self.line(pay="soon")]),
-            "bad amount": make_xlsx([self.HEADER, self.line(amount="n/a")]),
-            "negative": make_xlsx([self.HEADER, self.line(amount="-1")]),
+            "bad ex-date": make_xlsx([self.HEADER, self._line(ex="2026-08-03")]),
+            "bad pay date": make_xlsx([self.HEADER, self._line(pay="soon")]),
+            "bad amount": make_xlsx([self.HEADER, self._line(amount="n/a")]),
+            "negative": make_xlsx([self.HEADER, self._line(amount="-1")]),
             "mixed currency": make_xlsx(
-                [self.HEADER, self.line(), self.line(ex="02/02/2026", currency="USD")]
+                [self.HEADER, self._line(), self._line(ex="02/02/2026", currency="USD")]
             ),
         }
         for name, content in bad.items():
             with self.subTest(name):
                 with self.assertRaisesRegex(ValueError, "SSGA"):
-                    self.parse(content)
+                    self._parse(content)
 
     def test_the_first_sheet_is_the_open_funds(self):
         """Test the sheet is resolved from the workbook, not assumed by name."""
-        content = make_xlsx([self.HEADER, self.line()], sheet_name="Anything")
-        self.assertEqual(len(self.parse(content).rows), 1)
+        content = make_xlsx([self.HEADER, self._line()], sheet_name="Anything")
+        self.assertEqual(len(self._parse(content).rows), 1)
 
 
 class TestSsgaFetch(unittest.TestCase):
@@ -8121,65 +8068,62 @@ class TestSsgaFetch(unittest.TestCase):
     def tearDown(self):
         scrape_fund_price.clear_issuer_caches()
 
-    def test_one_get_of_the_workbook(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_workbook(self, mock_get):
         """Test the url, the timeout and the parsed table."""
         response = MagicMock(
             content=fixture_bytes("ssga_historical_distributions.xlsx")
         )
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        get.assert_called_once()
-        self.assertEqual(get.call_args.args[0], self.URL)
-        self.assertEqual(get.call_args.kwargs["timeout"], 60)
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args.args[0], self.URL)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 60)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-08-17")
 
-    def test_a_second_instrument_reuses_the_download(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_a_second_instrument_reuses_the_download(self, mock_get):
         """Test one workbook serves every SPDR fund of the run."""
         content = make_xlsx(
             [
                 TestSsgaParsing.HEADER,
-                TestSsgaParsing.line(),
-                TestSsgaParsing.line(isin="IE00OTHER000", amount="2"),
+                TestSsgaParsing._line(),
+                TestSsgaParsing._line(isin="IE00OTHER000", amount="2"),
             ]
         )
         response = MagicMock(content=content)
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            first = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-            second = scrape_fund_price.fetch_ssga_distributions("IE00OTHER000")
-        get.assert_called_once()
+        mock_get.return_value = response
+        first = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        second = scrape_fund_price.fetch_ssga_distributions("IE00OTHER000")
+        mock_get.assert_called_once()
         self.assertEqual(first.rows[0].amount, "0.8811")
         self.assertEqual(second.rows[0].amount, "2")
 
-    def test_clearing_the_cache_downloads_again(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_clearing_the_cache_downloads_again(self, mock_get):
         """Test a new run does not reuse yesterday's workbook."""
         response = MagicMock(
             content=fixture_bytes("ssga_historical_distributions.xlsx")
         )
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-            scrape_fund_price.clear_issuer_caches()
-            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        self.assertEqual(get.call_count, 2)
+        mock_get.return_value = response
+        scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        scrape_fund_price.clear_issuer_caches()
+        scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        self.assertEqual(mock_get.call_count, 2)
 
-    def test_a_failed_download_is_not_cached(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_a_failed_download_is_not_cached(self, mock_get):
         """Test the retry fetches again."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "404"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("404")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        good = MagicMock(content=fixture_bytes("ssga_historical_distributions.xlsx"))
-        with patch.object(scrape_fund_price.requests, "get", return_value=good):
-            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        mock_get.return_value = MagicMock(
+            content=fixture_bytes("ssga_historical_distributions.xlsx")
+        )
+        table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
         self.assertTrue(table.rows)
 
 
@@ -8228,7 +8172,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
     )
 
     @staticmethod
-    def table(source, *rows, currency="USD"):
+    def _table(source, *rows, currency="USD"):
         return scrape_fund_price.IssuerTable(
             currency,
             tuple(scrape_fund_price.IssuerDistribution(*row) for row in rows),
@@ -8245,7 +8189,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         results = self._issuer_run(
             [FundSpec("YA", "QQQ")],
             [self.QQQ],
-            {"46090E103": self.table("IV", past)},
+            {"46090E103": self._table("IV", past)},
             {"QQQ": [self.EVENT("2026-09-21", "0.75143", "USD")]},
         )
         self.assertEqual(results.failures, [])
@@ -8260,7 +8204,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         self._issuer_run(
             [FundSpec("YA", "KNSL")],
             [self.KNSL],
-            {"ir.kinsalecapitalgroup.com/XNYS": self.table("Q4", future)},
+            {"ir.kinsalecapitalgroup.com/XNYS": self._table("Q4", future)},
             {"KNSL": [self.EVENT("2026-08-28", "0.25", "USD")]},
         )
         [row] = self._read("dividends_upcoming.csv")
@@ -8275,30 +8219,13 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         self._issuer_run(
             [FundSpec("YA", "GLTL.L")],
             [source],
-            {"IE00B6YX5L24": self.table("SS", past, currency="GBP")},
+            {"IE00B6YX5L24": self._table("SS", past, currency="GBP")},
             {"GLTL.L": [self.EVENT("2026-08-03", "88.11", "GBp")]},
         )
         self.assertEqual(
             self._read("dividends_history.csv"),
             [["GLTL.L", "2026-08-03", "2026-08-17", "88.11", "GBp", "SS"]],
         )
-
-    def test_yahoo_does_not_blank_the_pay_date_the_next_day(self):
-        """Test the new sources outrank Yahoo, as IS does."""
-        stored = {
-            ("QQQ", "2026-09-21"): [
-                "QQQ",
-                "2026-09-21",
-                "2026-10-08",
-                "0.75143",
-                "USD",
-                "IV",
-            ]
-        }
-        scrape_fund_price.merge_dividend_rows(
-            stored, [["QQQ", "2026-09-21", "", "0.75143", "USD", "YA"]]
-        )
-        self.assertEqual(stored[("QQQ", "2026-09-21")][2], "2026-10-08")
 
     def test_one_source_failing_leaves_the_others_and_the_yahoo_row(self):
         """Test a changed response logs and keeps the instrument's rows."""
@@ -8307,7 +8234,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
             [FundSpec("YA", "QQQ"), FundSpec("YA", "KNSL")],
             [self.QQQ, self.KNSL],
             {
-                "46090E103": self.table("IV", past),
+                "46090E103": self._table("IV", past),
                 "ir.kinsalecapitalgroup.com/XNYS": ValueError("Q4: changed"),
             },
             {
@@ -8326,10 +8253,9 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         with patch.object(scrape_fund_price, "clear_issuer_caches") as clear:
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
                 fetch.return_value = scrape_fund_price.IssuerTable("USD", ())
-                with patch.object(scrape_fund_price.time, "sleep"):
-                    scrape_fund_price.collect_issuer_tables(
-                        [self.QQQ], [FundSpec("YA", "QQQ")]
-                    )
+                scrape_fund_price.collect_issuer_tables(
+                    [self.QQQ], [FundSpec("YA", "QQQ")]
+                )
         clear.assert_called_once_with()
 
     def test_the_rebuild_replaces_rows_of_the_new_sources(self):
@@ -8352,7 +8278,7 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
                 "YA",
             ],
         }
-        table = self.table("IV", ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143"))
+        table = self._table("IV", ("2026-09-21", "2026-09-21", "2026-10-08", "0.75143"))
         scrape_fund_price.apply_issuer_table(
             history, "QQQ", table, "USD", date(2026, 10, 26)
         )
@@ -8450,6 +8376,14 @@ class TestOnsCpiParsing(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     scrape_fund_price.parse_ons_cpi(text)
 
+    def test_a_month_entry_that_is_not_an_object_is_refused(self):
+        """Test a month listed as bare text, not an object, is a changed shape."""
+        text = ons_payload(ons_months(2015, 2015)).replace(
+            '"months": [', '"months": ["2015 JAN", '
+        )
+        with self.assertRaisesRegex(ValueError, "not an object.*2015 JAN"):
+            scrape_fund_price.parse_ons_cpi(text)
+
     def test_a_series_that_no_longer_reaches_back_to_2015_is_refused(self):
         """Test a truncated series cannot replace the published file."""
         with self.assertRaisesRegex(ValueError, "2015-01"):
@@ -8487,57 +8421,45 @@ class TestOnsCpiParsing(unittest.TestCase):
 class TestOnsCpiFetch(unittest.TestCase):
     """Test the one request per run (SPEC-013, #91)."""
 
-    def test_one_get_of_the_time_series(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_time_series(self, mock_get):
         """Test the url, the browser User-Agent, the timeout and the status check."""
         response = MagicMock(text=fixture_text("ons_d7bt_cpi.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            index = scrape_fund_price.fetch_uk_cpi()
-        get.assert_called_once()
+        mock_get.return_value = response
+        index = scrape_fund_price.fetch_uk_cpi()
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.ons.gov.uk/economy/inflationandpriceindices/"
             "timeseries/d7bt/mm23/data",
         )
         self.assertTrue(
-            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+            mock_get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(index["2026-09"], "144.1")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_uk_cpi()
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_uk_cpi()
 
 
-class TestUkCpiUpdate(unittest.TestCase):
+class TestUkCpiUpdate(DataDirCase):
     """Test the daily update of uk_cpi.csv (SPEC-013, #91)."""
 
     TODAY = date(2026, 10, 27)
     HEADER = "Month,Index,Series,AsOf\n"
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.test_dir, "uk_cpi.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    FILE = "uk_cpi.csv"
 
     def _run(self, fetch):
         with patch.object(scrape_fund_price, "fetch_uk_cpi", fetch):
             return REAL_UPDATE_UK_CPI(self.test_dir, self.TODAY)
-
-    def _read(self):
-        with open(self.path, newline="") as file:
-            return file.read()
 
     def test_the_first_run_writes_the_whole_series(self):
         """Test header, a row per month sorted, series id and the run date."""
@@ -8545,7 +8467,7 @@ class TestUkCpiUpdate(unittest.TestCase):
         results = self._run(lambda: index)
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,99.3,D7BT,2026-10-27\n"
             + "2015-02,99.5,D7BT,2026-10-27\n",
@@ -8554,14 +8476,14 @@ class TestUkCpiUpdate(unittest.TestCase):
     def test_the_file_has_lf_endings(self):
         """Test no CRLF, on any platform."""
         self._run(lambda: {"2015-01": "99.3"})
-        with open(self.path, "rb") as file:
+        with open(self.path(self.FILE), "rb") as file:
             self.assertNotIn(b"\r", file.read())
 
     def test_the_real_response_gives_a_file_from_2015_01(self):
         """Test the recorded response end to end."""
         text = fixture_text("ons_d7bt_cpi.json")
         self._run(lambda: scrape_fund_price.parse_ons_cpi(text))
-        lines = self._read().splitlines()
+        lines = self.read_text(self.FILE).splitlines()
         self.assertEqual(lines[0], "Month,Index,Series,AsOf")
         self.assertEqual(lines[1], "2015-01,99.3,D7BT,2026-10-27")
         self.assertEqual(lines[-1], "2026-09,144.1,D7BT,2026-10-27")
@@ -8573,15 +8495,15 @@ class TestUkCpiUpdate(unittest.TestCase):
         AsOf is when the row's value was last published or revised, so an
         unchanged month keeps its date and the file does not churn daily.
         """
-        with open(self.path, "w", newline="") as file:
-            file.write(
-                self.HEADER
-                + "2015-01,99.3,D7BT,2026-09-01\n"
-                + "2015-02,99.5,D7BT,2026-09-01\n"
-            )
+        self.write_text(
+            self.FILE,
+            self.HEADER
+            + "2015-01,99.3,D7BT,2026-09-01\n"
+            + "2015-02,99.5,D7BT,2026-09-01\n",
+        )
         self._run(lambda: {"2015-01": "99.3", "2015-02": "99.6", "2015-03": "99.7"})
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,99.3,D7BT,2026-09-01\n"
             + "2015-02,99.6,D7BT,2026-10-27\n"
@@ -8595,37 +8517,35 @@ class TestUkCpiUpdate(unittest.TestCase):
             + "2015-01,99.3,D7BT,2026-09-01\n"
             + "2015-02,99.5,D7BT,2026-09-15\n"
         )
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
         self._run(lambda: {"2015-01": "99.3", "2015-02": "99.5"})
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
 
     def test_a_stored_row_from_another_series_is_replaced(self):
         """Test a matching index under a different series id is not kept."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2015-01,99.3,OTHER,2026-09-01\n")
+        self.write_text(self.FILE, self.HEADER + "2015-01,99.3,OTHER,2026-09-01\n")
         self._run(lambda: {"2015-01": "99.3"})
-        self.assertEqual(self._read(), self.HEADER + "2015-01,99.3,D7BT,2026-10-27\n")
+        self.assertEqual(
+            self.read_text(self.FILE), self.HEADER + "2015-01,99.3,D7BT,2026-10-27\n"
+        )
 
     def test_a_published_month_the_response_lacks_is_kept(self):
         """Test the file never loses a month the ONS once published."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2014-12,99.0,D7BT,2026-09-01\n")
+        self.write_text(self.FILE, self.HEADER + "2014-12,99.0,D7BT,2026-09-01\n")
         self._run(lambda: {"2015-01": "99.3"})
-        self.assertIn("2014-12,99.0,D7BT,2026-09-01\n", self._read())
-        self.assertIn("2015-01,99.3,D7BT,2026-10-27\n", self._read())
+        self.assertIn("2014-12,99.0,D7BT,2026-09-01\n", self.read_text(self.FILE))
+        self.assertIn("2015-01,99.3,D7BT,2026-10-27\n", self.read_text(self.FILE))
 
     def test_a_failed_fetch_keeps_the_last_published_file(self):
         """Test the file is byte-identical and the failure is listed."""
         stored = self.HEADER + "2015-01,99.3,D7BT,2026-09-01\n"
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
 
         def refuse():
             raise ValueError("ONS D7BT: months missing")
 
         results = self._run(refuse)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
         self.assertEqual(len(results.failures), 1)
         self.assertTrue(results.failures[0].startswith("uk_cpi: "))
         self.assertIn("months missing", results.failures[0])
@@ -8637,7 +8557,7 @@ class TestUkCpiUpdate(unittest.TestCase):
             raise ConnectionError("down")
 
         results = self._run(refuse)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
         self.assertEqual(len(results.failures), 1)
 
     def test_a_transient_failure_is_retried(self):
@@ -8653,11 +8573,11 @@ class TestUkCpiUpdate(unittest.TestCase):
         results = self._run(flaky)
         self.assertEqual(len(calls), 3)
         self.assertEqual(results.failures, [])
-        self.assertIn("2015-01,99.3", self._read())
+        self.assertIn("2015-01,99.3", self.read_text(self.FILE))
 
     def test_the_data_directory_is_created(self):
         """Test a missing data/ is made, as for the other files."""
-        nested = os.path.join(self.test_dir, "nested")
+        nested = self.path("nested")
         with patch.object(scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "1"}):
             REAL_UPDATE_UK_CPI(nested, self.TODAY)
         self.assertTrue(os.path.isfile(os.path.join(nested, "uk_cpi.csv")))
@@ -8669,35 +8589,22 @@ class TestUkCpiUpdate(unittest.TestCase):
                 scrape_fund_price, "fetch_uk_cpi", lambda: {"2015-01": "99.3"}
             ):
                 REAL_UPDATE_UK_CPI()
-        self.assertIn(date.today().isoformat(), self._read())
+        self.assertIn(date.today().isoformat(), self.read_text(self.FILE))
 
 
 class TestUkCpiInMain(unittest.TestCase):
     """Test the daily run publishes the index beside the prices (#91)."""
 
     def _main(self, outcome):
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
-            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            self.write = enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            enter(patch("builtins.print"))
-            self.update = enter(patch("scrape_fund_price.update_uk_cpi", **outcome))
+        """Run the daily mode with update_uk_cpi patched as `outcome` says."""
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            read_distributions=[],
+            update_uk_cpi=outcome,
+        ) as stubs:
+            self.write = stubs["write_results"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_uk_cpi"]
             main([])
 
     def test_the_daily_run_updates_the_index_once(self):
@@ -8721,18 +8628,11 @@ class TestUkCpiInMain(unittest.TestCase):
 
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the ONS."""
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
-            enter(
-                patch(
-                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
-                )
-            )
-            enter(patch("builtins.print"))
-            update = enter(patch("scrape_fund_price.update_uk_cpi"))
+        with daily_run_stubs(
+            backfill_history=BackfillReport(), update_uk_cpi={}
+        ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
-        update.assert_not_called()
+        stubs["update_uk_cpi"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -8771,12 +8671,12 @@ class TestBankRateParsing(unittest.TestCase):
 
     TODAY = date(2026, 11, 1)
 
-    def parse(self, text):
+    def _parse(self, text):
         return scrape_fund_price.parse_boe_bank_rate(text, self.TODAY)
 
     def test_the_recorded_page_gives_the_whole_history_oldest_first(self):
         """Test the live fixture: every change back to 1975, the rate as worded."""
-        changes = self.parse(fixture_text("boe_bank_rate.html"))
+        changes = self._parse(fixture_text("boe_bank_rate.html"))
         self.assertEqual(len(changes), 258)
         self.assertEqual(changes[0], (date(1975, 1, 20), "11.25"))
         self.assertEqual(changes[-1], (date(2025, 12, 18), "3.75"))
@@ -8784,13 +8684,13 @@ class TestBankRateParsing(unittest.TestCase):
 
     def test_two_digit_years_are_read_as_20yy_unless_in_the_future(self):
         """Test 25 is 2025 and 75 is 1975."""
-        changes = self.parse(boe_page([("18 Dec 25", "3.75"), ("20 Jan 75", "11.25")]))
+        changes = self._parse(boe_page([("18 Dec 25", "3.75"), ("20 Jan 75", "11.25")]))
         self.assertEqual(changes[0][0], date(1975, 1, 20))
         self.assertEqual(changes[1][0], date(2025, 12, 18))
 
     def test_the_rate_is_kept_exactly_as_published(self):
         """Test no float round trip: '4.00' stays '4.00'."""
-        changes = self.parse(boe_page(BOE_ROWS))
+        changes = self._parse(boe_page(BOE_ROWS))
         self.assertIn((date(2025, 8, 7), "4.00"), changes)
 
     def test_a_page_without_the_table_is_refused(self):
@@ -8802,7 +8702,7 @@ class TestBankRateParsing(unittest.TestCase):
         ):
             with self.subTest(text=text[:40]):
                 with self.assertRaises(ValueError):
-                    self.parse(text)
+                    self._parse(text)
 
     def test_a_row_that_does_not_parse_is_refused(self):
         """Test a bad rate or date is a changed page."""
@@ -8817,12 +8717,12 @@ class TestBankRateParsing(unittest.TestCase):
         ):
             with self.subTest(when=when, rate=rate):
                 with self.assertRaises(ValueError):
-                    self.parse(boe_page([(when, rate)] + BOE_ROWS))
+                    self._parse(boe_page([(when, rate)] + BOE_ROWS))
 
     def test_a_date_listed_twice_is_refused(self):
         """Test a duplicated date is ambiguous, so it is a bad response."""
         with self.assertRaisesRegex(ValueError, "2025-12-18"):
-            self.parse(boe_page([("18 Dec 25", "3.50")] + BOE_ROWS))
+            self._parse(boe_page([("18 Dec 25", "3.50")] + BOE_ROWS))
 
     def test_a_row_with_the_wrong_number_of_cells_is_refused(self):
         """Test a changed layout is a bad response, not a skipped row."""
@@ -8830,23 +8730,23 @@ class TestBankRateParsing(unittest.TestCase):
             "</tbody>", "<tr><td>18 Dec 25</td><td>3.75</td><td>x</td></tr></tbody>"
         )
         with self.assertRaisesRegex(ValueError, "not a date and a rate"):
-            self.parse(text)
+            self._parse(text)
 
     def test_a_table_nested_in_the_page_table_is_not_read_as_rows(self):
         """Test only the history table's own rows count."""
         nested = "<tr><td><table><tr><td>x</td></tr></table></td><td>x</td></tr>"
         text = boe_page(BOE_ROWS).replace("</tbody>", nested + "</tbody>")
         with self.assertRaises(ValueError):
-            self.parse(text)
+            self._parse(text)
         text = boe_page(BOE_ROWS).replace(
             "</thead>", "</thead><caption><table><tr><td>x</td></tr></table></caption>"
         )
-        self.assertEqual(len(self.parse(text)), len(BOE_ROWS))
+        self.assertEqual(len(self._parse(text)), len(BOE_ROWS))
 
     def test_a_history_that_stops_after_2014_is_refused(self):
         """Test a truncated table cannot replace the published file."""
         with self.assertRaisesRegex(ValueError, "2014-12-31"):
-            self.parse(boe_page(BOE_ROWS[:3]))
+            self._parse(boe_page(BOE_ROWS[:3]))
 
 
 class TestBankRateByMonth(unittest.TestCase):
@@ -8854,7 +8754,7 @@ class TestBankRateByMonth(unittest.TestCase):
 
     TODAY = date(2026, 11, 1)
 
-    def months(self, changes=None, today=None):
+    def _months(self, changes=None, today=None):
         if changes is None:
             changes = scrape_fund_price.parse_boe_bank_rate(
                 fixture_text("boe_bank_rate.html"), self.TODAY
@@ -8863,7 +8763,7 @@ class TestBankRateByMonth(unittest.TestCase):
 
     def test_known_month_ends_from_the_recorded_page(self):
         """Test the rate in force at the end of the month, change dates included."""
-        rates = self.months()
+        rates = self._months()
         self.assertEqual(rates["2015-01"], "0.50")
         self.assertEqual(rates["2016-07"], "0.50")  # cut on 4 Aug 2016
         self.assertEqual(rates["2016-08"], "0.25")
@@ -8874,7 +8774,7 @@ class TestBankRateByMonth(unittest.TestCase):
 
     def test_every_month_from_2015_01_to_the_current_month_has_a_row(self):
         """Test the series has no gap and starts at UK_BANK_RATE_START."""
-        months = list(self.months())
+        months = list(self._months())
         self.assertEqual(months[0], "2015-01")
         self.assertEqual(months[-1], "2026-11")
         self.assertEqual(len(months), 11 * 12 + 11)
@@ -8891,7 +8791,7 @@ class TestBankRateByMonth(unittest.TestCase):
             (date(2015, 2, 28), "0.75"),
             (date(2015, 4, 1), "1.00"),
         ]
-        rates = self.months(changes, date(2015, 4, 20))
+        rates = self._months(changes, date(2015, 4, 20))
         self.assertEqual(rates["2015-01"], "0.50")
         self.assertEqual(rates["2015-02"], "0.75")
         self.assertEqual(rates["2015-03"], "0.75")  # repeated, no change
@@ -8900,13 +8800,13 @@ class TestBankRateByMonth(unittest.TestCase):
     def test_the_current_month_is_the_rate_in_force_on_the_run_date(self):
         """Test a change later in the month is not yet in force."""
         changes = [(date(2009, 3, 5), "0.50"), (date(2015, 2, 20), "0.75")]
-        self.assertEqual(self.months(changes, date(2015, 2, 10))["2015-02"], "0.50")
-        self.assertEqual(self.months(changes, date(2015, 2, 20))["2015-02"], "0.75")
+        self.assertEqual(self._months(changes, date(2015, 2, 10))["2015-02"], "0.50")
+        self.assertEqual(self._months(changes, date(2015, 2, 20))["2015-02"], "0.75")
 
     def test_a_year_boundary_is_crossed(self):
         """Test December rolls to January."""
         changes = [(date(2009, 3, 5), "0.50")]
-        rates = self.months(changes, date(2016, 2, 3))
+        rates = self._months(changes, date(2016, 2, 3))
         self.assertEqual(rates["2015-12"], "0.50")
         self.assertEqual(rates["2016-01"], "0.50")
 
@@ -8914,22 +8814,21 @@ class TestBankRateByMonth(unittest.TestCase):
 class TestBankRateFetch(unittest.TestCase):
     """Test the one request per run (SPEC-014, #93)."""
 
-    def test_one_get_of_the_history_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_history_page(self, mock_get):
         """Test the url, the browser User-Agent, the timeout and the status check."""
         response = MagicMock(text=fixture_text("boe_bank_rate.html"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            changes = scrape_fund_price.fetch_uk_bank_rate()
-        get.assert_called_once()
+        mock_get.return_value = response
+        changes = scrape_fund_price.fetch_uk_bank_rate()
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp",
         )
         self.assertTrue(
-            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+            mock_get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(changes[-1], (date(2025, 12, 18), "3.75"))
 
@@ -8944,45 +8843,34 @@ class TestBankRateFetch(unittest.TestCase):
         ):
             self.assertFalse(path.startswith(disallowed), disallowed)
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_uk_bank_rate()
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_uk_bank_rate()
 
 
-class TestUkBankRateUpdate(unittest.TestCase):
+class TestUkBankRateUpdate(DataDirCase):
     """Test the daily update of uk_bank_rate.csv (SPEC-014, #93)."""
 
     TODAY = date(2015, 3, 10)
     HEADER = "Month,Rate,Series,AsOf\n"
     CHANGES = [(date(2009, 3, 5), "0.50")]
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.path = os.path.join(self.test_dir, "uk_bank_rate.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+    FILE = "uk_bank_rate.csv"
 
     def _run(self, fetch):
         with patch.object(scrape_fund_price, "fetch_uk_bank_rate", fetch):
             return REAL_UPDATE_UK_BANK_RATE(self.test_dir, self.TODAY)
-
-    def _read(self):
-        with open(self.path, newline="") as file:
-            return file.read()
 
     def test_the_first_run_writes_every_month(self):
         """Test header, a row per month sorted, series id and the run date."""
         results = self._run(lambda: self.CHANGES)
         self.assertEqual(results.failures, [])
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,0.50,UK_BANK_RATE,2015-03-10\n"
             + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
@@ -8992,7 +8880,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
     def test_the_file_has_lf_endings(self):
         """Test no CRLF, on any platform."""
         self._run(lambda: self.CHANGES)
-        with open(self.path, "rb") as file:
+        with open(self.path(self.FILE), "rb") as file:
             self.assertNotIn(b"\r", file.read())
 
     def test_the_real_page_gives_a_file_from_2015_01(self):
@@ -9002,7 +8890,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
         )
         with patch.object(scrape_fund_price, "fetch_uk_bank_rate", lambda: changes):
             REAL_UPDATE_UK_BANK_RATE(self.test_dir, date(2026, 11, 1))
-        lines = self._read().splitlines()
+        lines = self.read_text(self.FILE).splitlines()
         self.assertEqual(lines[0], "Month,Rate,Series,AsOf")
         self.assertEqual(lines[1], "2015-01,0.50,UK_BANK_RATE,2026-11-01")
         self.assertEqual(lines[-1], "2026-11,3.75,UK_BANK_RATE,2026-11-01")
@@ -9010,15 +8898,15 @@ class TestUkBankRateUpdate(unittest.TestCase):
 
     def test_a_changed_month_replaces_the_published_one(self):
         """Test the page's rate wins, and only changed rows take the run date."""
-        with open(self.path, "w", newline="") as file:
-            file.write(
-                self.HEADER
-                + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
-                + "2015-02,0.75,UK_BANK_RATE,2015-02-01\n"
-            )
+        self.write_text(
+            self.FILE,
+            self.HEADER
+            + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
+            + "2015-02,0.75,UK_BANK_RATE,2015-02-01\n",
+        )
         self._run(lambda: self.CHANGES)
         self.assertEqual(
-            self._read(),
+            self.read_text(self.FILE),
             self.HEADER
             + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
             + "2015-02,0.50,UK_BANK_RATE,2015-03-10\n"
@@ -9033,36 +8921,38 @@ class TestUkBankRateUpdate(unittest.TestCase):
             + "2015-02,0.50,UK_BANK_RATE,2015-02-15\n"
             + "2015-03,0.50,UK_BANK_RATE,2015-03-02\n"
         )
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
         self._run(lambda: self.CHANGES)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
 
     def test_a_stored_row_from_another_series_is_replaced(self):
         """Test a matching rate under a different series id is not kept."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2015-01,0.50,OTHER,2015-02-01\n")
+        self.write_text(self.FILE, self.HEADER + "2015-01,0.50,OTHER,2015-02-01\n")
         self._run(lambda: self.CHANGES)
-        self.assertIn("2015-01,0.50,UK_BANK_RATE,2015-03-10\n", self._read())
+        self.assertIn(
+            "2015-01,0.50,UK_BANK_RATE,2015-03-10\n", self.read_text(self.FILE)
+        )
 
     def test_a_published_month_the_page_lacks_is_kept(self):
         """Test the file never loses a month it once published."""
-        with open(self.path, "w", newline="") as file:
-            file.write(self.HEADER + "2014-12,0.50,UK_BANK_RATE,2015-01-02\n")
+        self.write_text(
+            self.FILE, self.HEADER + "2014-12,0.50,UK_BANK_RATE,2015-01-02\n"
+        )
         self._run(lambda: self.CHANGES)
-        self.assertIn("2014-12,0.50,UK_BANK_RATE,2015-01-02\n", self._read())
+        self.assertIn(
+            "2014-12,0.50,UK_BANK_RATE,2015-01-02\n", self.read_text(self.FILE)
+        )
 
     def test_a_failed_fetch_keeps_the_last_published_file(self):
         """Test the file is byte-identical and the failure is listed."""
         stored = self.HEADER + "2015-01,0.50,UK_BANK_RATE,2015-02-01\n"
-        with open(self.path, "w", newline="") as file:
-            file.write(stored)
+        self.write_text(self.FILE, stored)
 
         def refuse():
             raise ValueError("Bank Rate table missing")
 
         results = self._run(refuse)
-        self.assertEqual(self._read(), stored)
+        self.assertEqual(self.read_text(self.FILE), stored)
         self.assertEqual(len(results.failures), 1)
         self.assertTrue(results.failures[0].startswith("uk_bank_rate: "))
         self.assertIn("table missing", results.failures[0])
@@ -9074,7 +8964,7 @@ class TestUkBankRateUpdate(unittest.TestCase):
             raise ConnectionError("down")
 
         results = self._run(refuse)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
         self.assertEqual(len(results.failures), 1)
 
     def test_a_transient_failure_is_retried(self):
@@ -9090,17 +8980,17 @@ class TestUkBankRateUpdate(unittest.TestCase):
         results = self._run(flaky)
         self.assertEqual(len(calls), 3)
         self.assertEqual(results.failures, [])
-        self.assertIn("2015-01,0.50", self._read())
+        self.assertIn("2015-01,0.50", self.read_text(self.FILE))
 
     def test_a_page_that_starts_after_2014_gives_a_failure_not_a_file(self):
         """Test a history with no rate in force at 2014-12-31 is refused."""
         results = self._run(lambda: [(date(2015, 2, 5), "0.75")])
         self.assertEqual(len(results.failures), 1)
-        self.assertFalse(os.path.exists(self.path))
+        self.assertFalse(os.path.exists(self.path(self.FILE)))
 
     def test_the_data_directory_is_created(self):
         """Test a missing data/ is made, as for the other files."""
-        nested = os.path.join(self.test_dir, "nested")
+        nested = self.path("nested")
         with patch.object(
             scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
         ):
@@ -9114,37 +9004,22 @@ class TestUkBankRateUpdate(unittest.TestCase):
                 scrape_fund_price, "fetch_uk_bank_rate", lambda: self.CHANGES
             ):
                 REAL_UPDATE_UK_BANK_RATE()
-        self.assertIn(date.today().isoformat(), self._read())
+        self.assertIn(date.today().isoformat(), self.read_text(self.FILE))
 
 
 class TestUkBankRateInMain(unittest.TestCase):
     """Test the daily run publishes the rate beside the prices (#93)."""
 
     def _main(self, outcome):
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
-            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            self.write = enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            enter(patch("builtins.print"))
-            self.update = enter(
-                patch("scrape_fund_price.update_uk_bank_rate", **outcome)
-            )
+        """Run the daily mode with update_uk_bank_rate patched as `outcome` says."""
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            read_distributions=[],
+            update_uk_bank_rate=outcome,
+        ) as stubs:
+            self.write = stubs["write_results"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_uk_bank_rate"]
             main([])
 
     def test_the_daily_run_updates_the_rate_once(self):
@@ -9168,18 +9043,11 @@ class TestUkBankRateInMain(unittest.TestCase):
 
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the Bank's page."""
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
-            enter(
-                patch(
-                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
-                )
-            )
-            enter(patch("builtins.print"))
-            update = enter(patch("scrape_fund_price.update_uk_bank_rate"))
+        with daily_run_stubs(
+            backfill_history=BackfillReport(), update_uk_bank_rate={}
+        ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
-        update.assert_not_called()
+        stubs["update_uk_bank_rate"].assert_not_called()
 
 
 if __name__ == "__main__":
