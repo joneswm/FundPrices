@@ -9922,6 +9922,40 @@ class TestMainReadsTheClockOnce(DataDirCase):
         self.assertEqual(call.kwargs["today"], date(2026, 10, 19))
 
 
+class TestOneModeAtATime(unittest.TestCase):
+    """Test main() refuses any two modes together before doing anything (#122)."""
+
+    MODES = {
+        "--backfill": ["--backfill", "--from", "2026-10-01"],
+        "--import-closed": ["--import-closed"],
+        "--backfill-dividends": ["--backfill-dividends"],
+        "--history": ["--history", "AAPL", "--start", "2026-10-01"],
+    }
+    STEPS = (
+        "backfill_history",
+        "backfill_fx",
+        "import_closed_holdings",
+        "backfill_dividends",
+        "fetch_historical_data",
+    )
+
+    def test_every_pair_of_modes_exits_two_and_runs_nothing(self):
+        """Test e.g. --import-closed --history no longer runs the import."""
+        names = list(self.MODES)
+        pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
+        for first, second in pairs:
+            with self.subTest(modes=(first, second)):
+                outcomes = {step: {} for step in self.STEPS}
+                with daily_run_stubs(**outcomes) as stubs:
+                    with self.assertRaises(SystemExit) as error:
+                        main(self.MODES[first] + self.MODES[second])
+                self.assertEqual(error.exception.code, 2)
+                for step in self.STEPS + ("scrape_funds",):
+                    stubs[step].assert_not_called()
+                printed = stubs["print"].call_args.args[0]
+                self.assertIn("one mode at a time", printed)
+
+
 class TestHistoryArguments(unittest.TestCase):
     """Test --history is validated before any network call, like the rebuilds."""
 
