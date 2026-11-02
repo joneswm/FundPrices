@@ -499,6 +499,10 @@ class TestFundSpecParsing(DataDirCase):
         """Test an alias cannot shadow a different instrument."""
         self.assertRejectedAt("YA,QQQ\nYA,ABC,QQQ\n", 2)
 
+    def test_trailing_comma_is_an_empty_alias_field(self):
+        """Test `YA,QQQ,` is rejected rather than read as a line with no alias."""
+        self.assertRejectedAt("YA,QQQ,\n", 1)
+
 
 class TestSourceCodeCanonicalisation(DataDirCase):
     """Test the GF -> YA rename and its deprecation alias."""
@@ -626,6 +630,12 @@ class TestFxPairConfiguration(DataDirCase):
         """Test FX is optional, so an absent file is not an error."""
         self.assertEqual(read_fx_pairs(self.path("absent.txt")), [])
 
+    def test_the_default_file_is_fx_pairs_txt(self):
+        """Test the daily run's call names no file and reads FX_PAIRS_FILE."""
+        path = self.write_text("fx_pairs.txt", "USDGBP\n")
+        with patch.object(scrape_fund_price, "FX_PAIRS_FILE", path):
+            self.assertEqual(read_fx_pairs(), ["USDGBP"])
+
 
 class TestClosedHoldingConfiguration(DataDirCase):
     """Test the closed-holdings config, which is deliberately not funds.txt.
@@ -731,6 +741,13 @@ class TestClosedHoldingConfiguration(DataDirCase):
         }
         closed = {h.identifier for h in read_closed_holdings("closed_holdings.txt")}
         self.assertEqual(daily & closed, set())
+
+    def test_the_default_file_is_closed_holdings_txt(self):
+        """Test the import's call names no file and reads CLOSED_HOLDINGS_FILE."""
+        path = self._write("BKCH,YA,BKCH.L,USD,2023-01-03,2024-02-16\n")
+        with patch.object(scrape_fund_price, "CLOSED_HOLDINGS_FILE", path):
+            [holding] = read_closed_holdings()
+        self.assertEqual(holding.identifier, "BKCH")
 
 
 class TestDistributionConfiguration(DataDirCase):
@@ -1507,6 +1524,17 @@ class TestFTQuoteFetching(unittest.TestCase):
         page = self.PAGE.replace("Price (GBP)", "Price")
         mock_get.side_effect = self._responses(page=page)
         self.assertEqual(self.fetch()[0], Quote("2026-10-19", "6.99", ""))
+
+    @patch("scrape_fund_price.requests.get")
+    def test_a_row_without_four_price_cells_is_skipped(self, mock_get):
+        """Test a truncated row is dropped rather than read as a quote."""
+        short = (
+            '<tr><td><span class="mod-ui-hide-small-below">Friday, September 18, '
+            "2026</span></td><td>7.10</td></tr>"
+        )
+        mock_get.side_effect = self._responses(rows=short + FT_ROWS)
+        quotes = self.fetch("2026-09-01", "2026-09-20")
+        self.assertEqual([q.date for q in quotes], ["2026-09-17", "2026-09-18"])
 
 
 class TestFTUnfinishedDay(unittest.TestCase):
@@ -2371,6 +2399,14 @@ class TestHistoryUpsert(DataDirCase):
             [["NEW", "2026-09-18", "2.00", "GBP"]],
         )
 
+    def test_a_damaged_history_row_is_skipped_on_read(self):
+        """Test a row shorter than Fund,Date,Price is ignored, not a crash."""
+        path = self.write_text(
+            "prices_history.csv",
+            "Fund,Date,Price,Currency\nAAA,2026-09-17\nAAA,2026-09-18,1.50,GBP\n",
+        )
+        self.assertEqual(list(read_history_rows(path)), [("AAA", "2026-09-18")])
+
 
 class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
@@ -2721,6 +2757,40 @@ class TestPriceFallbackSources(DataDirCase):
         self.assertIsNone(get_last_known_price("AAPL", self.test_dir))
 
 
+class TestDefaultDataDirectory(unittest.TestCase):
+    """Every writer and runner defaults data_dir to DATA_DIR at call time.
+
+    Call-time binding is what lets setUpModule redirect the whole suite; a
+    default bound at import would write into the repository's data/ (#103).
+    """
+
+    def test_each_entry_point_writes_under_the_module_data_dir(self):
+        """Test each default lands in DATA_DIR as patched, with nothing elsewhere."""
+        calls = {
+            "scrape_funds": lambda: scrape_funds([]),
+            "write_summary": lambda: write_summary([], [], "2026-11-02"),
+            "snap_fx_rates": lambda: snap_fx_rates([]),
+            "write_fx_results": lambda: write_fx_results(ScrapeResults()),
+            "backfill_fx": lambda: backfill_fx([], "2026-11-01"),
+            "backfill_history": lambda: backfill_history([], "2026-11-01"),
+            "import_closed_holdings": lambda: import_closed_holdings([]),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "out")
+            with ExitStack() as stack:
+                stack.enter_context(patch("scrape_fund_price.DATA_DIR", target))
+                stack.enter_context(
+                    patch("scrape_fund_price.read_fx_pairs", return_value=[])
+                )
+                stack.enter_context(patch("builtins.print"))
+                for name, call in calls.items():
+                    with self.subTest(name):
+                        call()
+            written = os.listdir(target)
+            self.assertIn("daily_summary.csv", written)
+            self.assertIn("fx_history.csv", written)
+
+
 # ===========================================================================
 # Backfill and rebuild
 # ===========================================================================
@@ -2991,6 +3061,29 @@ class TestBackfillRebuild(BackfillCase):
         self.assertEqual(
             self.read_rows("prices_history.csv"),
             [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_an_unusable_price_from_the_source_is_not_stored(self, mock_quotes):
+        """Test a source row with no price is skipped, never written as text."""
+        mock_quotes.return_value = [
+            Quote("2026-09-18", "N/A", "USD"),
+            Quote("2026-09-19", "721.45", "USD"),
+        ]
+        backfill_history([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-19", "721.45", "USD"]],
+        )
+
+    @patch("scrape_fund_price.backfill_fx")
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_the_fx_rebuild_follows_for_the_configured_pairs(self, _, mock_fx):
+        """Test backfill_history ends with backfill_fx for fx_pairs.txt's pairs."""
+        with patch("scrape_fund_price.read_fx_pairs", return_value=["USDGBP"]):
+            report = backfill_history([], "2026-09-01", self.test_dir)
+        mock_fx.assert_called_once_with(
+            ["USDGBP"], "2026-09-01", self.test_dir, report=report
         )
 
 
@@ -3836,6 +3929,15 @@ class TestFxStorage(DataDirCase):
         self.assertEqual(
             self.read_rows("latest_fx.csv"), [["USDGBP", "2026-09-18", "0.746700"]]
         )
+
+    def test_a_damaged_fx_row_is_skipped_on_read(self):
+        """Test a row shorter than Pair,Date,Rate is ignored, not a crash."""
+        path = self.write_text(
+            "fx_history.csv",
+            "Pair,Date,Rate\nUSDGBP,2026-09-18\nUSDGBP,2026-09-19,0.750000\n",
+        )
+        rows = scrape_fund_price.read_fx_rows(path)
+        self.assertEqual(list(rows), [("USDGBP", "2026-09-19")])
 
 
 class TestFxFailureIsolation(DataDirCase):
