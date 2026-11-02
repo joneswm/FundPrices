@@ -9868,6 +9868,40 @@ class TestMainReadsTheClockOnce(DataDirCase):
         self.assertEqual(error.exception.code, 2)
         mock_print.assert_called_once_with("Error: --from date is in the future")
 
+    def test_the_daily_run_maps_the_instruments_once(self):
+        """Test main() builds one Universe and hands it to the dividend steps."""
+        universe = scrape_fund_price.Universe
+        with patch.object(universe, "from_specs", wraps=universe.from_specs) as built:
+            with daily_run_stubs(self.test_dir, specs=self.SPECS) as s:
+                main([], now=self.NOW)
+        built.assert_called_once_with(self.SPECS)
+        handed = s["update_dividends"].call_args.args[0]
+        self.assertIsInstance(handed, universe)
+        self.assertEqual(handed.specs, tuple(self.SPECS))
+
+    def test_every_daily_step_is_dated_by_now(self):
+        """Test the dividends, the CPI and the Bank Rate take now's date."""
+        outcomes = {
+            "update_uk_cpi": scrape_fund_price.UkCpiResults(),
+            "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
+        }
+        with daily_run_stubs(self.test_dir, specs=self.SPECS, **outcomes) as s:
+            main([], now=self.NOW)
+        today = date(2026, 10, 19)
+        self.assertEqual(s["update_dividends"].call_args.kwargs["today"], today)
+        s["update_uk_cpi"].assert_called_once_with(today=today)
+        s["update_uk_bank_rate"].assert_called_once_with(today=today)
+
+    def test_the_dividend_rebuild_maps_once_and_is_dated_by_now(self):
+        """Test --backfill-dividends hands one Universe and now's date on."""
+        with daily_run_stubs(
+            specs=self.SPECS, backfill_dividends=BackfillReport()
+        ) as s:
+            main(["--backfill-dividends"], now=self.NOW)
+        call = s["backfill_dividends"].call_args
+        self.assertIsInstance(call.args[0], scrape_fund_price.Universe)
+        self.assertEqual(call.kwargs["today"], date(2026, 10, 19))
+
 
 class TestHistoryArguments(unittest.TestCase):
     """Test --history is validated before any network call, like the rebuilds."""
