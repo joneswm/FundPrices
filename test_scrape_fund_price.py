@@ -7123,31 +7123,29 @@ class TestIsharesPageParsing(unittest.TestCase):
 class TestIsharesPageFetch(unittest.TestCase):
     """Test the one request per instrument (SPEC-011, #87)."""
 
-    def test_one_get_of_the_product_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_product_page(self, mock_get):
         """Test the url carries the product id and the call has a timeout."""
         response = MagicMock(text=ishares_page([(20260716, 20260717, 20260729, "2.5")]))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_ishares_distributions("251804")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_ishares_distributions("251804")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.ishares.com/uk/individual/en/products/251804",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[0].amount, "2.5")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_ishares_distributions("251804")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_ishares_distributions("251804")
 
     def test_the_dispatcher_calls_the_source_for_its_code(self):
         """Test fetch_issuer_table routes IS to the iShares fetch."""
@@ -8313,32 +8311,30 @@ class TestInvescoParsing(unittest.TestCase):
 class TestInvescoFetch(unittest.TestCase):
     """Test the one request per instrument for IV (SPEC-012, #89)."""
 
-    def test_one_get_of_the_distribution_endpoint(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_distribution_endpoint(self, mock_get):
         """Test the url carries the CUSIP and the call has a timeout."""
         response = MagicMock(text=fixture_text("invesco_46090E103_qqq.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_invesco_distributions("46090E103")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_invesco_distributions("46090E103")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
             "46090E103/distribution?idType=cusip&productType=ETF",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-10-08")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_invesco_distributions("46090E103")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_invesco_distributions("46090E103")
 
 
 class TestQ4Parsing(unittest.TestCase):
@@ -8424,43 +8420,40 @@ class TestQ4Parsing(unittest.TestCase):
 class TestQ4Fetch(unittest.TestCase):
     """Test the one request per instrument for Q4 (SPEC-012, #89)."""
 
-    def test_one_get_of_the_feed(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_feed(self, mock_get):
         """Test the url is built from the host/MIC and the symbol."""
         response = MagicMock(text=fixture_text("q4_knsl_dividends.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_q4_distributions(
-                "ir.kinsalecapitalgroup.com/XNYS", "KNSL"
-            )
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_q4_distributions(
+            "ir.kinsalecapitalgroup.com/XNYS", "KNSL"
+        )
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://ir.kinsalecapitalgroup.com/feed/StockQuote.svc/"
             "GetDividendList?exchange=XNYS&symbol=KNSL&pageSize=-1",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-09-14")
 
-    def test_the_symbol_is_url_encoded(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_the_symbol_is_url_encoded(self, mock_get):
         """Test an identifier with a punctuation mark cannot change the query."""
         response = MagicMock(text='{"GetDividendListResult": []}')
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "A&B")
-        self.assertIn("symbol=A%26B&", get.call_args.args[0])
+        mock_get.return_value = response
+        scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "A&B")
+        self.assertIn("symbol=A%26B&", mock_get.call_args.args[0])
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "KNSL")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_q4_distributions("ir.x.com/XNYS", "KNSL")
 
 
 class TestEtnetParsing(unittest.TestCase):
@@ -8565,32 +8558,30 @@ class TestEtnetParsing(unittest.TestCase):
 class TestEtnetFetch(unittest.TestCase):
     """Test the one request per instrument for ET (SPEC-012, #89)."""
 
-    def test_one_get_of_the_dividend_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_dividend_page(self, mock_get):
         """Test the url carries the HK code and the call has a timeout."""
         response = MagicMock(text=fixture_text("etnet_639_dividends.html"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_etnet_distributions("639")
-        get.assert_called_once()
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_etnet_distributions("639")
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.etnet.com.hk/www/eng/stocks/realtime/"
             "quote_dividend.php?code=639",
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-11-05")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_etnet_distributions("639")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_etnet_distributions("639")
 
 
 class TestSsgaParsing(unittest.TestCase):
@@ -8731,22 +8722,22 @@ class TestSsgaFetch(unittest.TestCase):
     def tearDown(self):
         scrape_fund_price.clear_issuer_caches()
 
-    def test_one_get_of_the_workbook(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_workbook(self, mock_get):
         """Test the url, the timeout and the parsed table."""
         response = MagicMock(
             content=fixture_bytes("ssga_historical_distributions.xlsx")
         )
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        get.assert_called_once()
-        self.assertEqual(get.call_args.args[0], self.URL)
-        self.assertEqual(get.call_args.kwargs["timeout"], 60)
+        mock_get.return_value = response
+        table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args.args[0], self.URL)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 60)
         response.raise_for_status.assert_called_once()
         self.assertEqual(table.rows[-1].pay_date, "2026-08-17")
 
-    def test_a_second_instrument_reuses_the_download(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_a_second_instrument_reuses_the_download(self, mock_get):
         """Test one workbook serves every SPDR fund of the run."""
         content = make_xlsx(
             [
@@ -8756,40 +8747,37 @@ class TestSsgaFetch(unittest.TestCase):
             ]
         )
         response = MagicMock(content=content)
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            first = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-            second = scrape_fund_price.fetch_ssga_distributions("IE00OTHER000")
-        get.assert_called_once()
+        mock_get.return_value = response
+        first = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        second = scrape_fund_price.fetch_ssga_distributions("IE00OTHER000")
+        mock_get.assert_called_once()
         self.assertEqual(first.rows[0].amount, "0.8811")
         self.assertEqual(second.rows[0].amount, "2")
 
-    def test_clearing_the_cache_downloads_again(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_clearing_the_cache_downloads_again(self, mock_get):
         """Test a new run does not reuse yesterday's workbook."""
         response = MagicMock(
             content=fixture_bytes("ssga_historical_distributions.xlsx")
         )
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-            scrape_fund_price.clear_issuer_caches()
-            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        self.assertEqual(get.call_count, 2)
+        mock_get.return_value = response
+        scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        scrape_fund_price.clear_issuer_caches()
+        scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        self.assertEqual(mock_get.call_count, 2)
 
-    def test_a_failed_download_is_not_cached(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_a_failed_download_is_not_cached(self, mock_get):
         """Test the retry fetches again."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "404"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("404")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
-        good = MagicMock(content=fixture_bytes("ssga_historical_distributions.xlsx"))
-        with patch.object(scrape_fund_price.requests, "get", return_value=good):
-            table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
+        mock_get.return_value = MagicMock(
+            content=fixture_bytes("ssga_historical_distributions.xlsx")
+        )
+        table = scrape_fund_price.fetch_ssga_distributions("IE00B6YX5L24")
         self.assertTrue(table.rows)
 
 
@@ -9079,35 +9067,33 @@ class TestOnsCpiParsing(unittest.TestCase):
 class TestOnsCpiFetch(unittest.TestCase):
     """Test the one request per run (SPEC-013, #91)."""
 
-    def test_one_get_of_the_time_series(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_time_series(self, mock_get):
         """Test the url, the browser User-Agent, the timeout and the status check."""
         response = MagicMock(text=fixture_text("ons_d7bt_cpi.json"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            index = scrape_fund_price.fetch_uk_cpi()
-        get.assert_called_once()
+        mock_get.return_value = response
+        index = scrape_fund_price.fetch_uk_cpi()
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.ons.gov.uk/economy/inflationandpriceindices/"
             "timeseries/d7bt/mm23/data",
         )
         self.assertTrue(
-            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+            mock_get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(index["2026-09"], "144.1")
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_uk_cpi()
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_uk_cpi()
 
 
 class TestUkCpiUpdate(DataDirCase):
@@ -9474,22 +9460,21 @@ class TestBankRateByMonth(unittest.TestCase):
 class TestBankRateFetch(unittest.TestCase):
     """Test the one request per run (SPEC-014, #93)."""
 
-    def test_one_get_of_the_history_page(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_one_get_of_the_history_page(self, mock_get):
         """Test the url, the browser User-Agent, the timeout and the status check."""
         response = MagicMock(text=fixture_text("boe_bank_rate.html"))
-        with patch.object(
-            scrape_fund_price.requests, "get", return_value=response
-        ) as get:
-            changes = scrape_fund_price.fetch_uk_bank_rate()
-        get.assert_called_once()
+        mock_get.return_value = response
+        changes = scrape_fund_price.fetch_uk_bank_rate()
+        mock_get.assert_called_once()
         self.assertEqual(
-            get.call_args.args[0],
+            mock_get.call_args.args[0],
             "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp",
         )
         self.assertTrue(
-            get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
+            mock_get.call_args.kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
         )
-        self.assertEqual(get.call_args.kwargs["timeout"], 30)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 30)
         response.raise_for_status.assert_called_once()
         self.assertEqual(changes[-1], (date(2025, 12, 18), "3.75"))
 
@@ -9504,15 +9489,14 @@ class TestBankRateFetch(unittest.TestCase):
         ):
             self.assertFalse(path.startswith(disallowed), disallowed)
 
-    def test_an_http_error_propagates_for_the_retry(self):
+    @patch("scrape_fund_price.requests.get")
+    def test_an_http_error_propagates_for_the_retry(self, mock_get):
         """Test a status error is raised, not swallowed."""
-        response = MagicMock()
-        response.raise_for_status.side_effect = scrape_fund_price.requests.HTTPError(
-            "503"
+        mock_get.return_value.raise_for_status.side_effect = (
+            scrape_fund_price.requests.HTTPError("503")
         )
-        with patch.object(scrape_fund_price.requests, "get", return_value=response):
-            with self.assertRaises(scrape_fund_price.requests.HTTPError):
-                scrape_fund_price.fetch_uk_bank_rate()
+        with self.assertRaises(scrape_fund_price.requests.HTTPError):
+            scrape_fund_price.fetch_uk_bank_rate()
 
 
 class TestUkBankRateUpdate(DataDirCase):
