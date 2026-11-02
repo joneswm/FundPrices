@@ -34,8 +34,10 @@ Every handler returns a list of `Quote(date, price, currency)`, oldest first.
 | `YA` | Yahoo Finance | `yfinance` daily bars | yes | yes |
 | `FT` | Financial Times | two plain HTTP requests; falls back to scraping | yes | yes |
 | `IV` | investing.com | one plain HTTP request | yes | no — supplied by config |
-| `YH` | Yahoo Finance | Playwright scrape of the quote page | no — run date | no |
-| `MS` | Morningstar | Playwright scrape | no — run date | no |
+
+The `YH` and `MS` Playwright scrapers were removed in #110; the FT fallback, which
+scrapes a page showing only the current price (so its quote carries the run date and
+no currency), is the only scraping route left.
 
 `GF` is a deprecated alias of `YA`, canonicalised by `canonical_source()` with a
 warning that names the offending line.

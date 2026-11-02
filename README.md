@@ -4,7 +4,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 
 ## Features
 
-- **Multi-source support**: Yahoo Finance API, the Financial Times and investing.com over plain HTTP; the FT fetch falls back to Playwright scraping (the Yahoo and Morningstar scrapers are supported but unused)
+- **Multi-source support**: Yahoo Finance API, the Financial Times and investing.com over plain HTTP; the FT fetch falls back to Playwright scraping, the only scraping route left (the Yahoo and Morningstar scrapers were removed in #110)
 - **True price dates and currencies**: every row carries the date and currency the source reports, so weekends and holidays are absent rather than repeated
 - **FX rates**: end-of-day rates for a configured set of currency pairs
 - **Daily summary**: new price, old price, delta and percent delta for every instrument
@@ -366,8 +366,10 @@ rate rather than its close.
 | Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 26 funds + 5 closed holdings |
 | Financial Times | FT | HTTP endpoint, scraping fallback | `https://markets.ft.com/data/funds/tearsheet/historical?s=GB00B1FXTF86` | 6 funds + 1 closed holding |
 | investing.com | IV | HTTP endpoint (undocumented) | `https://api.investing.com/api/financialdata/historical/1182866` | 2 closed holdings |
-| Yahoo Finance | YH | Web Scraping | `https://sg.finance.yahoo.com/quote/IDTG.L/` | supported, unused |
-| Morningstar | MS | Web Scraping | `https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=LU0196696453` | supported, unused |
+
+The `YH` (Yahoo Finance) and `MS` (Morningstar) web scrapers were removed in #110, having
+been unused since every instrument moved to a dated source; Playwright now serves only
+the FT fallback.
 
 `IV` exists for two closed funds that Yahoo and FT no longer price. Like the FT historical route it is an undocumented endpoint, so it is
 used only for one-off imports and never on a schedule.

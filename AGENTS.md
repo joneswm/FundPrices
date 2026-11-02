@@ -154,9 +154,8 @@ YA,0P00000YAN,JFM0003373    # fetched as 0P00000YAN, published as both
 - `IV` - investing.com (undocumented HTTP endpoint). Used only by closed holdings, for
   funds Yahoo and FT no longer price; never put it on a schedule
 - `GF` - deprecated spelling of `YA`; still accepted, warns, and names the line
-- `YH` - Yahoo Finance (web scraping). Undated, so prefer `YA`. Currently unused
-- `MS` - Morningstar (web scraping). Supported but unused: the one fund that
-  needed it now comes from Yahoo
+- `YH` and `MS` - the Yahoo Finance and Morningstar web scrapers, removed in #110;
+  Playwright now serves only the FT fallback
 
 How each source is fetched, and the run modes, are in
 `docs/technical_documentation/architecture.md`.

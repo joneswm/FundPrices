@@ -515,8 +515,6 @@ class TestSourceCodeCanonicalisation(DataDirCase):
         funds.txt line selects, which is why the rename chose YA.
         """
         self.assertEqual(canonical_source("YH"), "YH")
-        url, selector = get_source_config("YH", "IDTG.L")
-        self.assertTrue(url and selector)
 
     @patch("builtins.print")
     def test_deprecated_code_warns_naming_the_line(self, mock_print):
@@ -1746,24 +1744,6 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(url, expected_url)
         self.assertEqual(selector, expected_selector)
 
-    def test_get_source_config_yahoo(self):
-        """Test Yahoo source configuration."""
-        url, selector = get_source_config("YH", "IDTG.L")
-        expected_url = "https://sg.finance.yahoo.com/quote/IDTG.L/"
-        expected_selector = 'span[data-testid="qsp-price"]'
-        self.assertEqual(url, expected_url)
-        self.assertEqual(selector, expected_selector)
-
-    def test_get_source_config_morningstar(self):
-        """Test Morningstar source configuration."""
-        url, selector = get_source_config("MS", "JFM0003373")
-        expected_url = (
-            "https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code=JFM0003373"
-        )
-        expected_selector = "#mainContent_quicktakeContent_fvOverview_lblNAV"
-        self.assertEqual(url, expected_url)
-        self.assertEqual(selector, expected_selector)
-
     def test_get_source_config_google_finance_returns_none(self):
         """Test that Google Finance source returns None (uses API instead)."""
         url, selector = get_source_config("GF", "AAPL")
@@ -1783,47 +1763,39 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(url1, url2)
         self.assertEqual(selector1, selector2)
 
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_mock(self, mock_playwright):
-        """Test the scraping sources store the page's price, dated today."""
+    def test_scrape_funds_mock(self, mock_playwright, mock_ft):
+        """Test the FT scraping fallback stores the page's price, dated today."""
         page = self._browser_page(mock_playwright)
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        # YH and MS still scrape a page; FT and YA use HTTP routes.
-        results = scrape_funds([("YH", "IDTG.L"), ("MS", "JFM0003373")], self.test_dir)
+        results = scrape_funds([("FT", "IE0008368742")], self.test_dir)
 
         today = date.today().isoformat()
-        self.assertEqual(
-            list(results),
-            [["IDTG.L", today, "123.45", ""], ["JFM0003373", today, "123.45", ""]],
-        )
-        self.assertEqual(self.read_text("latest_IDTG.L.price").strip(), "123.45")
-        self.assertEqual(self.read_text("latest_JFM0003373.price").strip(), "123.45")
+        self.assertEqual(list(results), [["IE0008368742", today, "123.45", ""]])
+        self.assertEqual(self.read_text("latest_IE0008368742.price").strip(), "123.45")
 
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_removes_commas_from_all_price_sources(self, mock_playwright):
-        """Test that every source stores prices without thousands separators."""
+    def test_scrape_funds_removes_commas_from_all_price_sources(
+        self, mock_playwright, mock_ft
+    ):
+        """Test that every route stores prices without thousands separators."""
         page = self._browser_page(mock_playwright)
         page.locator.return_value.first.text_content.return_value = "1,234.56"
 
-        test_funds = [
-            ("FT", "FT_FUND"),
-            ("YH", "SGLN.L"),
-            ("MS", "MS_FUND"),
-            ("YA", "API_FUND"),
-        ]
+        # FT_FUND takes the scraping fallback; API_FUND the Yahoo route.
+        test_funds = [("FT", "FT_FUND"), ("YA", "API_FUND")]
 
         today = date.today().isoformat()
         with patch(
-            "scrape_fund_price.fetch_ft_quotes",
-            return_value=[Quote(today, "1234.56", "GBP")],
-        ), patch(
             "scrape_fund_price.fetch_yahoo_quotes",
             return_value=[Quote(today, "1234.56", "USD")],
         ):
             results = scrape_funds(test_funds, self.test_dir)
 
-        self.assertEqual([row[2] for row in results], ["1234.56"] * 4)
+        self.assertEqual([row[2] for row in results], ["1234.56"] * 2)
         for _, fund_id in test_funds:
             with self.subTest(fund=fund_id):
                 price_file = self.read_text(f"latest_{fund_id}.price")
@@ -1968,13 +1940,14 @@ class TestFundPriceScraper(DataDirCase):
 
         self.assertEqual(list(results), [["AAPL", "2026-09-18", "150.25", "USD"]])
 
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_scraping_exception(self, mock_playwright):
-        """Test error handling when scraping raises exception."""
+    def test_scrape_funds_scraping_exception(self, mock_playwright, mock_ft):
+        """Test error handling when the scraping fallback raises too."""
         page = self._browser_page(mock_playwright)
         page.goto.side_effect = Exception("Timeout")
 
-        results = scrape_funds([("YH", "TEST123")], self.test_dir)
+        results = scrape_funds([("FT", "TEST123")], self.test_dir)
 
         # No price could be obtained, so no dated row is invented.
         self.assertEqual(list(results), [])
@@ -1982,14 +1955,15 @@ class TestFundPriceScraper(DataDirCase):
         self.assertIn("TEST123", results.failures[0])
         self.assertEqual(page.goto.call_count, 3)
 
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
-    def test_scrape_funds_retries_timeout_and_succeeds(self, mock_playwright):
+    def test_scrape_funds_retries_timeout_and_succeeds(self, mock_playwright, mock_ft):
         """Test transient timeout errors are retried before writing a price."""
         page = self._browser_page(mock_playwright)
         page.goto.side_effect = [Exception(self.TIMEOUT), None]
         page.locator.return_value.first.text_content.return_value = "123.45"
 
-        results = scrape_funds([("YH", "TEST123")], self.test_dir)
+        results = scrape_funds([("FT", "TEST123")], self.test_dir)
 
         self.assertEqual(
             list(results), [["TEST123", date.today().isoformat(), "123.45", ""]]
@@ -1998,9 +1972,10 @@ class TestFundPriceScraper(DataDirCase):
         self.assertEqual(page.goto.call_count, 2)
         self.assertEqual(self.read_text("latest_TEST123.price").strip(), "123.45")
 
+    @patch("scrape_fund_price.fetch_ft_quotes", side_effect=ValueError("FT down"))
     @patch("scrape_fund_price.sync_playwright")
     def test_scrape_funds_uses_last_good_price_after_retry_failure(
-        self, mock_playwright
+        self, mock_playwright, mock_ft
     ):
         """Test persistent timeout errors keep the last good stored price."""
         page = self._browser_page(mock_playwright)
@@ -2016,7 +1991,7 @@ class TestFundPriceScraper(DataDirCase):
         )
         self.write_text("latest_TEST123.price", f"Error: {self.TIMEOUT}\n")
 
-        results = scrape_funds([("YH", "TEST123")], self.test_dir)
+        results = scrape_funds([("FT", "TEST123")], self.test_dir)
 
         # No fabricated row for today; the real last price is carried instead,
         # against the date it actually belongs to.
@@ -9001,7 +8976,7 @@ class TestFunctionalScraping(DataDirCase):
     symbol that is not in funds.txt.
     """
 
-    def assertUsableQuotes(self, results, fund_id, expect_dated=True):
+    def assertUsableQuotes(self, results, fund_id):
         """Assert a live fetch produced at least one usable dated price.
 
         Sources go down; that is a fact of life for this project rather than a
@@ -9015,12 +8990,11 @@ class TestFunctionalScraping(DataDirCase):
         today = date.today().isoformat()
         for fund, price_date, price, currency in results:
             self.assertEqual(fund, fund_id)
-            # A price date must be real, and never in the future.
+            # A price date must be real, never in the future, and the
+            # market's date rather than the run date.
             parsed = date.fromisoformat(price_date)
             self.assertLessEqual(parsed.isoformat(), today)
-            if expect_dated:
-                # Dated sources report the market's date, not the run date.
-                self.assertLess(parsed.weekday(), 5, f"{price_date} is a weekend")
+            self.assertLess(parsed.weekday(), 5, f"{price_date} is a weekend")
             self.assertNotEqual(price, "N/A")
             self.assertNotEqual(price, "")
             self.assertFalse(price.startswith("Error:"))
@@ -9035,18 +9009,6 @@ class TestFunctionalScraping(DataDirCase):
         self.assertUsableQuotes(results, "IE0008368742")
         # FT reports the quoting currency alongside the price.
         self.assertTrue(all(row[3] for row in results))
-
-    def test_functional_yahoo_scraping(self):
-        """Functional test for Yahoo scraping (requires internet connection)."""
-        results = scrape_funds([("YH", "IDTG.L")], self.test_dir)
-        # The scrape route reads a page showing only the current price, so its
-        # quote carries the run date and may fall on a weekend.
-        self.assertUsableQuotes(results, "IDTG.L", expect_dated=False)
-
-    def test_functional_morningstar_scraping(self):
-        """Functional test for Morningstar scraping (requires internet connection)."""
-        results = scrape_funds([("MS", "JFM0003373")], self.test_dir)
-        self.assertUsableQuotes(results, "JFM0003373", expect_dated=False)
 
     def test_functional_yahoo_api(self):
         """Functional test for the Yahoo Finance API (requires internet)."""

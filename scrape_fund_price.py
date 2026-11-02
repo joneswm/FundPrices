@@ -493,30 +493,22 @@ def as_fund_spec(entry):
 
 
 def get_source_config(source, fund_id):
-    """Get URL and CSS selector configuration for web scraping sources.
+    """Get URL and CSS selector configuration for the scraping fallback.
 
-    Note: YA (Yahoo API) fetches rather than scrapes, so it has no entry
-    here. FT has one only as a fallback for when its HTTP endpoint fails.
+    Only FT has an entry, used when its HTTP endpoint fails. YA and IV fetch
+    rather than scrape. The YH and MS scrapers were removed in #110.
 
     Args:
-        source: Two-character source code (FT, YH, MS)
+        source: Two-character source code
         fund_id: Fund identifier specific to the source
 
     Returns:
-        Tuple of (url, selector) or (None, None) if source is invalid or uses API
+        Tuple of (url, selector), or (None, None) for a source that is not scraped
     """
     source_configs = {
         "FT": {
             "url": f"https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}",
             "selector": ".mod-ui-data-list__value",
-        },
-        "YH": {
-            "url": f"https://sg.finance.yahoo.com/quote/{fund_id}/",
-            "selector": 'span[data-testid="qsp-price"]',
-        },
-        "MS": {
-            "url": f"https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}",
-            "selector": "#mainContent_quicktakeContent_fvOverview_lblNAV",
         },
     }
 
@@ -1114,9 +1106,9 @@ class LazyBrowser:
 def scrape_fund_quotes(source, fund_id, start, end=None, browser=None):
     """Return dated quotes for one fund from its configured source.
 
-    YA, FT and IV use dated HTTP routes. YH and MS scrape a page that shows
-    only the current price, so their quotes carry the run date and no
-    currency. An FT failure falls back to scraping rather than losing the fund.
+    YA, FT and IV use dated HTTP routes. An FT failure falls back to scraping
+    its summary page rather than losing the fund; that page shows only the
+    current price, so the quote carries the run date and no currency.
     """
     code = source.upper()
 

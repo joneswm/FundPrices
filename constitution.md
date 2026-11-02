@@ -326,8 +326,8 @@ Blank lines and `#` comments are ignored.
 - `FT` - Financial Times (HTTP endpoint, scraping fallback)
 - `IV` - investing.com (HTTP endpoint; one-off imports only)
 - `GF` - deprecated alias for `YA`; warns and still resolves
-- `YH` (Yahoo Finance, web scraping) and `MS` (Morningstar, web scraping) are
-  supported but unused by any configured instrument
+- `YH` (Yahoo Finance) and `MS` (Morningstar), the web scrapers, were removed in
+  #110; Playwright serves only the FT fallback
 
 Closed holdings use the same source codes but a separate file,
 `closed_holdings.txt`, so the daily run cannot pick them up.

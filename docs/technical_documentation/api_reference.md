@@ -8,7 +8,7 @@ This document provides detailed API documentation for the Fund Price Scraping pr
 
 One configured instrument.
 
-- `source` (str): canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`). `GF` is accepted on input and canonicalised to `YA`
+- `source` (str): canonical source code (`YA`, `FT`, `IV`). `GF` is accepted on input and canonicalised to `YA`
 - `lookup_id` (str): the identifier sent to the source
 - `aliases` (tuple): extra identifiers to publish under
 - `publish_ids` (property): `lookup_id` followed by each alias
@@ -33,20 +33,20 @@ read_fund_specs("funds.txt")
 
 ### `get_source_config(source, fund_id)`
 
-Gets URL and CSS selector configuration for a given source and fund ID.
+Gets the URL and CSS selector for the scraping fallback of a source and fund ID.
 
 **Parameters:**
-- `source` (str): Source identifier (FT, YH, MS)
+- `source` (str): Source identifier; only `FT` has an entry
 - `fund_id` (str): Fund identifier
 
 **Returns:**
-- `tuple`: (url, selector) or (None, None) if source not supported
+- `tuple`: (url, selector), or (None, None) for a source that is not scraped
 
 **Supported Sources:**
-- **YA**: Yahoo Finance API via `fetch_yahoo_quotes()` - no scraping, returns `(None, None)` here
-- **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`)
-- **YH**: Yahoo Finance (`https://sg.finance.yahoo.com/quote/{fund_id}/`)
-- **MS**: Morningstar (`https://asialt.morningstar.com/DSB/QuickTake/overview.aspx?code={fund_id}`)
+- **FT**: Financial Times (`https://markets.ft.com/data/funds/tearsheet/summary?s={fund_id}`),
+  used only when `fetch_ft_quotes()` fails
+- **YA** and **IV** fetch rather than scrape and return `(None, None)` here. The `YH` and
+  `MS` scrapers were removed in #110
 
 ### `scrape_price_with_common_settings(page, url, selector)`
 
@@ -175,8 +175,9 @@ is not covered.
 
 Returns dated quotes for one fund from its configured source: `YA` via
 `fetch_yahoo_quotes()`, `IV` via `fetch_investing_quotes()`, and `FT` via
-`fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. `YH` and `MS` scrape a page showing only the current
-price, so their quotes carry the run date and an empty currency.
+`fetch_ft_quotes()`, falling back from FT's endpoint to scraping when needed. The scraped
+page shows only the current price, so a fallback quote carries the run date and an empty
+currency. Any other code raises `ValueError`.
 
 ### `LazyBrowser`
 

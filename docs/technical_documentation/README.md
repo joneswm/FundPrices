@@ -27,7 +27,7 @@ or at the owner rather than repeating it, so a change is made once and cannot dr
 | Fact | Canonical source |
 |------|------------------|
 | Run schedule (two runs, 21:05 and 09:17 UTC) | [`.github/workflows/scrape.yml`](../../.github/workflows/scrape.yml); the prose in README and AGENTS describes it, the workflow file is canonical |
-| Source codes (`YA`, `FT`, `IV`, `GF`, `YH`, `MS`) and run modes | [`architecture.md`](architecture.md) |
+| Source codes (`YA`, `FT`, `IV`, `GF`) and run modes | [`architecture.md`](architecture.md) |
 | Command-line options and the functions behind them | [`api_reference.md`](api_reference.md) |
 | Data file formats (`data/*.csv`, `.price`, the summary) | [`README.md`](../../README.md), Output Files |
 | Invariants: latest never goes backwards (#78), no intraday price (#84), FX rate is the New York close (#80), history keyed on `(Fund, Date)` | [`AGENTS.md`](../../AGENTS.md), Important Implementation Details, with the design in [`architecture.md`](architecture.md) |
