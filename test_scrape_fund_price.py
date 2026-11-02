@@ -7631,10 +7631,12 @@ class IssuerRunCase(DividendRunCase):
         runner=None,
         distributions=(),
     ):
-        """Run update_dividends (or `runner`), `tables` keyed by source id."""
+        """Run update_dividends (or `runner`), `tables` keyed by source id.
+
+        The pacing pauses are recorded on `self.sleeps` by DataDirCase.
+        """
         tables = tables or {}
         self.fetched = []
-        self.sleeps = []
 
         def fake_fetch(source):
             self.fetched.append(source.source_id)
@@ -7649,14 +7651,9 @@ class IssuerRunCase(DividendRunCase):
             )
 
         with patch.object(scrape_fund_price, "fetch_issuer_table", fake_fetch):
-            with patch.object(scrape_fund_price.time, "sleep", self.sleeps.append):
-                return self._run(
-                    specs,
-                    events,
-                    declared,
-                    distributions,
-                    runner=runner or update,
-                )
+            return self._run(
+                specs, events, declared, distributions, runner=runner or update
+            )
 
 
 class TestDailyIssuerDates(IssuerRunCase):
@@ -8951,10 +8948,9 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         with patch.object(scrape_fund_price, "clear_issuer_caches") as clear:
             with patch.object(scrape_fund_price, "fetch_issuer_table") as fetch:
                 fetch.return_value = scrape_fund_price.IssuerTable("USD", ())
-                with patch.object(scrape_fund_price.time, "sleep"):
-                    scrape_fund_price.collect_issuer_tables(
-                        [self.QQQ], [FundSpec("YA", "QQQ")]
-                    )
+                scrape_fund_price.collect_issuer_tables(
+                    [self.QQQ], [FundSpec("YA", "QQQ")]
+                )
         clear.assert_called_once_with()
 
     def test_the_rebuild_replaces_rows_of_the_new_sources(self):
