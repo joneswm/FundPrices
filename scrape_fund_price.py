@@ -1408,9 +1408,7 @@ def read_history_rows(history_csv):
     price is skipped.
     """
     return read_keyed_csv(
-        history_csv,
-        HISTORY_HEADER,
-        lambda row: (row[0], row[1]) if row[2] else None,
+        history_csv, HISTORY_HEADER, lambda row: (row[0], row[1]) if row[2] else None
     )
 
 
@@ -1436,14 +1434,12 @@ def write_history_csv(rows, data_dir):
     Returns:
         The rows as written, in order.
     """
-    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
-
-    with open_for_write(os.path.join(data_dir, "prices_history.csv")) as file:
-        writer = csv_writer(file)
-        writer.writerow(HISTORY_HEADER)
-        writer.writerows(ordered)
-
-    return ordered
+    return write_sorted_csv(
+        os.path.join(data_dir, "prices_history.csv"),
+        HISTORY_HEADER,
+        rows,
+        key=lambda row: (row[1], row[0]),
+    )
 
 
 def write_history_files(rows, data_dir, latest=None):
@@ -2190,19 +2186,19 @@ def write_fx_files(rows, data_dir):
     actually removes them. write_fx_results() does the merging for the daily
     run before calling this.
     """
-    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
-
-    with open_for_write(os.path.join(data_dir, "fx_history.csv")) as file:
-        writer = csv_writer(file)
-        writer.writerow(FX_HEADER)
-        writer.writerows(ordered)
-
+    ordered = write_sorted_csv(
+        os.path.join(data_dir, "fx_history.csv"),
+        FX_HEADER,
+        rows,
+        key=lambda row: (row[1], row[0]),
+    )
     latest = latest_rows_by_fund(ordered)
-
-    with open_for_write(os.path.join(data_dir, "latest_fx.csv")) as file:
-        writer = csv_writer(file)
-        writer.writerow(FX_HEADER)
-        writer.writerows(latest[pair] for pair in sorted(latest))
+    write_sorted_csv(
+        os.path.join(data_dir, "latest_fx.csv"),
+        FX_HEADER,
+        latest.values(),
+        key=lambda row: row[0],
+    )
 
 
 def write_fx_results(results, data_dir=None):
@@ -2613,13 +2609,12 @@ def fund_and_ex_date(row):
 
 def write_dividend_history(rows, data_dir):
     """Write dividends_history.csv sorted by ex-date then fund."""
-    os.makedirs(data_dir, exist_ok=True)
-    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
-    path = os.path.join(data_dir, DIVIDENDS_HISTORY_FILE)
-    with open_for_write(path) as file:
-        writer = csv_writer(file)
-        writer.writerow(DIVIDEND_HISTORY_HEADER)
-        writer.writerows(ordered)
+    write_sorted_csv(
+        os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
+        DIVIDEND_HISTORY_HEADER,
+        rows,
+        key=lambda row: (row[1], row[0]),
+    )
 
 
 # Which source a history row came from decides whether another may replace it:
@@ -3825,13 +3820,12 @@ def read_dividend_upcoming(data_dir):
 
 def write_dividend_upcoming(rows, data_dir):
     """Write dividends_upcoming.csv sorted by ex-date then fund."""
-    os.makedirs(data_dir, exist_ok=True)
-    ordered = sorted(rows, key=lambda row: (row[1], row[0]))
-    path = os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE)
-    with open_for_write(path) as file:
-        writer = csv_writer(file)
-        writer.writerow(DIVIDEND_UPCOMING_HEADER)
-        writer.writerows(ordered)
+    write_sorted_csv(
+        os.path.join(data_dir, DIVIDENDS_UPCOMING_FILE),
+        DIVIDEND_UPCOMING_HEADER,
+        rows,
+        key=lambda row: (row[1], row[0]),
+    )
 
 
 def upcoming_rows_for(
@@ -4394,12 +4388,9 @@ def read_uk_cpi(data_dir):
 
 def write_uk_cpi(rows, data_dir):
     """Write uk_cpi.csv sorted by month."""
-    os.makedirs(data_dir, exist_ok=True)
-    path = os.path.join(data_dir, UK_CPI_FILE)
-    with open_for_write(path) as file:
-        writer = csv_writer(file)
-        writer.writerow(UK_CPI_HEADER)
-        writer.writerows(sorted(rows, key=lambda row: row[0]))
+    write_sorted_csv(
+        os.path.join(data_dir, UK_CPI_FILE), UK_CPI_HEADER, rows, key=lambda row: row[0]
+    )
 
 
 def update_uk_cpi(data_dir=None, today=None):
@@ -4612,12 +4603,12 @@ def read_uk_bank_rate(data_dir):
 
 def write_uk_bank_rate(rows, data_dir):
     """Write uk_bank_rate.csv sorted by month."""
-    os.makedirs(data_dir, exist_ok=True)
-    path = os.path.join(data_dir, UK_BANK_RATE_FILE)
-    with open_for_write(path) as file:
-        writer = csv_writer(file)
-        writer.writerow(UK_BANK_RATE_HEADER)
-        writer.writerows(sorted(rows, key=lambda row: row[0]))
+    write_sorted_csv(
+        os.path.join(data_dir, UK_BANK_RATE_FILE),
+        UK_BANK_RATE_HEADER,
+        rows,
+        key=lambda row: row[0],
+    )
 
 
 def update_uk_bank_rate(data_dir=None, today=None):

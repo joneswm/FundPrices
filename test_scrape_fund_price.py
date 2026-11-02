@@ -2431,6 +2431,23 @@ class TestHistoryUpsert(DataDirCase):
             },
         )
 
+    def test_write_sorted_csv_creates_the_directory_and_returns_the_order(self):
+        """Test the writer every storage file shares (#112).
+
+        The directory is created, the header comes first, the rows follow in
+        key order with LF endings, and the rows are returned as written.
+        """
+        path = self.path(os.path.join("new", "sorted.csv"))
+        rows = [["B", "2026-01-02", "2"], ["A", "2026-01-01", "1"]]
+        ordered = scrape_fund_price.write_sorted_csv(
+            path, ["Name", "Date", "Value"], rows, key=lambda row: row[1]
+        )
+        self.assertEqual(ordered, [rows[1], rows[0]])
+        with open(path, "rb") as file:
+            self.assertEqual(
+                file.read(), b"Name,Date,Value\nA,2026-01-01,1\nB,2026-01-02,2\n"
+            )
+
 
 class TestLatestNeverGoesBackwards(DataDirCase):
     """Regression: a stale fetch replaced newer latest prices with older ones.
