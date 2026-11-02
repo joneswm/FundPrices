@@ -35,7 +35,7 @@ real tests in `test_scrape_fund_price.py` rather than repeating examples here.
 # The same through unittest, one class or one method
 python -m unittest test_scrape_fund_price -v
 python -m unittest test_scrape_fund_price.TestFundPriceScraper -v
-python -m unittest test_scrape_fund_price.TestFundPriceScraper.test_read_fund_ids -v
+python -m unittest test_scrape_fund_price.TestFundPriceScraper.test_write_results -v
 
 # Tests that hit the live sources (they skip a source that is down)
 ./run_tests.sh live
@@ -188,11 +188,10 @@ Then wire it in, test-first at each step:
 
 1. Add a branch for the new two-letter code in `scrape_fund_quotes()`, the single
    dispatch point.
-2. Add the code to `source_requires_browser()` if it needs no browser.
-3. Raise `ValueError` for "no rows" so `fetch_with_retries()` and the import treat it
+2. Raise `ValueError` for "no rows" so `fetch_with_retries()` and the import treat it
    as a failure rather than an empty success.
-4. Add a live functional test that **skips** when the source is down.
-5. Update the documents that list sources. Which file owns which fact is in the table in
+3. Add a live functional test that **skips** when the source is down.
+4. Update the documents that list sources. Which file owns which fact is in the table in
    [`README.md`](README.md) in this directory; update the owner rather than copying the
    fact into each guide.
 

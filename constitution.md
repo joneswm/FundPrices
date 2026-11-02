@@ -123,9 +123,8 @@ isort scrape_fund_price.py test_scrape_fund_price.py
   list, never to a CSV, `.price` or summary file; the summary marks a failed
   instrument with `!` and a stale one with `~`
 - The former contract, a returned `"Error: ..."` string, is gone from the daily
-  run. `fetch_with_retries()` still tolerates one from the legacy `fetch_price_api()`,
-  which nothing on the daily path calls, and the `--history` path keeps it until that
-  path is rebuilt
+  run; `fetch_with_retries()` retries exceptions only. The `--history` path
+  (`fetch_historical_data()`) keeps the old form until that path is rebuilt
 
 ```python
 # Good: raise; the retry wrapper and the result object do the rest
@@ -289,7 +288,7 @@ feat(api): Add Yahoo Finance API integration (SPEC-001)
 ### Test Naming
 ```python
 # Good: Descriptive test name
-def test_fetch_price_api_returns_error_for_invalid_symbol(self):
+def test_total_failure_writes_no_history_row(self):
     pass
 
 # Bad: Vague test name

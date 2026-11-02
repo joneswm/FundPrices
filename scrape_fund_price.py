@@ -3,6 +3,7 @@ import datetime
 import csv
 import decimal
 import html
+import io
 import json
 import math
 import os
@@ -16,7 +17,6 @@ import yfinance as yf
 import argparse
 import re
 import statistics
-from contextlib import nullcontext
 from html.parser import HTMLParser
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -196,15 +196,6 @@ def read_fund_specs(filename):
             specs.append(spec)
 
     return specs
-
-
-def read_fund_ids(filename):
-    """Read (source, identifier) pairs from a funds file.
-
-    Compatibility wrapper over read_fund_specs() for callers that only need
-    the identifier a fund is looked up by.
-    """
-    return [(spec.source, spec.lookup_id) for spec in read_fund_specs(filename)]
 
 
 class ClosedHolding(NamedTuple):
@@ -1009,27 +1000,6 @@ def fetch_investing_quotes(pair_id, start, end=None):
     return quotes
 
 
-def fetch_price_api(symbol):
-    """Fetch the latest price for a symbol using Yahoo Finance.
-
-    Args:
-        symbol: Stock/fund ticker symbol (e.g., AAPL, MSFT)
-
-    Returns:
-        Price as string or error message
-    """
-    try:
-        start = (
-            datetime.date.today() - datetime.timedelta(days=SNAP_WINDOW_DAYS)
-        ).isoformat()
-        quotes = fetch_yahoo_quotes(symbol, start)
-        if not quotes:
-            return "Error: Price not available"
-        return quotes[-1].price
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
 def scrape_price_with_common_settings(page, url, selector):
     """Scrape price using common settings for all sources."""
     user_agent = (
@@ -1068,38 +1038,6 @@ def read_latest_price_file(fund_id, data_dir):
         price = f.read().strip()
 
     return price if is_usable_price(price) else None
-
-
-def read_latest_csv_price(fund_id, data_dir):
-    """Read the latest CSV price for a fund if it contains a usable value."""
-    latest_csv = os.path.join(data_dir, "latest_prices.csv")
-    if not os.path.isfile(latest_csv):
-        return None
-
-    with open(latest_csv, mode="r", newline="") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-                return row["Price"]
-
-    return None
-
-
-def read_history_price(fund_id, data_dir):
-    """Read the most recent usable historical price for a fund."""
-    history_csv = os.path.join(data_dir, "prices_history.csv")
-    if not os.path.isfile(history_csv):
-        return None
-
-    with open(history_csv, mode="r", newline="") as file:
-        reader = csv.DictReader(file)
-        rows = list(reader)
-
-    for row in reversed(rows):
-        if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-            return row["Price"]
-
-    return None
 
 
 def read_stored_rows(fund_id, data_dir):
@@ -1180,46 +1118,17 @@ def read_last_known_row(fund_id, data_dir):
     return max(candidates, key=lambda row: row[0])
 
 
-def get_last_known_price(fund_id, data_dir):
-    """Return the last non-error price available for a fund."""
-    return (
-        read_latest_price_file(fund_id, data_dir)
-        or read_latest_csv_price(fund_id, data_dir)
-        or read_history_price(fund_id, data_dir)
-    )
-
-
 def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
-    """Fetch a price, retrying exceptions and returned Error values."""
+    """Fetch a price, retrying exceptions."""
     last_error = None
 
     for _ in range(attempts):
         try:
-            price = fetch_price()
+            return fetch_price(), None
         except Exception as e:
             last_error = str(e)
-            continue
-
-        if not is_error_price(price):
-            return price, None
-
-        last_error = price
 
     return None, last_error
-
-
-def source_requires_browser(source, fund_id):
-    """Return True when a fund source needs Playwright scraping.
-
-    YA, FT and IV all reach dated HTTP endpoints, so none needs a browser on
-    its normal path. FT can still fall back to scraping, which starts the
-    browser lazily at that point.
-    """
-    if source.upper() in ("YA", "FT", "IV"):
-        return False
-
-    url, selector = get_source_config(source, fund_id)
-    return bool(url and selector)
 
 
 class LazyBrowser:
@@ -3224,8 +3133,6 @@ def read_xlsx_rows(content):
     Raises:
         ValueError: not a workbook
     """
-    import io
-
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             workbook = ET.fromstring(archive.read("xl/workbook.xml"))

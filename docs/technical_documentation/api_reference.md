@@ -31,29 +31,6 @@ read_fund_specs("funds.txt")
 # [FundSpec(source="YA", lookup_id="0P00000YAN", aliases=("JFM0003373",)), ...]
 ```
 
-### `read_fund_ids(filename)`
-
-Reads `(source, lookup_id)` pairs. A compatibility wrapper over `read_fund_specs()`
-for callers that do not need aliases.
-
-**Parameters:**
-- `filename` (str): Path to the file containing fund identifiers
-
-**Returns:**
-- `list`: List of tuples containing (source, identifier) pairs
-
-**File Format:**
-Each line should contain: `<source>,<identifier>`
-- `source`: canonical source code (`YA`, `FT`, `IV`, `YH`, `MS`); a deprecated `GF` is
-  canonicalised to `YA` (see `canonical_source()`)
-- `identifier`: the lookup id for that source
-
-**Example:**
-```python
-funds = read_fund_ids("funds.txt")
-# Returns: [("FT", "GB00B1FXTF86"), ("YA", "IDTG.L"), ...]
-```
-
 ### `get_source_config(source, fund_id)`
 
 Gets URL and CSS selector configuration for a given source and fund ID.
@@ -213,24 +190,10 @@ Returns a fund's most recent stored `[date, price, currency]`, or `None`.
 Used when every fetch attempt failed: the fund keeps reporting its real last price
 against the date that price belongs to, instead of a row invented for today.
 
-### `fetch_price_api(symbol)` (legacy)
-
-A thin wrapper kept from before dated quotes. It calls `fetch_yahoo_quotes()` for the last
-`SNAP_WINDOW_DAYS` (10) days and returns the newest quote's price. It reads no `.info`
-fields (`currentPrice` and `regularMarketPrice` are not used), and **nothing in the module
-calls it**; it is slated for removal. Use `fetch_yahoo_quotes()` instead.
-
-**Parameters:**
-- `symbol` (str): Yahoo ticker
-
-**Returns:**
-- `str`: the newest quote's price; `"Error: Price not available"` when there are no
-  quotes; `"Error: <message>"` when the fetch raises
-
 ### `scrape_funds(funds, data_dir=None)`
 
-Main function to scrape prices for a list of funds. Launches a Playwright browser
-only if at least one fund actually needs scraping (see `source_requires_browser`).
+Main function to scrape prices for a list of funds. Playwright starts only if an FT
+fetch falls back to scraping (see `LazyBrowser`).
 
 **Parameters:**
 - `funds` (list): `FundSpec` instances, or plain `(source, identifier)` pairs, which
@@ -335,33 +298,17 @@ and if every attempt fails the fund falls back to its most recent good price.
 
 ### `fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS)`
 
-Calls `fetch_price()` up to `attempts` times (default 3). Retries both raised exceptions
-and returned `"Error: ..."` values.
+Calls `fetch_price()` up to `attempts` times (default 3), retrying raised exceptions.
 
 **Returns:**
 - `tuple`: `(price, None)` on success, or `(None, last_error)` if every attempt failed
 
-### `get_last_known_price(fund_id, data_dir)`
-
-Returns the most recent usable price for a fund, checked in order:
-
-1. `read_latest_price_file()` - `data/latest_<fund_id>.price`
-2. `read_latest_csv_price()` - `latest_prices.csv`
-3. `read_history_price()` - most recent row in `prices_history.csv`
-
-**Returns:**
-- `str` price, or `None` if no usable historical price exists
-
-`scrape_funds()` itself uses `read_last_known_row()`, which also returns the date and
-currency; this function remains for callers that need only the price.
-
 ### Supporting helpers
 
-- `is_error_price(price)` - True when a value is an `"Error: ..."` string
+- `is_error_price(price)` - True when a stored value is an `"Error: ..."` string left by
+  an old run
 - `normalize_price(price)` - normalises a price value for storage
 - `is_usable_price(price)` - True when a value is a real price rather than an error or placeholder
-- `source_requires_browser(source, fund_id)` - False for `YA`, `FT` and `IV`, which all
-  reach HTTP endpoints, so Playwright is only launched when genuinely needed
 
 ## Closed Holdings
 
@@ -998,10 +945,10 @@ Inside a run these are caught per instrument and surface on `.failures` or in a
 
 ### Basic Usage
 ```python
-from scrape_fund_price import scrape_funds, read_fund_ids, write_results
+from scrape_fund_price import scrape_funds, read_fund_specs, write_results
 
 # Read fund configuration
-funds = read_fund_ids("funds.txt")
+funds = read_fund_specs("funds.txt")
 
 # Fetch dated quotes, then store them
 results = scrape_funds(funds)
