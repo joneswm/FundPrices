@@ -4210,6 +4210,25 @@ class TestPriceSummary(unittest.TestCase):
         self.assertEqual(row.delta, "5")
         self.assertEqual(row.pct_delta, "")
 
+    def test_a_stored_value_that_is_not_a_number_gives_no_delta(self):
+        """Test a legacy "N/A" in the history blanks the delta, not the run.
+
+        The daily run hands the summary prices_history.csv as read, with no
+        filter on the Price cell, and the files once recorded "N/A" for a
+        fund with no price (is_usable_price still screens it elsewhere). The
+        newest value is still reported, and the summary is the last step of
+        the run, so a text cell must not end it.
+        """
+        rows = [
+            ["AAA", "2026-09-17", "N/A", "USD"],
+            ["AAA", "2026-09-18", "5.00", "USD"],
+        ]
+        row = build_price_summary(rows, [FundSpec("YA", "AAA", ())], [], "2026-09-18")[
+            0
+        ]
+        self.assertEqual((row.new, row.old), ("5.00", "N/A"))
+        self.assertEqual((row.delta, row.pct_delta), ("", ""))
+
     def test_instrument_with_no_history_is_reported_as_failed(self):
         """Test a configured instrument with nothing stored is visible."""
         summary = build_price_summary([], [FundSpec("YA", "AAA", ())], [], "2026-09-18")

@@ -1640,12 +1640,14 @@ def compare_values(new_text, old_text, places=None):
 
     Uses Decimal so that 7.15 - 7.09 is exactly 0.06 rather than the binary
     float 0.0600000000000005. An old value of zero yields no percentage
-    instead of a division error.
+    instead of a division error, and a stored value that is not a number (the
+    files once recorded "N/A") yields neither, since the summary reads the
+    history as stored.
     """
     try:
         new_value = decimal.Decimal(new_text)
         old_value = decimal.Decimal(old_text)
-    except (decimal.InvalidOperation, TypeError):
+    except decimal.InvalidOperation:
         return "", ""
 
     delta = new_value - old_value
@@ -2324,13 +2326,14 @@ def is_removable_row(row):
     currency column and are exactly the scrape-dated, carry-forward data the
     rebuild exists to remove. A weekend row is never legitimate for these
     sources, so it is always removable.
+
+    Every writer of the history stamps ISO dates, so a date that does not
+    parse is a damaged file, and the ValueError stops the rebuild rather than
+    deleting the row under a "rebuilt" status.
     """
     row_date = row[1]
     currency = row[3] if len(row) > 3 else ""
-    try:
-        if datetime.date.fromisoformat(row_date).weekday() >= 5:
-            return True
-    except ValueError:
+    if datetime.date.fromisoformat(row_date).weekday() >= 5:
         return True
     return not currency
 
