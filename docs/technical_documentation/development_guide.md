@@ -328,9 +328,8 @@ quotes, error = fetch_with_retries(
 )
 if error:
     results.failures.append(f"{spec.lookup_id}: {error}")
-    last_known = read_last_known_row(identifier, data_dir)
-    if last_known is not None:
-        results.carried.append([identifier] + last_known)
+    if identifier in stored:  # newest_stored_rows(), read once per run
+        results.carried.append([identifier, *stored[identifier][1:]])
     continue
 ```
 

@@ -1028,38 +1028,6 @@ def is_usable_price(price):
     return bool(price) and price != "N/A" and not is_error_price(price)
 
 
-def read_latest_price_file(fund_id, data_dir):
-    """Read the per-fund latest price file if it contains a usable value."""
-    latest_price_file = os.path.join(data_dir, f"latest_{fund_id}.price")
-    if not os.path.isfile(latest_price_file):
-        return None
-
-    with open(latest_price_file, "r") as f:
-        price = f.read().strip()
-
-    return price if is_usable_price(price) else None
-
-
-def read_stored_rows(fund_id, data_dir):
-    """Return every stored [date, price, currency] for a fund, unordered.
-
-    Reads latest_prices.csv and prices_history.csv, so a row survives in either
-    file counts.
-    """
-    candidates = []
-    for name in ("latest_prices.csv", "prices_history.csv"):
-        path = os.path.join(data_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, mode="r", newline="") as file:
-            for row in csv.DictReader(file):
-                if row.get("Fund") == fund_id and is_usable_price(row.get("Price")):
-                    candidates.append(
-                        [row.get("Date", ""), row["Price"], row.get("Currency") or ""]
-                    )
-    return candidates
-
-
 def newest_stored_rows(data_dir):
     """Return fund -> newest stored [fund, date, price, currency].
 
@@ -1101,18 +1069,6 @@ def keep_newer_stored_row(fund, row, stored):
         )
         return list(current)
     return row
-
-
-def read_last_known_row(fund_id, data_dir):
-    """Return a fund's most recent stored [date, price, currency], or None.
-
-    Used when every fetch attempt failed, so the fund keeps reporting its real
-    last price against the date that price actually belongs to.
-    """
-    candidates = read_stored_rows(fund_id, data_dir)
-    if not candidates:
-        return None
-    return max(candidates, key=lambda row: row[0])
 
 
 def fetch_with_retries(fetch_price, attempts=MAX_PRICE_ATTEMPTS):
@@ -1225,17 +1181,15 @@ def scrape_funds(funds, data_dir=None):
                 # for today. Record the failure once for the fund, not once
                 # per identifier.
                 results.failures.append(f"{spec.lookup_id}: {error}")
-                last_known = None
-                for identifier in spec.publish_ids:
-                    # A newly introduced lookup id has nothing stored yet,
-                    # while an alias may carry the fund's whole history.
-                    last_known = read_last_known_row(identifier, data_dir)
-                    if last_known is not None:
-                        break
-
+                # A newly introduced lookup id has nothing stored yet, while
+                # an alias may carry the fund's whole history. A fund with
+                # only a .price file carries nothing: the file holds no date.
+                last_known = next(
+                    (stored[i][1:] for i in spec.publish_ids if i in stored), None
+                )
                 if last_known is not None:
                     for identifier in spec.publish_ids:
-                        results.carried.append([identifier] + last_known)
+                        results.carried.append([identifier, *last_known])
                         # Heal the published price file: it may still hold an
                         # error string written before this behaviour existed.
                         write_latest_price_file(identifier, last_known[1], data_dir)

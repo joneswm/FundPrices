@@ -183,13 +183,6 @@ price, so their quotes carry the run date and an empty currency.
 Starts Playwright on first use, so a configuration that needs no scraping never
 launches Chromium. `page()` returns a live page; `close()` is safe if unused.
 
-### `read_last_known_row(fund_id, data_dir)`
-
-Returns a fund's most recent stored `[date, price, currency]`, or `None`.
-
-Used when every fetch attempt failed: the fund keeps reporting its real last price
-against the date that price belongs to, instead of a row invented for today.
-
 ### `scrape_funds(funds, data_dir=None)`
 
 Main function to scrape prices for a list of funds. Playwright starts only if an FT
@@ -205,9 +198,10 @@ fetch falls back to scraping (see `LazyBrowser`).
 - `ScrapeResults`: a `list` subclass of `[fund_id, date, price, currency]` rows, one
   per dated quote in the last `SNAP_WINDOW_DAYS` (10) days, with two extra attributes:
   - `.failures`: `"<lookup_id>: <error>"` strings for funds whose every attempt failed
-  - `.carried`: the last stored row for each of those funds, under its original date,
-    so `latest_prices.csv` keeps reporting a real price. A fund with no stored
-    history has no carried row and is simply absent
+  - `.carried`: the newest stored row (`newest_stored_rows()`) for each of those
+    funds, under its original date, so `latest_prices.csv` keeps reporting a real
+    price. A fund with no stored row has no carried row and is simply absent; its
+    `.price` file alone carries nothing, since the file holds no date
 
 **Result Format:**
 ```python

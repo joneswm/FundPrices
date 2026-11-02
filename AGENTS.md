@@ -244,9 +244,10 @@ These are the invariants. The design behind them is in
 
 ### Retries and Last Known Price
 - Every fetch is retried up to `MAX_PRICE_ATTEMPTS` (3) via `fetch_with_retries()`
-- After exhausting retries, `read_last_known_row()` supplies the fund's most recent stored
-  row, which is carried into `latest_prices.csv` under its original date
-  (`ScrapeResults.carried`). No row is invented for today
+- After exhausting retries, the fund's newest stored row (`newest_stored_rows()`, read
+  once per run from `latest_prices.csv` and `prices_history.csv`) is carried into
+  `latest_prices.csv` under its original date (`ScrapeResults.carried`). No row is
+  invented for today: a bare `.price` file holds no date, so it carries nothing
 - A fund with no stored history simply has no row; nothing is recorded as "N/A"
 - `ScrapeResults.failures` lists the funds that fell back
 - **This already exists - do not reimplement retry logic**
