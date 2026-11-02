@@ -1,125 +1,47 @@
 # Development Guide
 
-This document provides guidelines for developers working on the Fund Price Scraping project.
+Guidelines for developers working on the Fund Price Scraping project. The
+non-negotiable rules are in [`constitution.md`](../../constitution.md); this guide is the
+practical companion to them.
 
-## 🚨 MANDATORY: Test-Driven Development (TDD)
+## Test-Driven Development (mandatory)
 
-**ALL development MUST follow strict Test-Driven Development practices.**
+All code changes follow RED, GREEN, REFACTOR, with a commit per phase:
 
-### TDD Rules (NON-NEGOTIABLE)
+1. **RED**: write a failing test and confirm it fails for the right reason
+2. **GREEN**: write the minimum code to pass it
+3. **REFACTOR**: improve the code with the suite green
 
-1. **RED-GREEN-REFACTOR CYCLE**: Every feature MUST follow this exact sequence:
-   - 🔴 **RED**: Write a failing test first
-   - 🟢 **GREEN**: Write minimal code to make the test pass
-   - 🔵 **REFACTOR**: Improve code while keeping tests green
+No production code without a test that failed first. Documentation-only changes use a
+`docs:` commit prefix and need no test.
 
-2. **NO CODE WITHOUT TESTS**: Never write production code without a corresponding test
-3. **TEST FIRST**: Always write the test before implementing the feature
-4. **FAILING TESTS**: Tests must fail initially (proving they test something real)
-5. **MINIMAL IMPLEMENTATION**: Write only the code needed to make tests pass
-6. **CONTINUOUS TESTING**: Run tests after every small change
+The full workflow, commit conventions and checklists are in
+[tdd_workflow.md](tdd_workflow.md) and [tdd_templates.md](tdd_templates.md). They point at
+real tests in `test_scrape_fund_price.py` rather than repeating examples here.
 
-### TDD Workflow Enforcement
+### Test Writing Guidelines
+- **Descriptive names**: a test name says what is being tested and the expected outcome
+- **Single responsibility**: each test verifies one behaviour
+- **Arrange-Act-Assert**: clear setup, execution and verification
+- **Edge cases**: boundaries, failures and awkward dates (weekends, bank holidays, the
+  US clock change)
+- **Mock external dependencies**: unit tests use mocks only and never touch the network
 
-**Before writing ANY code:**
-1. Write a failing test that describes the desired behavior
-2. Run the test to confirm it fails (RED)
-3. Write the minimal code to make the test pass (GREEN)
-4. Run tests to confirm they pass
-5. Refactor the code while keeping tests green (REFACTOR)
-6. Repeat for the next feature
-
-**Violation of TDD rules will result in code rejection.**
-
-### TDD Best Practices
-
-#### Test Writing Guidelines
-- **Descriptive Names**: Test names should clearly describe what is being tested
-- **Single Responsibility**: Each test should verify one specific behavior
-- **Arrange-Act-Assert**: Structure tests with clear setup, execution, and verification
-- **Edge Cases**: Test boundary conditions, error cases, and edge scenarios
-- **Mock External Dependencies**: Use mocks for network calls, file operations, etc.
-
-#### Code Quality Standards
-- **Minimal Implementation**: Write only code needed to pass tests
-- **Clean Code**: Follow PEP 8 and project formatting standards
-- **Refactoring**: Continuously improve code structure while maintaining test coverage
-- **Documentation**: Update docstrings and comments as code evolves
-
-#### TDD Examples
-
-**Example 1: Adding a New Fund Source**
-```python
-# 1. RED: Write failing test first
-def test_get_source_config_bloomberg(self):
-    """Test Bloomberg source configuration."""
-    url, selector = get_source_config("BB", "TEST123")
-    expected_url = "https://www.bloomberg.com/quote/TEST123"
-    expected_selector = ".priceText__1853e8a5"
-    self.assertEqual(url, expected_url)
-    self.assertEqual(selector, expected_selector)
-
-# 2. GREEN: Write minimal implementation
-def get_source_config(source, fund_id):
-    # ... existing code ...
-    elif source.upper() == "BB":
-        url = f"https://www.bloomberg.com/quote/{fund_id}"
-        selector = ".priceText__1853e8a5"
-    # ... rest of function ...
-
-# 3. REFACTOR: Improve while keeping tests green
-# Add error handling, improve readability, etc.
-```
-
-**Example 2: Adding New Data Field**
-```python
-# 1. RED: Write failing test
-def test_scrape_funds_includes_fund_name(self):
-    """Test that scraped results include fund name."""
-    funds = [("FT", "GB00B1FXTF86")]
-    results = scrape_funds(funds, data_dir=self.test_dir)
-    
-    self.assertEqual(len(results), 1)
-    self.assertIn("fund_name", results[0])
-    self.assertIsNotNone(results[0]["fund_name"])
-
-# 2. GREEN: Minimal implementation
-def scrape_funds(funds, data_dir=None):
-    # ... existing code ...
-    results.append({
-        "source": source,
-        "fund_id": fund_id,
-        "fund_name": "Unknown",  # Minimal implementation
-        "price": price,
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "success"
-    })
-
-# 3. REFACTOR: Add proper fund name scraping
-```
-
-### TDD Tools and Shortcuts
-
-#### Cursor/VS Code TDD Shortcuts
-- `Ctrl+Shift+T`: Run all tests (verify RED/GREEN state)
-- `Ctrl+Shift+R`: Run current test (quick verification)
-- `Ctrl+Shift+D`: Debug current test (step through TDD cycle)
-- `F5`: Start debugging with breakpoints
-
-#### Test Execution Commands
+### Test Execution Commands
 ```bash
-# Run all tests (verify RED/GREEN state)
-python -m unittest -v test_scrape_fund_price.py
+# Unit tests: mocks only, run in seconds. The default
+./run_tests.sh unit
 
-# Run specific test class
+# The same through unittest, one class or one method
+python -m unittest test_scrape_fund_price -v
 python -m unittest test_scrape_fund_price.TestFundPriceScraper -v
-
-# Run specific test method
 python -m unittest test_scrape_fund_price.TestFundPriceScraper.test_read_fund_ids -v
 
-# Run with coverage
-coverage run -m unittest test_scrape_fund_price.py
-coverage report -m
+# Tests that hit the live sources (they skip a source that is down)
+./run_tests.sh live
+
+# Coverage, with both gates (90% overall, 95% for scrape_fund_price.py)
+./run_tests.sh coverage
 ```
 
 ## Development Environment Setup
@@ -127,8 +49,7 @@ coverage report -m
 ### Prerequisites
 - Python 3.10 or higher (CI tests 3.10, 3.12 and 3.14)
 - Git
-- Code editor (VS Code, PyCharm, Vim, etc.)
-- Terminal/Command line access
+- A code editor (see [ide_setup.md](ide_setup.md))
 
 ### Initial Setup
 ```bash
@@ -143,79 +64,61 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Playwright browsers
+# Install Playwright browsers (the FT scraping fallback only)
 playwright install chromium
 
 # Verify setup
-python test_scrape_fund_price.py
+./run_tests.sh unit
 ```
 
-### IDE Configuration
+`./setup_dev_env.sh` (or `setup_dev_env.bat` on Windows) does the same and also installs
+the formatters and linter; `python validate_dev_env.py` checks the result. The
+`.devcontainer/` configuration gives the same environment in VS Code and Codespaces.
 
-#### VS Code
-Create `.vscode/settings.json`:
-```json
-{
-    "python.defaultInterpreterPath": "./venv/bin/python",
-    "python.linting.enabled": true,
-    "python.linting.pylintEnabled": true,
-    "python.formatting.provider": "black",
-    "python.testing.pytestEnabled": true,
-    "python.testing.unittestEnabled": true
-}
-```
-
-#### PyCharm
-1. Open project in PyCharm
-2. Configure Python interpreter to use virtual environment
-3. Enable code inspection and formatting
-4. Configure test runner for unittest
+Editor setup is in [ide_setup.md](ide_setup.md); the formatter, linter and pre-commit
+configuration is in [dev_tools_config.md](dev_tools_config.md).
 
 ## Code Style and Standards
 
-### Python Style Guide
-Follow PEP 8 guidelines:
-- Use 4 spaces for indentation
-- Maximum line length: 88 characters
-- Use descriptive variable and function names
-- Add docstrings for all functions and classes
+Follow PEP 8, with Black and isort at an 88-character line length. Add docstrings to
+functions and classes and type hints where they help.
 
-### Code Formatting
 ```bash
-# Install formatting tools
-pip install black isort flake8
-
-# Format code
-black scrape_fund_price.py
-isort scrape_fund_price.py
-
-# Check style
-flake8 scrape_fund_price.py
+./format_code.sh    # Black and isort
 ```
 
-### Documentation Standards
-- Use Google-style docstrings
-- Include type hints where appropriate
-- Document all public functions and classes
-- Keep README files up to date
+Dependencies are in `requirements.txt` and are kept current by Dependabot; the file has
+environment markers (for example, numpy has a separate floor for Python below 3.11), so
+edit it by hand and do not regenerate it from an installed environment.
 
 ## Project Structure
 
 ```
 FundPrices/
-├── scrape_fund_price.py      # Main application
-├── test_scrape_fund_price.py  # Test suite
-├── requirements.txt           # Dependencies
-├── funds.txt                 # Fund configuration
-├── test_funds.txt           # Test fund configuration
-├── data/                    # Data output directory
-│   ├── latest_prices.csv    # Latest price data
-│   └── prices_history.csv   # Historical data
-├── docs/                    # Documentation
-│   ├── technical_documentation/
-│   └── user_stories/
-└── .github/                 # GitHub Actions
-    └── workflows/
+├── scrape_fund_price.py        # The whole application, in one module
+├── test_scrape_fund_price.py   # Test suite (unittest)
+├── requirements.txt            # Dependencies
+├── funds.txt                   # Instruments priced by the daily run
+├── fx_pairs.txt                # FX pairs to snap
+├── closed_holdings.txt         # Instruments imported once, never fetched again
+├── distributions.txt           # Hand-kept dividend schedules
+├── dividend_sources.txt        # Issuer sources of dividend dates
+├── fixtures/                   # Recorded source responses used by tests
+├── data/                       # Output (gitignored but tracked; see AGENTS.md)
+├── specs/                      # Spec Kit specifications, one directory each
+├── docs/
+│   ├── technical_documentation/   # These guides
+│   ├── research/                  # Source research
+│   ├── user_stories/              # Legacy requirements (historical)
+│   └── archive/
+├── constitution.md             # Non-negotiable project principles
+├── AGENTS.md                   # Guidance for AI agents and the command summary
+├── Makefile                    # Common commands
+├── run_tests.sh, format_code.sh, setup_dev_env.sh, setup_dev_env.bat,
+│   validate_dev_env.py         # Development scripts
+├── .devcontainer/              # Dev Container configuration
+├── .specify/                   # Spec Kit configuration and templates
+└── .github/workflows/          # scrape.yml, backfill.yml, test.yml
 ```
 
 ## Development Workflow
@@ -230,14 +133,10 @@ branch and a pull request:
 # Create feature branch
 git checkout -b feature/new-fund-source
 
-# Make changes
-# Write tests
-# Update documentation
+# Write the failing test, then the code, then run the suite
+./run_tests.sh unit
 
-# Test changes
-python test_scrape_fund_price.py
-
-# Commit changes. Stage by filename: files under data/ are tracked, and
+# Commit. Stage by filename: files under data/ are tracked, and
 # `git add .` would sweep data changes into a code commit
 git add scrape_fund_price.py test_scrape_fund_price.py
 git commit -m "GREEN: Add new fund source support"
@@ -246,21 +145,7 @@ git commit -m "GREEN: Add new fund source support"
 git push origin feature/new-fund-source
 ```
 
-### 2. Testing
-```bash
-# Run all tests
-python test_scrape_fund_price.py
-
-# Run specific test
-python -m unittest test_scrape_fund_price.TestFundPriceScraper.test_read_fund_ids
-
-# Run with coverage
-coverage run test_scrape_fund_price.py
-coverage report
-coverage html  # Generate HTML report
-```
-
-### 3. Code Review Process
+### 2. Code Review Process
 
 For pull requests from outside contributors:
 
@@ -272,8 +157,8 @@ For pull requests from outside contributors:
 
 ## Adding New Features
 
-Open a GitHub issue, write a spec under `specs/`, then implement with TDD. The
-sketches below show where each kind of change lands in the current design.
+Open a GitHub issue, write a spec under `specs/` for anything substantial, then implement
+with TDD. The sketches below show where each kind of change lands in the current design.
 
 ### 1. New Fund Source
 
@@ -307,8 +192,9 @@ Then wire it in, test-first at each step:
 3. Raise `ValueError` for "no rows" so `fetch_with_retries()` and the import treat it
    as a failure rather than an empty success.
 4. Add a live functional test that **skips** when the source is down.
-5. Document the code in `README.md`, `AGENTS.md`, `constitution.md` and
-   `api_reference.md`.
+5. Update the documents that list sources. Which file owns which fact is in the table in
+   [`README.md`](README.md) in this directory; update the owner rather than copying the
+   fact into each guide.
 
 Before trusting a new source, validate it against a series you can verify another way.
 Sources found wanting so far: Yahoo repeating one close with zero volume across a
@@ -346,97 +232,61 @@ line in `.github/workflows/scrape.yml`.
 
 ### Unit Testing
 - Test all public functions
-- Use descriptive test names
 - Test both success and failure cases
 - Mock external dependencies
+- Use temporary directories for files and clean up after the test
+- Inject the clock (`now=`, `today=`) rather than patching time
 
 ```python
-def test_get_source_config_invalid_source(self):
+def test_get_source_config_invalid(self):
     """Test get_source_config with invalid source."""
     url, selector = get_source_config("INVALID", "TEST123")
     self.assertIsNone(url)
     self.assertIsNone(selector)
 ```
 
-### Integration Testing
-- Test complete workflows
-- Use real fund identifiers
-- Test with different data sources
+[tdd_templates.md](tdd_templates.md) points at `TestNewYorkFxCloses` (a pure function with
+an injected clock) and `TestUkCpiUpdate` (a file-writing step with the fetch patched) as
+the models to copy.
+
+### Functional Testing
+Functional tests exercise the live sources and **skip** when a source is down, so an
+outage never turns the suite red. Run them with `./run_tests.sh live`. Record a source's
+real response in `fixtures/` and test the parser against it for the unit-level check.
+
+## Debugging
 
 ```python
-def test_end_to_end_scraping(self):
-    """Test complete scraping workflow."""
-    funds = [("FT", "GB00B1FXTF86")]
-    results = scrape_funds(funds, data_dir=self.test_dir)
-    
-    self.assertEqual(len(results), 1)
-    self.assertEqual(results[0]["status"], "success")
-    self.assertIsNotNone(results[0]["price"])
-```
-
-### Test Data Management
-- Use temporary directories for test data
-- Clean up after tests
-- Use mock data when possible
-
-## Debugging and Profiling
-
-### Debugging Techniques
-```python
-# Add debug logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-# Use breakpoints in IDE
-# Add print statements for debugging
+# Add debug output
 print(f"Debug: Processing {source}:{fund_id}")
 
 # Use pdb for interactive debugging
 import pdb; pdb.set_trace()
 ```
 
-### Performance Profiling
-```python
-import cProfile
-import pstats
-
-# Profile function execution
-profiler = cProfile.Profile()
-profiler.enable()
-
-# Run your code
-scrape_funds(funds)
-
-profiler.disable()
-stats = pstats.Stats(profiler)
-stats.sort_stats('cumulative')
-stats.print_stats(10)
-```
+To profile a run, wrap the call in `cProfile` and print the top cumulative entries. See
+[troubleshooting.md](troubleshooting.md) for debugging a failing source.
 
 ## Documentation Updates
 
 ### When to Update Documentation
 - Adding new features
-- Changing API interfaces
-- Fixing bugs that affect behavior
+- Changing behaviour or interfaces
+- Fixing bugs that affect behaviour
 - Updating dependencies
 
-### Documentation Types
-1. **Code Comments**: Explain complex logic
-2. **Docstrings**: Document function interfaces
-3. **README Files**: Provide overview and setup instructions
-4. **API Reference**: Detailed function documentation
-5. **User Stories**: Feature requirements and acceptance criteria
+Update the file that owns the fact, as listed in the table in [`README.md`](README.md) in
+this directory, and link to it from elsewhere instead of repeating it.
 
 ## Version Control Best Practices
 
 ### Commit Messages
-Use clear, descriptive commit messages:
+Follow the conventional format with the TDD phase or spec ID where they apply, and
+reference the GitHub issue (see constitution, section 7):
 ```
-feat: add Bloomberg fund source support
-fix: resolve timeout issues with Yahoo Finance
-docs: update API reference for new functions
-test: add integration tests for new sources
+RED: Add test for Bloomberg scraper (SPEC-002)
+GREEN: Implement Bloomberg scraper (SPEC-002)
+docs: update the deployment guide. Refs #101
 ```
 
 ### Branch Naming
@@ -450,56 +300,27 @@ For contributors and experiments; the maintainer otherwise commits to `main`.
 2. Include tests for new features
 3. Update documentation
 4. Ensure all tests pass
-5. Request appropriate reviewers
 
 ## Dependencies Management
 
-### Adding Dependencies
-```bash
-# Install new package
-pip install new-package
+Versions live in `requirements.txt`, which uses environment markers and is kept current by
+Dependabot. Edit it by hand; do not regenerate it from an installed environment, which
+would drop the markers.
 
-# Update requirements.txt
-pip freeze > requirements.txt
-
-# Test with clean environment
-pip uninstall -r requirements.txt -y
-pip install -r requirements.txt
-```
-
-### Updating Dependencies
 ```bash
 # Check for updates
 pip list --outdated
 
-# Update specific package
-pip install --upgrade package-name
-
-# Update all packages
-pip install --upgrade -r requirements.txt
-
-# Test after updates
-python test_scrape_fund_price.py
+# Test after updating
+./run_tests.sh unit
 ```
 
-## Deployment Considerations
-
-### Environment Variables
-Use environment variables for configuration:
-```python
-import os
-
-DATA_DIR = os.getenv("DATA_DIR", "data")
-FUNDS_FILE = os.getenv("FUNDS_FILE", "funds.txt")
-DEBUG = os.getenv("DEBUG", "false").lower() == "true"
-```
-
-### Error Handling
+## Error Handling
 
 **Retry logic already exists - do not add your own.** `scrape_funds()` wraps every fetch in
 `fetch_with_retries()` (up to `MAX_PRICE_ATTEMPTS`, default 3) and, when all attempts
 fail, carries the fund's last stored row forward under its original date. Nothing is
-invented for today and nothing is recorded as "N/A":
+invented for today and no error text is ever written to a data file:
 
 ```python
 # scrape_fund_price.py - existing behaviour, abridged
@@ -514,15 +335,15 @@ if error:
     continue
 ```
 
-If you need to change retry behaviour, adjust `MAX_PRICE_ATTEMPTS` or `fetch_with_retries()`
-rather than wrapping `scrape_funds()`. See `api_reference.md` for the full contract.
+New fetchers raise on failure and let `fetch_with_retries()` do the rest. If you need to
+change retry behaviour, adjust `MAX_PRICE_ATTEMPTS` or `fetch_with_retries()` rather than
+wrapping `scrape_funds()`. See `api_reference.md` for the full contract.
 
 ## Contributing Guidelines
 
 ### Before Contributing
 1. Check existing issues and pull requests
 2. Discuss major changes in issues first
-3. Ensure you have permission to contribute
 
 ### Contribution Process
 1. Fork the repository
@@ -531,12 +352,9 @@ rather than wrapping `scrape_funds()`. See `api_reference.md` for the full contr
 4. Update documentation
 5. Submit pull request
 6. Address review feedback
-7. Wait for maintainer approval
 
 ### Code Review Checklist
 - [ ] Code follows style guidelines
 - [ ] Tests pass and cover new functionality
 - [ ] Documentation is updated
 - [ ] No breaking changes without discussion
-- [ ] Performance impact considered
-- [ ] Security implications reviewed
