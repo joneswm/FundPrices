@@ -3509,6 +3509,28 @@ class TestSourceCodeCanonicalisation(DataDirCase):
         self.assertEqual(list(results), [["QQQ", "2026-09-18", "721.45", "USD"]])
         mock_pw.assert_not_called()
 
+    def test_closed_holdings_share_the_alias(self):
+        """Test closed_holdings.txt uses funds.txt's source vocabulary."""
+        path = self.write_text(
+            "closed_holdings.txt", "BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n"
+        )
+        [holding] = read_closed_holdings(path)
+        self.assertEqual(holding.source, "YA")
+
+    def test_dividend_collection_shares_the_alias(self):
+        """Test a (source, identifier) pair spelt GF is still fetched from Yahoo."""
+        event = scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")
+        with patch.object(
+            scrape_fund_price, "fetch_yahoo_dividends", lambda s, w, e=None: [event]
+        ):
+            with patch.object(
+                scrape_fund_price, "fetch_yahoo_declared", lambda s, t=None: None
+            ):
+                results = scrape_fund_price.collect_dividends(
+                    [("GF", "QQQ")], date(2026, 10, 26)
+                )
+        self.assertEqual(len(results), 1)
+
     def test_committed_funds_file_uses_only_current_codes(self):
         """Test the repository's own configuration has been migrated."""
         specs = read_fund_specs("funds.txt")
@@ -3660,13 +3682,6 @@ class TestClosedHoldingConfiguration(DataDirCase):
                 )
             )
         self.assertIn("line 2", str(caught.exception))
-
-    def test_deprecated_source_code_is_canonicalised(self):
-        """Test the config shares funds.txt's source vocabulary."""
-        holding = read_closed_holdings(
-            self._write("BKCH,GF,BKCH.L,USD,2023-01-03,2024-02-16\n")
-        )[0]
-        self.assertEqual(holding.source, "YA")
 
     def test_committed_file_holds_the_closed_holdings(self):
         """Test the repository's own configuration matches what was researched."""
@@ -5144,10 +5159,10 @@ class TestDividendCollection(unittest.TestCase):
                 scrape_fund_price.collect_dividends(specs, self.TODAY)
         self.assertEqual(calls, ["QQQ"])
 
-    def test_plain_pairs_and_the_deprecated_source_code_are_accepted(self):
-        """Test callers may pass (source, identifier) pairs, GF included."""
+    def test_plain_pairs_are_accepted(self):
+        """Test callers may pass (source, identifier) pairs."""
         results = self._collect(
-            [("GF", "QQQ")],
+            [("YA", "QQQ")],
             events={"QQQ": [scrape_fund_price.DividendEvent("2026-09-18", "1", "USD")]},
         )
         self.assertEqual(len(results), 1)
