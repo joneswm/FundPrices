@@ -567,9 +567,10 @@ page does not say), and the source code the rows came from (`IS`, `IV`, `SS`, `Q
 
 Reads the `performance.distributions.table` container a product page embeds
 (entity-escaped, four parallel lists `exDate`, `recordDate`, `payableDate`,
-`totalDistribution`) and the class currency from the share-class selector. `ValueError`
-when there is no table (an accumulating class, or a changed page) or it is ragged or holds
-a bad date or amount.
+`totalDistribution`) and the class currency from the share-class selector, reading each
+row through the issuer helpers the SPEC-012 parsers share (`parse_issuer_date()` takes the
+page's YYYYMMDD integers). `ValueError` when there is no table (an accumulating class, or
+a changed page) or it is ragged or holds a missing ex-date, a bad date or a bad amount.
 
 ### `fetch_ishares_distributions(product_id)` and `fetch_issuer_table(source)`
 

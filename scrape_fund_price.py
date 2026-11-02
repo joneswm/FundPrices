@@ -2840,18 +2840,6 @@ class IssuerTable(NamedTuple):
     source: str  # the DIVIDEND_SOURCE_CODES entry the rows came from
 
 
-def parse_ishares_date(value):
-    """Return an ISO date for the YYYYMMDD integer iShares holds, or None."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    try:
-        return datetime.date(
-            value // 10000, value // 100 % 100, value % 100
-        ).isoformat()
-    except ValueError:
-        return None
-
-
 def parse_ishares_distributions(text, product_id):
     """Read the distributions table of an iShares UK product page.
 
@@ -2871,9 +2859,10 @@ def parse_ishares_distributions(text, product_id):
         ValueError: no table, or a table that is not four lists of equal length
             holding real dates and amounts
     """
+    label = f"iShares product {product_id}"
     start = text.find(ISHARES_TABLE_MARKER)
     if start < 0:
-        raise ValueError(f"iShares product {product_id}: no distributions table")
+        raise ValueError(f"{label}: no distributions table")
 
     lead = max(0, start - 2000)
     segment = html.unescape(text[lead : start + ISHARES_TABLE_SPAN])
@@ -2881,7 +2870,7 @@ def parse_ishares_distributions(text, product_id):
     table, _ = json.JSONDecoder().raw_decode(segment[segment.rfind("{", 0, at) :])
     points = table.get("dataPointsByNameMap", {})
     if "exDate" not in points:
-        raise ValueError(f"iShares product {product_id}: no distributions table")
+        raise ValueError(f"{label}: no distributions table")
 
     columns = [
         points.get(name, {}).get("value")
@@ -2890,29 +2879,18 @@ def parse_ishares_distributions(text, product_id):
     if not all(isinstance(column, list) for column in columns) or (
         len({len(column) for column in columns}) != 1
     ):
-        raise ValueError(f"iShares product {product_id}: malformed distributions table")
+        raise ValueError(f"{label}: malformed distributions table")
 
-    rows = []
-    for ex_value, record_value, pay_value, amount in zip(*columns):
-        ex_date = parse_ishares_date(ex_value)
-        try:
-            amount_value = decimal.Decimal(amount)
-        except (decimal.InvalidOperation, TypeError):
-            amount_value = None
-        usable = amount_value is not None and amount_value.is_finite()
-        if ex_date is None or not usable or amount_value < 0:
-            raise ValueError(
-                f"iShares product {product_id}: malformed distributions table"
-            )
-        pay_date = parse_ishares_date(pay_value) or ""
-        rows.append(
-            IssuerDistribution(
-                ex_date,
-                parse_ishares_date(record_value) or "",
-                pay_date if pay_date >= ex_date else "",
-                amount,
-            )
+    # The page holds dates as YYYYMMDD integers.
+    rows = [
+        issuer_row(
+            parse_issuer_date(ex_value, "%Y%m%d", label),
+            parse_issuer_date(record_value, "%Y%m%d", label, required=False),
+            parse_issuer_date(pay_value, "%Y%m%d", label, required=False),
+            parse_issuer_amount(amount, label),
         )
+        for ex_value, record_value, pay_value, amount in zip(*columns)
+    ]
 
     currency = re.search(
         r"&quot;currency&quot;:&quot;([A-Z]{3})&quot;,&quot;pId&quot;:"
@@ -3001,12 +2979,20 @@ def parse_issuer_amount(value, label):
 
 
 def parse_issuer_date(value, pattern, label, required=True):
-    """Return an ISO date from text in `pattern`; "" when absent and not required."""
+    """Return an ISO date from text in `pattern`; "" when absent and not required.
+
+    An integer is a YYYYMMDD date, which is how iShares holds them; it is not
+    read through `pattern`, which would take 2026071 for a day in July.
+    """
     if value is None or (isinstance(value, str) and value.strip() in ("", "--")):
         if required:
             raise ValueError(f"{label}: missing date")
         return ""
     try:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return datetime.date(
+                value // 10000, value // 100 % 100, value % 100
+            ).isoformat()
         return (
             datetime.datetime.strptime(str(value).strip(), pattern).date().isoformat()
         )

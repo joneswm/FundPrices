@@ -6479,11 +6479,17 @@ class TestIsharesPageParsing(unittest.TestCase):
 
     def test_a_bad_ex_date_is_an_error(self):
         """Test a date that is not one stops the page, not just the row."""
-        for bad in (None, 20261340, "x", 2026071):
+        for bad in (20261340, "x", 2026071, True):
             with self.subTest(bad=bad):
                 page = ishares_page([(bad, 20260717, 20260729, "1.5")])
-                with self.assertRaisesRegex(ValueError, "251804.*malformed"):
+                with self.assertRaisesRegex(ValueError, "251804.*malformed date"):
                     self._parse(page)
+
+    def test_a_missing_ex_date_is_an_error(self):
+        """Test the ex-date is the row's key, so a null one stops the page."""
+        page = ishares_page([(None, 20260717, 20260729, "1.5")])
+        with self.assertRaisesRegex(ValueError, "251804.*missing date"):
+            self._parse(page)
 
     def test_a_bad_record_or_pay_date_is_an_error(self):
         """Test a date that is not one is refused in any column, as the other issuers do."""
