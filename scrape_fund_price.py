@@ -2258,7 +2258,26 @@ def fetch_yahoo_declared(symbol, today=None):
 
 DIVIDENDS_HISTORY_FILE = "dividends_history.csv"
 DIVIDENDS_UPCOMING_FILE = "dividends_upcoming.csv"
-DIVIDEND_HISTORY_HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+
+
+class DividendRow(NamedTuple):
+    """One row of dividends_history.csv: a dividend paid, from one source.
+
+    `source` is `YA`, an issuer code (DIVIDEND_SOURCE_CODES) or `config`
+    (distributions.txt); see SOURCE_AUTHORITY. Fields are the file's text.
+    """
+
+    HEADER = ["Fund", "ExDate", "PayDate", "Amount", "Currency", "Source"]
+
+    fund: str
+    ex_date: str
+    pay_date: str  # "" when no source gives one
+    amount: str
+    currency: str
+    source: str
+
+
+DIVIDEND_HISTORY_HEADER = DividendRow.HEADER
 DIVIDEND_UPCOMING_HEADER = [
     "Fund",
     "ExDate",
@@ -2317,7 +2336,7 @@ class DividendRun(NamedTuple):
 class DividendResults(list):
     """The day's dividend fetch: history rows plus what else Yahoo said.
 
-    Rows are [identifier, ex_date, pay_date, amount, currency, source].
+    Rows are DividendRow.
     `declared` maps a lookup identifier to its announced next dividend and
     `fetched` holds the lookup identifiers whose events were read, so a
     failed instrument can be told from one that simply pays nothing.
@@ -2332,15 +2351,16 @@ class DividendResults(list):
 
 
 def read_dividend_history(data_dir):
-    """Read dividends_history.csv keyed on (Fund, ExDate).
+    """Read dividends_history.csv as DividendRow keyed on (Fund, ExDate).
 
     A missing file is an empty history, and a row without a fund or an
     ex-date cannot be keyed, so it is skipped rather than stopping the run.
     """
     return read_keyed_csv(
         os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
-        DIVIDEND_HISTORY_HEADER,
+        DividendRow.HEADER,
         fund_and_ex_date,
+        row=DividendRow._make,
     )
 
 
@@ -2350,12 +2370,12 @@ def fund_and_ex_date(row):
 
 
 def write_dividend_history(rows, data_dir):
-    """Write dividends_history.csv sorted by ex-date then fund."""
+    """Write dividends_history.csv (DividendRow) sorted by ex-date then fund."""
     write_sorted_csv(
         os.path.join(data_dir, DIVIDENDS_HISTORY_FILE),
-        DIVIDEND_HISTORY_HEADER,
+        DividendRow.HEADER,
         rows,
-        key=lambda row: (row[1], row[0]),
+        key=lambda row: (row.ex_date, row.fund),
     )
 
 
@@ -2367,7 +2387,7 @@ SOURCE_AUTHORITY = {"config": 0, "YA": 1, "IS": 2, "IV": 2, "SS": 2, "Q4": 2, "E
 
 def source_authority(row):
     """Return how much a history row's source knows; an unknown source counts as YA."""
-    return SOURCE_AUTHORITY.get(row[5], 1)
+    return SOURCE_AUTHORITY.get(row.source, 1)
 
 
 def merge_dividend_rows(stored, incoming):
@@ -2379,11 +2399,11 @@ def merge_dividend_rows(stored, incoming):
     (SOURCE_AUTHORITY), so the owner's `config` row gives way to Yahoo's, and
     Yahoo's daily upsert cannot blank the pay date the issuer supplied.
     """
-    for row in incoming:
-        current = stored.get((row[0], row[1]))
+    for row in map(DividendRow._make, incoming):
+        current = stored.get((row.fund, row.ex_date))
         if current is not None and source_authority(row) < source_authority(current):
             continue
-        stored[(row[0], row[1])] = list(row)
+        stored[(row.fund, row.ex_date)] = row
 
 
 def collect_dividends(run, start=None):
@@ -2418,7 +2438,14 @@ def collect_dividends(run, start=None):
                 continue
             for identifier in spec.publish_ids:
                 results.append(
-                    [identifier, event.ex_date, "", event.amount, event.currency, "YA"]
+                    DividendRow(
+                        identifier,
+                        event.ex_date,
+                        "",
+                        event.amount,
+                        event.currency,
+                        "YA",
+                    )
                 )
 
         declared, error = fetch_with_retries(
@@ -3143,37 +3170,42 @@ def apply_issuer_table(run, history, identifier, table, start=None):
         current = history.get((identifier, row.ex_date))
         twins = []
         for (fund, ex_date), stored in history.items():
-            if fund != identifier or stored[5] != "YA" or ex_date in issuer_dates:
+            if fund != identifier or stored.source != "YA" or ex_date in issuer_dates:
                 continue
             gap = day_gap(ex_date, row.ex_date)
             if gap is None or gap > ISSUER_TWIN_DAYS:
                 continue
             amount = issuer_amount(
-                row.amount, table.currency, stored[4] or price_currency
+                row.amount, table.currency, stored.currency or price_currency
             )
-            if amount is not None and amounts_agree(stored[3], amount):
+            if amount is not None and amounts_agree(stored.amount, amount):
                 twins.append((gap, ex_date))
         twins.sort()
         base = current or (history[(identifier, twins[0][1])] if twins else None)
 
         amount = issuer_amount(
-            row.amount, table.currency, (base[4] if base else "") or price_currency
+            row.amount,
+            table.currency,
+            (base.currency if base else "") or price_currency,
         )
-        if amount is not None and (base is None or not amounts_agree(base[3], amount)):
+        if amount is not None and (
+            base is None or not amounts_agree(base.amount, amount)
+        ):
             text, currency = amount.text, amount.currency
         elif base is not None:
-            text, currency = base[3], base[4] or (amount.currency if amount else "")
+            text = base.amount
+            currency = base.currency or (amount.currency if amount else "")
         else:
             continue
 
-        merged = [
+        merged = DividendRow(
             identifier,
             row.ex_date,
-            row.pay_date or (base[2] if base else ""),
+            row.pay_date or (base.pay_date if base else ""),
             text,
             currency,
             table.source,
-        ]
+        )
         for _, ex_date in twins:
             del history[(identifier, ex_date)]
         history[(identifier, row.ex_date)] = merged
@@ -3338,8 +3370,7 @@ def estimate_next_dividend(rows, today):
     estimate. A pay date is projected only when the last row has one.
 
     Args:
-        rows: One instrument's [fund, ex_date, pay_date, amount, currency,
-            source] history rows, in any order
+        rows: One instrument's DividendRow history rows, in any order
         today: The run date
 
     Returns:
@@ -3348,7 +3379,7 @@ def estimate_next_dividend(rows, today):
     dated = []
     for row in rows:
         try:
-            ex_date = datetime.date.fromisoformat(row[1])
+            ex_date = datetime.date.fromisoformat(row.ex_date)
         except ValueError:
             continue
         if ex_date <= today:
@@ -3367,13 +3398,15 @@ def estimate_next_dividend(rows, today):
 
     pay_date = ""
     try:
-        lag = datetime.date.fromisoformat(last_row[2]) - last_ex
+        lag = datetime.date.fromisoformat(last_row.pay_date) - last_ex
     except ValueError:
         lag = None
     if lag is not None and lag.days >= 0:
         pay_date = (next_ex + lag).isoformat()
 
-    return EstimatedDividend(next_ex.isoformat(), pay_date, last_row[3], last_row[4])
+    return EstimatedDividend(
+        next_ex.isoformat(), pay_date, last_row.amount, last_row.currency
+    )
 
 
 def slot_date(month, day, year):
@@ -3421,14 +3454,14 @@ def distribution_history_rows(dist, currency, today):
             ex_date = slot_date(month, day, limit.year - 1)
         pay_date = ex_date + datetime.timedelta(days=dist.pay_offset_days)
         rows.append(
-            [
+            DividendRow(
                 dist.identifier,
                 ex_date.isoformat(),
                 pay_date.isoformat(),
                 amount,
                 currency,
                 "config",
-            ]
+            )
         )
     return rows
 
@@ -3549,7 +3582,7 @@ def build_dividend_upcoming(run, distributions, history, stored, declared):
         ordered = [
             instrument_history[ex_date] for ex_date in sorted(instrument_history)
         ]
-        last_paid = (ordered[-1][3], ordered[-1][4]) if ordered else ("", "")
+        last_paid = (ordered[-1].amount, ordered[-1].currency) if ordered else ("", "")
 
         schedule = next(
             (schedule_for[i] for i in identifiers if i in schedule_for), None
@@ -3600,7 +3633,7 @@ def config_history_rows(run, distributions):
         identifiers = run.universe.published(dist.identifier)
         currency = run.price_currency(dist.identifier)
         for row in distribution_history_rows(dist, currency, run.today):
-            rows.extend([identifier] + row[1:] for identifier in identifiers)
+            rows.extend(row._replace(fund=identifier) for identifier in identifiers)
     return rows
 
 
@@ -3679,7 +3712,8 @@ def rebuild_issuer_rows(run, history, spec, table, start):
             [
                 key
                 for key in existing
-                if history[key][5] in DIVIDEND_SOURCE_CODES and key[1] >= (start or "")
+                if history[key].source in DIVIDEND_SOURCE_CODES
+                and key[1] >= (start or "")
             ]
             if table is not None
             else []
@@ -3700,7 +3734,7 @@ def rebuild_issuer_rows(run, history, spec, table, start):
             row
             for key, row in history.items()
             if key[0] == identifier
-            and row[5] in DIVIDEND_SOURCE_CODES
+            and row.source in DIVIDEND_SOURCE_CODES
             and key[1] >= (start or "")
         )
         items.append(
@@ -3709,7 +3743,7 @@ def rebuild_issuer_rows(run, history, spec, table, start):
                 before=len(existing),
                 deleted=len(doomed),
                 retained=len(existing) - len(doomed),
-                inserted=[(row[1], row[4]) for row in rows],
+                inserted=[(row.ex_date, row.currency) for row in rows],
             )
         )
     return history, items, declared
@@ -3790,14 +3824,14 @@ def rebuild_dividend_rows(run, history, distributions, events, issuers, *, start
             doomed = [
                 key
                 for key in existing
-                if history[key][5] in owned and key[1] >= (start or "")
+                if history[key].source in owned and key[1] >= (start or "")
             ]
             for key in doomed:
                 del history[key]
             merge_dividend_rows(
                 history,
                 (
-                    [identifier, e.ex_date, "", e.amount, e.currency, "YA"]
+                    DividendRow(identifier, e.ex_date, "", e.amount, e.currency, "YA")
                     for e in fetched
                 ),
             )
