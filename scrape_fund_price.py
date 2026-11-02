@@ -23,8 +23,6 @@ from zoneinfo import ZoneInfo
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
-LATEST_CSV = os.path.join(DATA_DIR, "latest_prices.csv")
-HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
 CLOSED_HOLDINGS_FILE = "closed_holdings.txt"
 MAX_PRICE_ATTEMPTS = 3
@@ -4807,9 +4805,9 @@ def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
         return f"Error: {str(e)}"
 
 
-def main():
-    """Main function to run the fund price scraper."""
-    args = parse_arguments()
+def main(argv=None):
+    """Run the scraper in the mode `argv` selects (sys.argv when None)."""
+    args = parse_arguments(argv)
 
     if args.backfill:
         error = validate_backfill_args(args)
@@ -4893,17 +4891,29 @@ def main():
             DISTRIBUTIONS_FILE, configured_identifiers(funds)
         )
         sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, funds)
-        results = scrape_funds(funds)
-        write_results(results)
-        failures.extend(getattr(results, "failures", []))
+
+        # Each step below is isolated: a crash in one is recorded as a
+        # failure and the rest still write their files, so the run exits
+        # non-zero only after everything obtainable has been written.
+        results = ScrapeResults()
+        try:
+            results = scrape_funds(funds)
+            write_results(results)
+        except Exception as error:
+            results.failures.append(f"prices: {error}")
+        failures.extend(results.failures)
 
         # FX is snapped after prices and written independently, so a problem
         # with one never costs the other a day of data.
         pairs = read_fx_pairs()
         fx_failures = []
         if pairs:
-            fx_results = snap_fx_rates(pairs)
-            write_fx_results(fx_results)
+            fx_results = ScrapeResults()
+            try:
+                fx_results = snap_fx_rates(pairs)
+                write_fx_results(fx_results)
+            except Exception as error:
+                fx_results.failures.append(f"fx: {error}")
             fx_failures = list(fx_results.failures)
             failures.extend(fx_failures)
 
@@ -4932,10 +4942,10 @@ def main():
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.
         run_date = datetime.date.today().isoformat()
-        history = list(read_history_rows(HISTORY_CSV).values())
-        price_summary = build_price_summary(
-            history, funds, getattr(results, "failures", []), run_date
+        history = list(
+            read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
         )
+        price_summary = build_price_summary(history, funds, results.failures, run_date)
         fx_summary = build_fx_summary(
             list(read_fx_rows(os.path.join(DATA_DIR, "fx_history.csv")).values()),
             pairs,

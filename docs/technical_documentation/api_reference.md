@@ -748,15 +748,18 @@ mode only, and adds its failures to the run's.
 
 ## Entry Point
 
-### `main()`
+### `main(argv=None)`
 
-Dispatches on the parsed arguments, in this order: `--backfill`, `--import-closed`,
-`--backfill-dividends`, `--history`, otherwise the daily run. The daily run validates
-`distributions.txt` and `dividend_sources.txt` with `funds.txt` before any network call, then writes prices, then FX,
-then the dividend files, then `uk_cpi.csv`, then `uk_bank_rate.csv`, then the summary, each independently (a crash in the dividend
-update is reported as a failure and costs the summary nothing), and exits non-zero only
-after everything obtainable has been written. The rebuilds and the import exit non-zero
-when their report has failures.
+Dispatches on the parsed arguments (`argv`, or `sys.argv` when `None`), in this order:
+`--backfill`, `--import-closed`, `--backfill-dividends`, `--history`, otherwise the daily
+run. The daily run validates `distributions.txt` and `dividend_sources.txt` with
+`funds.txt` before any network call, then writes prices, then FX, then the dividend files,
+then `uk_cpi.csv`, then `uk_bank_rate.csv`, then the summary. Each step is isolated: an
+exception in one is recorded on the failure list under its name (`prices: <error>`,
+`fx: <error>`, `dividends: <error>`, `uk_cpi: <error>` or `uk_bank_rate: <error>`) and
+costs the later files and the summary nothing, so the run exits non-zero only after
+everything obtainable has been written. The rebuilds and the import exit non-zero when
+their report has failures.
 
 ## Daily Summary
 
