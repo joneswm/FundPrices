@@ -1824,25 +1824,25 @@ class TestBackfillArguments(unittest.TestCase):
         self.assertIsNone(validate_backfill_args(args))
 
 
-class TestBackfillRebuild(unittest.TestCase):
-    """Test the delete-then-insert rebuild rule."""
+class BackfillCase(DataDirCase):
+    """A DataDirCase for the price rebuild, with the FX rebuild kept out.
+
+    backfill_history ends by rebuilding whatever fx_pairs.txt in the working
+    directory lists, and the repository's lists four pairs: left alone, every
+    test below would fetch years of Yahoo FX bars for them.
+    """
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.history = os.path.join(self.test_dir, "prices_history.csv")
+        super().setUp()
+        no_pairs = patch("scrape_fund_price.read_fx_pairs", return_value=[])
+        no_pairs.start()
+        self.addCleanup(no_pairs.stop)
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
-    def _seed(self, rows, header=("Fund", "Date", "Price", "Currency")):
-        with open(self.history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(list(header))
-            writer.writerows(rows)
+class TestBackfillRebuild(BackfillCase):
+    """Test the delete-then-insert rebuild rule."""
 
-    def _rows(self):
-        with open(self.history, newline="") as f:
-            return [r for r in csv.reader(f)][1:]
+    HEADER = ["Fund", "Date", "Price", "Currency"]
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_carry_forward_rows_are_removed(self, mock_quotes):
@@ -1851,40 +1851,61 @@ class TestBackfillRebuild(unittest.TestCase):
         This is why the rebuild deletes rather than upserting: a weekend
         carry-forward has no incoming row to replace it.
         """
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["QQQ", "2026-09-18", "721.45", ""],
                 ["QQQ", "2026-09-19", "721.45", ""],  # Saturday carry-forward
                 ["QQQ", "2026-09-20", "721.45", ""],  # Sunday carry-forward
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2026-09-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_failed_instrument_keeps_its_existing_rows(self, mock_quotes):
-        """Test a fetch failure never destroys unreplaceable data."""
-        self._seed([["QQQ", "2026-09-18", "721.45", "USD"]])
+        """Test a fetch failure never destroys unreplaceable data.
+
+        The report says so per identifier, with the row count it kept.
+        """
+        self.write_csv(
+            "prices_history.csv", self.HEADER, [["QQQ", "2026-09-18", "721.45", "USD"]]
+        )
         mock_quotes.side_effect = Exception("Network error")
 
         report = backfill_history(
-            [FundSpec("GF", "QQQ", ())], "2026-09-01", self.test_dir
+            [FundSpec("YA", "QQQ", ())], "2026-09-01", self.test_dir
         )
 
-        self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
         self.assertEqual(len(report.failures), 1)
+        self.assertIn("QQQ", report.failures[0])
+        entry = next(e for e in report.entries if e["identifier"] == "QQQ")
+        self.assertEqual(
+            (entry["status"], entry["before"], entry["deleted"]),
+            ("failed, kept existing", 1, 0),
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_one_failure_does_not_block_other_instruments(self, mock_quotes):
         """Test instruments are rebuilt independently."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["QQQ", "2026-09-19", "700.00", ""],
                 ["GRAB", "2026-09-19", "2.50", ""],
-            ]
+            ],
         )
 
         def side_effect(source, fund_id, start, end=None, browser=None):
@@ -1895,47 +1916,64 @@ class TestBackfillRebuild(unittest.TestCase):
         mock_quotes.side_effect = side_effect
 
         backfill_history(
-            [FundSpec("GF", "QQQ", ()), FundSpec("GF", "GRAB", ())],
+            [FundSpec("YA", "QQQ", ()), FundSpec("YA", "GRAB", ())],
             "2026-09-01",
             self.test_dir,
         )
 
-        rows = self._rows()
-        self.assertIn(["QQQ", "2026-09-19", "700.00", ""], rows)
-        self.assertIn(["GRAB", "2026-09-18", "2.795", "USD"], rows)
-        self.assertNotIn(["GRAB", "2026-09-19", "2.50", ""], rows)
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [
+                ["GRAB", "2026-09-18", "2.795", "USD"],
+                ["QQQ", "2026-09-19", "700.00", ""],
+            ],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_rows_before_the_start_date_are_preserved(self, mock_quotes):
         """Test the rebuild only touches the requested range."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["QQQ", "2022-06-01", "300.00", "USD"],
                 ["QQQ", "2026-09-19", "700.00", ""],
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
-        rows = self._rows()
-        self.assertIn(["QQQ", "2022-06-01", "300.00", "USD"], rows)
-        self.assertNotIn(["QQQ", "2026-09-19", "700.00", ""], rows)
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [
+                ["QQQ", "2022-06-01", "300.00", "USD"],
+                ["QQQ", "2026-09-18", "721.45", "USD"],
+            ],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_unconfigured_identifiers_are_preserved(self, mock_quotes):
         """Test a fund removed from funds.txt keeps its recorded history."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["RETIRED", "2026-09-18", "1.23", "GBP"],
                 ["QQQ", "2026-09-19", "700.00", ""],
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
-        self.assertIn(["RETIRED", "2026-09-18", "1.23", "GBP"], self._rows())
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [
+                ["QQQ", "2026-09-18", "721.45", "USD"],
+                ["RETIRED", "2026-09-18", "1.23", "GBP"],
+            ],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_aliases_are_rebuilt_from_a_single_fetch(self, mock_quotes):
@@ -1943,15 +1981,19 @@ class TestBackfillRebuild(unittest.TestCase):
         mock_quotes.return_value = [Quote("2026-09-17", "192.43", "USD")]
 
         backfill_history(
-            [FundSpec("GF", "0P00000YAN", ("JFM0003373",))],
+            [FundSpec("YA", "0P00000YAN", ("JFM0003373",))],
             "2023-01-01",
             self.test_dir,
         )
 
         self.assertEqual(mock_quotes.call_count, 1)
-        rows = self._rows()
-        self.assertIn(["0P00000YAN", "2026-09-17", "192.43", "USD"], rows)
-        self.assertIn(["JFM0003373", "2026-09-17", "192.43", "USD"], rows)
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [
+                ["0P00000YAN", "2026-09-17", "192.43", "USD"],
+                ["JFM0003373", "2026-09-17", "192.43", "USD"],
+            ],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_rebuild_is_idempotent(self, mock_quotes):
@@ -1960,13 +2002,13 @@ class TestBackfillRebuild(unittest.TestCase):
             Quote("2026-09-17", "192.43", "USD"),
             Quote("2026-09-18", "193.00", "USD"),
         ]
-        specs = [FundSpec("GF", "0P00000YAN", ("JFM0003373",))]
+        specs = [FundSpec("YA", "0P00000YAN", ("JFM0003373",))]
 
         backfill_history(specs, "2023-01-01", self.test_dir)
-        first = open(self.history, "rb").read()
+        first = self.read_text("prices_history.csv")
         backfill_history(specs, "2023-01-01", self.test_dir)
 
-        self.assertEqual(open(self.history, "rb").read(), first)
+        self.assertEqual(self.read_text("prices_history.csv"), first)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_derived_files_are_regenerated(self, mock_quotes):
@@ -1976,69 +2018,70 @@ class TestBackfillRebuild(unittest.TestCase):
             Quote("2026-09-18", "192.43", "USD"),
         ]
 
-        backfill_history([FundSpec("GF", "AAA", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "AAA", ())], "2023-01-01", self.test_dir)
 
-        with open(os.path.join(self.test_dir, "latest_prices.csv"), newline="") as f:
-            latest = [r for r in csv.reader(f)][1:]
-        self.assertEqual(latest, [["AAA", "2026-09-18", "192.43", "USD"]])
-
-        with open(os.path.join(self.test_dir, "latest_AAA.price")) as f:
-            self.assertEqual(f.read().strip(), "192.43")
+        self.assertEqual(
+            self.read_rows("latest_prices.csv"),
+            [["AAA", "2026-09-18", "192.43", "USD"]],
+        )
+        self.assertEqual(self.read_text("latest_AAA.price").strip(), "192.43")
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_legacy_three_column_history_is_rebuilt(self, mock_quotes):
         """Test a pre-SPEC-003 file is readable and comes out with currencies."""
-        self._seed([["QQQ", "2026-09-19", "700.00"]], header=("Fund", "Date", "Price"))
+        self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price"],
+            [["QQQ", "2026-09-19", "700.00"]],
+        )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_unusable_prices_are_dropped_everywhere(self, mock_quotes):
         """Test stored error strings do not survive a rebuild."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["RETIRED", "2026-09-18", "Error: Timeout", ""],
                 ["QQQ", "2026-09-19", "N/A", ""],
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
-        prices = [r[2] for r in self._rows()]
-        self.assertNotIn("Error: Timeout", prices)
-        self.assertNotIn("N/A", prices)
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
 
 
-class TestBackfillReporting(unittest.TestCase):
+class TestBackfillReporting(BackfillCase):
     """Test the reconciliation report and sanity warnings."""
-
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_report_counts_rows_changed(self, mock_quotes):
         """Test the report says what it replaced, for review before committing."""
-        history = os.path.join(self.test_dir, "prices_history.csv")
-        with open(history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Fund", "Date", "Price", "Currency"])
-            writer.writerows(
-                [
-                    ["QQQ", "2026-09-19", "700.00", ""],
-                    ["QQQ", "2026-09-20", "700.00", ""],
-                ]
-            )
+        self.write_csv(
+            "prices_history.csv",
+            ["Fund", "Date", "Price", "Currency"],
+            [
+                ["QQQ", "2026-09-19", "700.00", ""],
+                ["QQQ", "2026-09-20", "700.00", ""],
+            ],
+        )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
         report = backfill_history(
-            [FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir
+            [FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir
         )
 
         entry = next(e for e in report.entries if e["identifier"] == "QQQ")
@@ -2054,11 +2097,17 @@ class TestBackfillReporting(unittest.TestCase):
         """Test the report can be dropped into the Actions job summary."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
         report = backfill_history(
-            [FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir
+            [FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir
         )
-        text = report.to_markdown()
-        self.assertIn("QQQ", text)
-        self.assertIn("|", text)
+        self.assertEqual(
+            report.to_markdown().splitlines(),
+            [
+                "| Identifier | Before | Deleted | Kept | Inserted | First | Last "
+                "| Ccy | Status |",
+                "|---|---:|---:|---:|---:|---|---|---|---|",
+                "| QQQ | 0 | 0 | 0 | 1 | 2026-09-18 | 2026-09-18 | USD | rebuilt |",
+            ],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_quoting_unit_change_is_flagged(self, mock_quotes):
@@ -2068,7 +2117,7 @@ class TestBackfillReporting(unittest.TestCase):
             Quote("2026-09-18", "506.00", "GBp"),
         ]
         report = backfill_history(
-            [FundSpec("GF", "DPYG.L", ())], "2023-01-01", self.test_dir
+            [FundSpec("YA", "DPYG.L", ())], "2023-01-01", self.test_dir
         )
         self.assertTrue(any("DPYG.L" in w for w in report.warnings))
 
@@ -2080,36 +2129,18 @@ class TestBackfillReporting(unittest.TestCase):
             Quote("2026-09-18", "112.00", "USD"),
         ]
         report = backfill_history(
-            [FundSpec("GF", "AAA", ())], "2023-01-01", self.test_dir
+            [FundSpec("YA", "AAA", ())], "2023-01-01", self.test_dir
         )
         self.assertEqual(report.warnings, [])
 
 
-class TestBackfillMainMode(unittest.TestCase):
+class TestBackfillMainMode(DataDirCase):
     """Test the --backfill entry point."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+    QQQ_ROW = "| QQQ | 1 | 1 | 0 | 2 | 2023-01-03 | 2026-09-18 | USD | rebuilt |"
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    @patch("builtins.print")
-    def test_invalid_invocation_exits_two_without_fetching(self, mock_print):
-        """Test a bad invocation is rejected before any network call."""
-        with self.assertRaises(SystemExit) as error:
-            main(["--backfill"])
-
-        self.assertEqual(error.exception.code, 2)
-
-    @patch("builtins.print")
-    @patch("scrape_fund_price.backfill_history")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_successful_backfill_prints_the_report(
-        self, mock_specs, mock_backfill, mock_print
-    ):
-        """Test the reconciliation report reaches stdout."""
-        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+    @staticmethod
+    def report_with_qqq():
         report = BackfillReport()
         report.entries.append(
             {
@@ -2124,11 +2155,32 @@ class TestBackfillMainMode(unittest.TestCase):
                 "status": "rebuilt",
             }
         )
-        mock_backfill.return_value = report
+        return report
+
+    @patch("builtins.print")
+    def test_invalid_invocation_exits_two_without_fetching(self, mock_print):
+        """Test a bad invocation is rejected before any network call."""
+        with self.assertRaises(SystemExit) as error:
+            main(["--backfill"])
+
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(mock_print.call_args.args[0][:7], "Error: ")
+
+    @patch("builtins.print")
+    @patch("scrape_fund_price.backfill_history")
+    @patch("scrape_fund_price.read_fund_specs")
+    def test_successful_backfill_prints_the_report(
+        self, mock_specs, mock_backfill, mock_print
+    ):
+        """Test the reconciliation report reaches stdout."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        mock_backfill.return_value = self.report_with_qqq()
 
         main(["--backfill", "--from", "2023-01-01"])
 
-        self.assertTrue(any("QQQ" in str(c) for c in mock_print.call_args_list))
+        mock_backfill.assert_called_once_with(mock_specs.return_value, "2023-01-01")
+        printed = mock_print.call_args.args[0]
+        self.assertIn(self.QQQ_ROW, printed.splitlines())
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
@@ -2137,7 +2189,7 @@ class TestBackfillMainMode(unittest.TestCase):
         self, mock_specs, mock_backfill, mock_print
     ):
         """Test the job fails loudly, but only after the report is produced."""
-        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
         report = BackfillReport()
         report.failures.append("QQQ: Error: Timeout")
         mock_backfill.return_value = report
@@ -2146,7 +2198,9 @@ class TestBackfillMainMode(unittest.TestCase):
             main(["--backfill", "--from", "2023-01-01"])
 
         self.assertEqual(error.exception.code, 1)
-        self.assertTrue(mock_print.called)
+        printed = mock_print.call_args.args[0].splitlines()
+        self.assertIn("**Failures**", printed)
+        self.assertIn("- QQQ: Error: Timeout", printed)
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
@@ -2155,31 +2209,15 @@ class TestBackfillMainMode(unittest.TestCase):
         self, mock_specs, mock_backfill, mock_print
     ):
         """Test the report appears on the workflow run page when in Actions."""
-        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
-        report = BackfillReport()
-        report.entries.append(
-            {
-                "identifier": "QQQ",
-                "before": 0,
-                "deleted": 0,
-                "retained": 0,
-                "inserted": 1,
-                "first": "2026-09-18",
-                "last": "2026-09-18",
-                "currency": "USD",
-                "status": "rebuilt",
-            }
-        )
-        mock_backfill.return_value = report
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
+        mock_backfill.return_value = self.report_with_qqq()
 
-        summary_path = os.path.join(self.test_dir, "summary.md")
-        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_path}):
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": self.path("summary.md")}):
             main(["--backfill", "--from", "2023-01-01"])
 
-        with open(summary_path, encoding="utf-8") as f:
-            written = f.read()
-        self.assertIn("Backfill from 2023-01-01", written)
-        self.assertIn("QQQ", written)
+        written = self.read_text("summary.md").splitlines()
+        self.assertEqual(written[0], "## Backfill from 2023-01-01")
+        self.assertIn(self.QQQ_ROW, written)
 
     @patch("builtins.print")
     @patch("scrape_fund_price.backfill_history")
@@ -2187,15 +2225,15 @@ class TestBackfillMainMode(unittest.TestCase):
     def test_no_summary_written_outside_actions(
         self, mock_specs, mock_backfill, mock_print
     ):
-        """Test a local run does not require the Actions environment."""
-        mock_specs.return_value = [FundSpec("GF", "QQQ", ())]
+        """Test a local run prints the report and needs no Actions environment."""
+        mock_specs.return_value = [FundSpec("YA", "QQQ", ())]
         mock_backfill.return_value = BackfillReport()
 
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
         with patch.dict(os.environ, env, clear=True):
             main(["--backfill", "--from", "2023-01-01"])
 
-        self.assertTrue(mock_print.called)
+        mock_print.assert_called_once_with(BackfillReport().to_markdown())
 
 
 class TestBackfillReportRendering(unittest.TestCase):
@@ -2232,61 +2270,40 @@ class TestBackfillReportRendering(unittest.TestCase):
         self.assertIsNone(check_quoting_unit("AAA", quotes))
 
 
-class TestBackfillPacing(unittest.TestCase):
+class TestBackfillPacing(BackfillCase):
     """Test the rebuild is polite to the unofficial FT endpoint."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    @patch("scrape_fund_price.time.sleep")
     @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_pauses_between_ft_funds(self, mock_quotes, mock_sleep):
-        """Test consecutive FT fetches are spaced out."""
+    def test_pauses_between_ft_funds(self, mock_quotes):
+        """Test consecutive FT fetches are spaced out: one pause after each FT
+        fund but the last, of the configured length."""
         mock_quotes.return_value = [Quote("2026-09-18", "7.15", "GBP")]
         backfill_history(
-            [FundSpec("FT", "ISIN1", ()), FundSpec("FT", "ISIN2", ())],
+            [
+                FundSpec("FT", "ISIN1", ()),
+                FundSpec("FT", "ISIN2", ()),
+                FundSpec("FT", "ISIN3", ()),
+            ],
             "2023-01-01",
             self.test_dir,
         )
-        self.assertTrue(mock_sleep.called)
+        pause = scrape_fund_price.FT_BACKFILL_PAUSE_SECONDS
+        self.assertGreaterEqual(pause, 1)
+        self.assertEqual(self.sleeps, [pause, pause])
 
-    @patch("scrape_fund_price.time.sleep")
     @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_does_not_pause_for_api_funds(self, mock_quotes, mock_sleep):
+    def test_does_not_pause_for_api_funds(self, mock_quotes):
         """Test the API route is not slowed down unnecessarily."""
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
         backfill_history(
-            [FundSpec("GF", "QQQ", ()), FundSpec("GF", "GRAB", ())],
+            [FundSpec("YA", "QQQ", ()), FundSpec("YA", "GRAB", ())],
             "2023-01-01",
             self.test_dir,
         )
-        mock_sleep.assert_not_called()
-
-    @patch("scrape_fund_price.time.sleep")
-    @patch("scrape_fund_price.scrape_fund_quotes")
-    def test_failed_instrument_appears_in_the_report(self, mock_quotes, mock_sleep):
-        """Test a failure is reported per identifier with its kept row count."""
-        history = os.path.join(self.test_dir, "prices_history.csv")
-        with open(history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Fund", "Date", "Price", "Currency"])
-            writer.writerow(["QQQ", "2026-09-18", "721.45", "USD"])
-
-        mock_quotes.side_effect = Exception("Network error")
-        report = backfill_history(
-            [FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir
-        )
-
-        entry = next(e for e in report.entries if e["identifier"] == "QQQ")
-        self.assertEqual(entry["status"], "failed, kept existing")
-        self.assertEqual(entry["before"], 1)
-        self.assertEqual(entry["deleted"], 0)
+        self.assertEqual(self.sleeps, [])
 
 
-class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
+class TestBackfillProtectsSourceDerivedRows(BackfillCase):
     """Test a flaky source cannot silently delete real trading days.
 
     FT's historical endpoint intermittently omits a row or two from the same
@@ -2297,31 +2314,18 @@ class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
     currency column, are still removed.
     """
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.history = os.path.join(self.test_dir, "prices_history.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def _seed(self, rows):
-        with open(self.history, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Fund", "Date", "Price", "Currency"])
-            writer.writerows(rows)
-
-    def _rows(self):
-        with open(self.history, newline="") as f:
-            return [r for r in csv.reader(f)][1:]
+    HEADER = ["Fund", "Date", "Price", "Currency"]
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_previously_sourced_row_survives_an_omission(self, mock_quotes):
         """Test a day the source skipped this run is not lost."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["ISIN1", "2025-08-14", "8.29", "GBP"],
                 ["ISIN1", "2025-08-18", "8.48", "GBP"],
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
 
@@ -2329,35 +2333,51 @@ class TestBackfillProtectsSourceDerivedRows(unittest.TestCase):
             [FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir
         )
 
-        self.assertIn(["ISIN1", "2025-08-14", "8.29", "GBP"], self._rows())
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [
+                ["ISIN1", "2025-08-14", "8.29", "GBP"],
+                ["ISIN1", "2025-08-18", "8.48", "GBP"],
+            ],
+        )
         entry = next(e for e in report.entries if e["identifier"] == "ISIN1")
         self.assertEqual(entry["retained"], 1)
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_legacy_rows_without_currency_are_still_removed(self, mock_quotes):
         """Test pre-SPEC-003 rows are not protected by the retention rule."""
-        self._seed([["ISIN1", "2025-08-14", "8.29", ""]])
+        self.write_csv(
+            "prices_history.csv", self.HEADER, [["ISIN1", "2025-08-14", "8.29", ""]]
+        )
         mock_quotes.return_value = [Quote("2025-08-18", "8.48", "GBP")]
 
         backfill_history([FundSpec("FT", "ISIN1", ())], "2023-01-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["ISIN1", "2025-08-18", "8.48", "GBP"]])
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["ISIN1", "2025-08-18", "8.48", "GBP"]],
+        )
 
     @patch("scrape_fund_price.scrape_fund_quotes")
     def test_weekend_rows_are_never_retained(self, mock_quotes):
         """Test a carry-forward is removed even if it carries a currency."""
-        self._seed(
+        self.write_csv(
+            "prices_history.csv",
+            self.HEADER,
             [
                 ["QQQ", "2026-09-18", "721.45", "USD"],
                 ["QQQ", "2026-09-19", "721.45", "USD"],  # Saturday
                 ["QQQ", "2026-09-20", "721.45", "USD"],  # Sunday
-            ]
+            ],
         )
         mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
 
-        backfill_history([FundSpec("GF", "QQQ", ())], "2023-01-01", self.test_dir)
+        backfill_history([FundSpec("YA", "QQQ", ())], "2023-01-01", self.test_dir)
 
-        self.assertEqual(self._rows(), [["QQQ", "2026-09-18", "721.45", "USD"]])
+        self.assertEqual(
+            self.read_rows("prices_history.csv"),
+            [["QQQ", "2026-09-18", "721.45", "USD"]],
+        )
 
 
 class TestFxPairConfiguration(unittest.TestCase):
