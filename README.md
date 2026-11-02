@@ -14,7 +14,7 @@ A Python application that collects dated fund, ETF and stock prices and end-of-d
 - **UK CPI**: the ONS consumer price index (series D7BT), monthly from 2015, published as `uk_cpi.csv` for real returns (SPEC-013)
 - **UK Bank Rate**: the Bank of England Bank Rate in force at each month end, monthly from 2015, published as `uk_bank_rate.csv` for the Sharpe ratio (SPEC-014)
 - **Identifier aliases**: one fetch published under several identifiers
-- **Historical data retrieval**: ad-hoc OHLCV export for any Yahoo symbol and date range
+- **History export**: any Yahoo symbol's dated closes for a date range, as a CSV of history rows
 - **Automated execution**: a scheduled GitHub Actions workflow collects and commits the data
 - **Resilience**: retries, then the last known price; one failure never stops the run
 - **Testing**: a mocked suite that needs no network, live-source tests behind `FUNDPRICES_LIVE`, and both coverage gates enforced in CI
@@ -296,17 +296,25 @@ No row is invented for today, and a fund with no stored history simply has no ro
 that fell back are listed on the returned results' `.failures`, marked `!` in the daily
 summary, and turn the Actions run red once everything else has been written.
 
-### Historical Data Mode
+### History Export
 ```bash
-# Get historical data for a specific date range
+# One symbol's dated closes for a date range, both ends inclusive
 python scrape_fund_price.py --history AAPL --start 2024-01-01 --end 2024-12-31
 
-# Get historical data from start date to today
+# From a start date to the latest bar
 python scrape_fund_price.py --history MSFT --start 2024-11-01
 
 # View help for all options
 python scrape_fund_price.py --help
 ```
+
+The symbol need not be in `funds.txt`. The export runs on the same path as the daily run:
+each row is dated as Yahoo dates it, carries the currency and is formatted exactly as
+`prices_history.csv` would store it, so the file can be pasted into the history. It is
+written as `history_<SYMBOL>_<START>_<END>.csv` and nothing else is touched. The fetch is
+retried like any other, and a symbol that still fails, or that Yahoo returns no bars for, is
+reported in the printed table, writes no file and exits non-zero. The window is checked
+before any network call: `--start` is required and not in the future, `--end` not before it.
 
 ### Daily Summary
 
@@ -392,8 +400,9 @@ The application creates the following files in the `data/` directory:
 - `uk_bank_rate.csv`: The Bank of England Bank Rate at each month end, one row per month from 2015-01
 - `latest_<identifier>.price`: Individual price files for each fund
 
-### Historical Data Mode
-- `history_<SYMBOL>_<START>_<END>.csv`: Historical OHLCV data for the specified date range
+### History Export
+- `history_<SYMBOL>_<START>_<END>.csv`: the symbol's dated closes for the window, in the
+  `prices_history.csv` format; `<END>` is today's date when `--end` was not given
 
 ### CSV Formats
 
@@ -450,11 +459,11 @@ Month,Rate,Series,AsOf
 `Month` is `YYYY-MM`. `Rate` is the official Bank Rate in percent a year in force at the end of
 the month, as the Bank words it. `AsOf` is the date the row was first published or last changed.
 
-**Historical Mode (history_AAPL_2024-01-01_2024-12-31.csv)**:
+**History Export (history_AAPL_2024-01-01_2024-12-31.csv)**:
 ```csv
-Date,Open,High,Low,Close,Volume,Dividends,Stock Splits
-2024-01-02,185.58,186.86,182.35,184.08,82488700,0.0,0.0
-2024-01-03,182.67,184.32,181.89,182.70,58414500,0.0,0.0
+Fund,Date,Price,Currency
+AAPL,2024-01-02,185.64,USD
+AAPL,2024-01-03,184.25,USD
 ```
 
 ## Automation

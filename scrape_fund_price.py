@@ -1905,18 +1905,30 @@ def write_summary(price_rows, fx_rows, run_date, data_dir=None, dividend_rows=No
             file.write(markdown)
 
 
-def validate_start_date(value):
-    """Return an error message for an unusable --from date, else None."""
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
-        return "Invalid --from date format. Use YYYY-MM-DD"
+def validate_iso_date(value, flag):
+    """Return an error message when `value` is not a YYYY-MM-DD date, else None."""
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        try:
+            datetime.date.fromisoformat(value)
+            return None
+        except ValueError:
+            pass
 
-    try:
-        start = datetime.date.fromisoformat(value)
-    except ValueError:
-        return "Invalid --from date format. Use YYYY-MM-DD"
+    return f"Invalid {flag} date format. Use YYYY-MM-DD"
 
-    if start > datetime.date.today():
-        return "--from date is in the future"
+
+def validate_start_date(value, flag="--from"):
+    """Return an error message for an unusable start date, else None.
+
+    `flag` names the option in the message: the rebuilds take --from, the
+    history export --start (the two are one argument).
+    """
+    error = validate_iso_date(value, flag)
+    if error:
+        return error
+
+    if datetime.date.fromisoformat(value) > datetime.date.today():
+        return f"{flag} date is in the future"
 
     return None
 
@@ -4691,6 +4703,38 @@ def validate_dividend_backfill_args(args):
     return validate_start_date(args.start) if args.start else None
 
 
+def validate_history_args(args):
+    """Return an error message for an invalid --history export, else None.
+
+    Checked before any network call, like the rebuilds: the window must be
+    two well-formed dates, start not in the future and end not before start.
+    """
+    if not args.history:
+        return None
+
+    if args.backfill or args.import_closed or args.backfill_dividends:
+        return (
+            "--history cannot be combined with --backfill, --import-closed "
+            "or --backfill-dividends"
+        )
+
+    if not args.start:
+        return "--start is required when using --history"
+
+    error = validate_start_date(args.start, "--start")
+    if error:
+        return error
+
+    if args.end:
+        error = validate_iso_date(args.end, "--end")
+        if error:
+            return error
+        if args.end < args.start:
+            return "--end date is before --start"
+
+    return None
+
+
 def parse_arguments(args=None):
     """Parse command-line arguments.
 
@@ -4755,54 +4799,93 @@ def parse_arguments(args=None):
     return parser.parse_args(args)
 
 
-def fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR):
-    """Fetch historical price data for a symbol.
+class HistoryReport:
+    """What a --history export wrote: one symbol, one window, one file."""
+
+    def __init__(self, symbol, path):
+        self.symbol = symbol
+        self.path = path
+        self.rows = []
+        self.failures = []
+
+    def to_markdown(self):
+        """Render the report for stdout and the Actions job summary."""
+        lines = [
+            "| Symbol | Rows | First | Last | Ccy | File |",
+            "|---|---:|---|---|---|---|",
+        ]
+        if self.rows:
+            lines.append(
+                f"| {self.symbol} | {len(self.rows)} | {self.rows[0][1]} "
+                f"| {self.rows[-1][1]} | {self.rows[0][3] or '-'} | {self.path} |"
+            )
+        else:
+            lines.append(f"| {self.symbol} | 0 | - | - | - | - |")
+
+        if self.failures:
+            lines += ["", "**Failures**", ""]
+            lines += [f"- {failure}" for failure in self.failures]
+
+        return "\n".join(lines)
+
+
+def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None):
+    """Export one symbol's dated closes from Yahoo as a CSV of its own.
+
+    The --history mode, on the daily run's own path: the bars come from
+    fetch_yahoo_quotes through fetch_with_retries, so each row is dated as
+    Yahoo dates it, carries the currency and is formatted without float
+    noise, exactly as prices_history.csv would store it. Nothing else is
+    touched: not prices_history.csv, not latest_prices.csv, no .price file.
 
     Args:
-        symbol: Stock/fund symbol
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format (can be None)
-        data_dir: Directory to save the CSV file
+        symbol: Yahoo ticker (e.g. "AAPL", "IDTG.L")
+        start_date: Inclusive ISO start date
+        end_date: Inclusive ISO end date, or None for up to the latest bar
+        data_dir: Output directory (default: DATA_DIR)
 
     Returns:
-        Filename of saved CSV or error message starting with "Error:"
+        HistoryReport. `path` is history_<symbol>_<start>_<end>.csv under
+        `data_dir` (today's date standing in for a missing end) and `rows`
+        the [symbol, date, price, currency] rows written. A symbol that
+        fails after the retries, or returns no bars at all (Yahoo answers an
+        unknown ticker with an empty frame), is on `failures` and no file is
+        written.
     """
-    # Validate date format
-    date_pattern = r"^\d{4}-\d{2}-\d{2}$"
-    if not re.match(date_pattern, start_date):
-        return "Error: Invalid start date format. Use YYYY-MM-DD"
+    if data_dir is None:
+        data_dir = DATA_DIR
 
-    if end_date and not re.match(date_pattern, end_date):
-        return "Error: Invalid end date format. Use YYYY-MM-DD"
+    end_text = end_date or datetime.date.today().isoformat()
+    path = os.path.join(data_dir, f"history_{symbol}_{start_date}_{end_text}.csv")
+    report = HistoryReport(symbol, path)
 
-    # Validate start date is before end date
-    if end_date and start_date > end_date:
-        return "Error: Start date must be before end date"
+    # Yahoo treats the end date as exclusive; asking for the day after makes
+    # the window inclusive at both ends, as closed_holdings.txt windows are.
+    fetch_end = None
+    if end_date:
+        fetch_end = (
+            datetime.date.fromisoformat(end_date) + datetime.timedelta(days=1)
+        ).isoformat()
 
-    try:
-        # Fetch historical data using yfinance
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(start=start_date, end=end_date)
+    quotes, error = fetch_with_retries(
+        lambda: fetch_yahoo_quotes(symbol, start_date, fetch_end)
+    )
+    if error is None and not quotes:
+        error = f"no prices between {start_date} and {end_text}"
+    if error:
+        report.failures.append(f"{symbol}: {error}")
+        return report
 
-        # Check if data was returned
-        if hist.empty:
-            return f"Error: No data found for symbol {symbol}"
+    report.rows = [
+        [symbol, quote.date, quote.price, quote.currency] for quote in quotes
+    ]
+    os.makedirs(data_dir, exist_ok=True)
+    with open_for_write(path) as file:
+        writer = csv_writer(file)
+        writer.writerow(HISTORY_HEADER)
+        writer.writerows(report.rows)
 
-        # Create filename
-        end_str = end_date if end_date else datetime.date.today().isoformat()
-        filename = f"history_{symbol}_{start_date}_{end_str}.csv"
-        filepath = os.path.join(data_dir, filename)
-
-        # Ensure data directory exists
-        os.makedirs(data_dir, exist_ok=True)
-
-        # Save to CSV
-        hist.to_csv(filepath, lineterminator=LINE_ENDING)
-
-        return filepath
-
-    except Exception as e:
-        return f"Error: {str(e)}"
+    return report
 
 
 def main(argv=None):
@@ -4869,97 +4952,104 @@ def main(argv=None):
             raise SystemExit(1)
         return
 
-    # Check if historical data mode
     if args.history:
-        if not args.start:
-            print("Error: --start date is required when using --history")
-            return
+        error = validate_history_args(args)
+        if error:
+            print(f"Error: {error}")
+            raise SystemExit(2)
 
-        result = fetch_historical_data(args.history, args.start, args.end)
+        report = fetch_historical_data(args.history, args.start, args.end)
+        summary = report.to_markdown()
+        print(summary)
 
-        if result.startswith("Error:"):
-            print(result)
-        else:
-            print(f"Historical data saved to: {result}")
-    else:
-        # Normal scraping mode
-        failures = []
+        step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if step_summary:
+            with open(step_summary, "a", encoding="utf-8") as f:
+                f.write(
+                    f"## History of {args.history} from {args.start} "
+                    f"to {args.end or 'today'}\n\n{summary}\n"
+                )
 
-        funds = read_fund_specs(FUNDS_FILE)
-        # Validated with funds.txt, before any network call.
-        distributions = read_distributions(
-            DISTRIBUTIONS_FILE, configured_identifiers(funds)
-        )
-        sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, funds)
-
-        # Each step below is isolated: a crash in one is recorded as a
-        # failure and the rest still write their files, so the run exits
-        # non-zero only after everything obtainable has been written.
-        results = ScrapeResults()
-        try:
-            results = scrape_funds(funds)
-            write_results(results)
-        except Exception as error:
-            results.failures.append(f"prices: {error}")
-        failures.extend(results.failures)
-
-        # FX is snapped after prices and written independently, so a problem
-        # with one never costs the other a day of data.
-        pairs = read_fx_pairs()
-        fx_failures = []
-        if pairs:
-            fx_results = ScrapeResults()
-            try:
-                fx_results = snap_fx_rates(pairs)
-                write_fx_results(fx_results)
-            except Exception as error:
-                fx_results.failures.append(f"fx: {error}")
-            fx_failures = list(fx_results.failures)
-            failures.extend(fx_failures)
-
-        # Dividends are fetched and written independently too: a crash here
-        # must not cost the day's price summary.
-        try:
-            dividends = update_dividends(funds, distributions, sources=sources)
-        except Exception as error:
-            dividends = DividendResults(failures=[f"dividends: {error}"])
-        failures.extend(dividends.failures)
-
-        # The CPI index is its own file from its own source, so it is fetched
-        # and written independently as well.
-        try:
-            failures.extend(update_uk_cpi().failures)
-        except Exception as error:
-            failures.append(f"uk_cpi: {error}")
-
-        # The Bank Rate is another file from another source, fetched and
-        # written independently of the CPI.
-        try:
-            failures.extend(update_uk_bank_rate().failures)
-        except Exception as error:
-            failures.append(f"uk_bank_rate: {error}")
-
-        # Built from what was just written, so it reflects a partial run too;
-        # a day with failures is exactly when the summary is most useful.
-        run_date = datetime.date.today().isoformat()
-        history = list(
-            read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
-        )
-        price_summary = build_price_summary(history, funds, results.failures, run_date)
-        fx_summary = build_fx_summary(
-            list(read_fx_rows(os.path.join(DATA_DIR, "fx_history.csv")).values()),
-            pairs,
-            fx_failures,
-            run_date,
-        )
-        write_summary(
-            price_summary, fx_summary, run_date, dividend_rows=dividends.summary
-        )
-
-        if failures:
-            for failure in failures:
-                print(f"Error: {failure}")
+        if report.failures:
             raise SystemExit(1)
+        return
+
+    # Normal scraping mode
+    failures = []
+
+    funds = read_fund_specs(FUNDS_FILE)
+    # Validated with funds.txt, before any network call.
+    distributions = read_distributions(
+        DISTRIBUTIONS_FILE, configured_identifiers(funds)
+    )
+    sources = read_dividend_sources(DIVIDEND_SOURCES_FILE, funds)
+
+    # Each step below is isolated: a crash in one is recorded as a
+    # failure and the rest still write their files, so the run exits
+    # non-zero only after everything obtainable has been written.
+    results = ScrapeResults()
+    try:
+        results = scrape_funds(funds)
+        write_results(results)
+    except Exception as error:
+        results.failures.append(f"prices: {error}")
+    failures.extend(results.failures)
+
+    # FX is snapped after prices and written independently, so a problem
+    # with one never costs the other a day of data.
+    pairs = read_fx_pairs()
+    fx_failures = []
+    if pairs:
+        fx_results = ScrapeResults()
+        try:
+            fx_results = snap_fx_rates(pairs)
+            write_fx_results(fx_results)
+        except Exception as error:
+            fx_results.failures.append(f"fx: {error}")
+        fx_failures = list(fx_results.failures)
+        failures.extend(fx_failures)
+
+    # Dividends are fetched and written independently too: a crash here
+    # must not cost the day's price summary.
+    try:
+        dividends = update_dividends(funds, distributions, sources=sources)
+    except Exception as error:
+        dividends = DividendResults(failures=[f"dividends: {error}"])
+    failures.extend(dividends.failures)
+
+    # The CPI index is its own file from its own source, so it is fetched
+    # and written independently as well.
+    try:
+        failures.extend(update_uk_cpi().failures)
+    except Exception as error:
+        failures.append(f"uk_cpi: {error}")
+
+    # The Bank Rate is another file from another source, fetched and
+    # written independently of the CPI.
+    try:
+        failures.extend(update_uk_bank_rate().failures)
+    except Exception as error:
+        failures.append(f"uk_bank_rate: {error}")
+
+    # Built from what was just written, so it reflects a partial run too;
+    # a day with failures is exactly when the summary is most useful.
+    run_date = datetime.date.today().isoformat()
+    history = list(
+        read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
+    )
+    price_summary = build_price_summary(history, funds, results.failures, run_date)
+    fx_summary = build_fx_summary(
+        list(read_fx_rows(os.path.join(DATA_DIR, "fx_history.csv")).values()),
+        pairs,
+        fx_failures,
+        run_date,
+    )
+    write_summary(price_summary, fx_summary, run_date, dividend_rows=dividends.summary)
+
+    if failures:
+        for failure in failures:
+            print(f"Error: {failure}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
