@@ -106,7 +106,7 @@ def tearDownModule():
 # DataDirCase gives a test its own scratch directory and file helpers, and
 # stubs the pacing sleeps. fake_ticker and history_metadata stand in for
 # yf.Ticker, daily_run_stubs for the daily run's collaborators in main() tests.
-# BackfillCase, DividendRunCase (with its row builders) and IssuerRunCase are
+# DividendRunCase (with its row builders) and IssuerRunCase are
 # the feature-level bases that build on DataDirCase.
 # ---------------------------------------------------------------------------
 
@@ -302,21 +302,6 @@ def daily_run_stubs(test_dir=None, specs=(), pairs=(), **outcomes):
             stubs[name] = enter(patch(f"scrape_fund_price.{name}", **kwargs))
         stubs["print"] = enter(patch("builtins.print"))
         yield stubs
-
-
-class BackfillCase(DataDirCase):
-    """A DataDirCase for the price rebuild, with the FX rebuild kept out.
-
-    backfill_history ends by rebuilding whatever fx_pairs.txt in the working
-    directory lists, and the repository's lists four pairs: left alone, every
-    test below would fetch years of Yahoo FX bars for them.
-    """
-
-    def setUp(self):
-        super().setUp()
-        no_pairs = patch("scrape_fund_price.read_fx_pairs", return_value=[])
-        no_pairs.start()
-        self.addCleanup(no_pairs.stop)
 
 
 # The dividend files' row types, as the tests spell them.
@@ -2772,9 +2757,8 @@ class TestLatestNeverGoesBackwards(DataDirCase):
     # The 2026-10-10 run, the Saturday after the Friday session.
     NOW = utc(2026, 10, 10, 9)
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.yf.Ticker")
-    def test_price_file_keeps_the_newer_price(self, mock_ticker, mock_pw):
+    def test_price_file_keeps_the_newer_price(self, mock_ticker):
         """Test latest_<id>.price is not rewritten from an older bar."""
         write_results(list(self.FRIDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "133800", self.test_dir)
@@ -2784,9 +2768,8 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.yf.Ticker")
-    def test_price_file_advances_on_a_newer_bar(self, mock_ticker, mock_pw):
+    def test_price_file_advances_on_a_newer_bar(self, mock_ticker):
         """Test the price file still follows a newer bar."""
         write_results(list(self.THURSDAY), self.test_dir)
         write_latest_price_file("CNX1.L", "134720", self.test_dir)
@@ -2795,9 +2778,8 @@ class TestLatestNeverGoesBackwards(DataDirCase):
         write_results(results, self.test_dir)
         self.assertEqual(self._price_file("CNX1.L"), "133800")
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.yf.Ticker")
-    def test_whole_daily_run_with_stale_bars(self, mock_ticker, mock_pw):
+    def test_whole_daily_run_with_stale_bars(self, mock_ticker):
         """Test the exact 2026-10-10 sequence end to end."""
         write_results(list(self.FRIDAY), self.test_dir)
         for row in self.FRIDAY:
@@ -3083,7 +3065,7 @@ class TestBackfillArguments(unittest.TestCase):
         self.assertIsNone(validate_backfill_args(args))
 
 
-class TestBackfillRebuild(BackfillCase):
+class TestBackfillRebuild(DataDirCase):
     """Test the delete-then-insert rebuild rule."""
 
     HEADER = ["Fund", "Date", "Price", "Currency"]
@@ -3333,7 +3315,7 @@ class TestBackfillRebuild(BackfillCase):
         )
 
 
-class TestBackfillReporting(BackfillCase):
+class TestBackfillReporting(DataDirCase):
     """Test the reconciliation report and sanity warnings."""
 
     @patch("scrape_fund_price.scrape_fund_quotes")
@@ -3437,7 +3419,7 @@ class TestBackfillReportRendering(unittest.TestCase):
         self.assertIsNone(check_quoting_unit("AAA", quotes))
 
 
-class TestBackfillPacing(BackfillCase):
+class TestBackfillPacing(DataDirCase):
     """Test the rebuild is polite to the unofficial FT endpoint."""
 
     @patch("scrape_fund_price.scrape_fund_quotes")
@@ -3470,7 +3452,7 @@ class TestBackfillPacing(BackfillCase):
         self.assertEqual(self.sleeps, [])
 
 
-class TestBackfillProtectsSourceDerivedRows(BackfillCase):
+class TestBackfillProtectsSourceDerivedRows(DataDirCase):
     """Test a flaky source cannot silently delete real trading days.
 
     FT's historical endpoint intermittently omits a row or two from the same

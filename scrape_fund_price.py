@@ -41,6 +41,16 @@ UNTRADED_SPIKE_RATIO = 1.2
 LINE_ENDING = "\n"
 
 
+def utc_now(now=None):
+    """Return `now`, or the current time in UTC when it is None.
+
+    The one place the module reads the clock: every step takes a `now=None`
+    parameter and resolves it here, so a caller (main(), a test) can fix the
+    instant a whole run is judged by.
+    """
+    return now or datetime.datetime.now(datetime.timezone.utc)
+
+
 # ===========================================================================
 # Storage helpers
 # ===========================================================================
@@ -855,7 +865,7 @@ def session_still_open(ticker, bar_date, now=None):
     day's close. Unusable metadata gives False: the bar is kept, as it always
     was, rather than losing a price that is probably final.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     try:
         meta = ticker.get_history_metadata()
         session_end = meta["currentTradingPeriod"]["regular"]["end"]
@@ -910,7 +920,7 @@ FT_SETTLED_HOUR = 16
 
 def ft_row_settled(price_date, now=None):
     """Return True once 16:00 New York on `price_date` has passed (#84)."""
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     cut = datetime.datetime.combine(
         price_date, datetime.time(FT_SETTLED_HOUR), tzinfo=FT_SETTLED_ZONE
     )
@@ -944,7 +954,7 @@ def fetch_ft_quotes(isin, start, end=None, now=None):
         ValueError: the internal id could not be found, or no rows were
             returned. Callers fall back to scraping the summary page.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     end = end or now.date().isoformat()
 
     page = http_get(FT_HISTORICAL_PAGE.format(isin=isin))
@@ -1072,7 +1082,7 @@ def fetch_investing_quotes(pair_id, start, end=None, now=None):
     Raises:
         ValueError: no usable rows were returned for the window.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     end = end or now.date().isoformat()
 
     response = http_get(
@@ -1159,7 +1169,7 @@ def scrape_fund_quotes(source, fund_id, start, end=None, browser=None, now=None)
     so the day after `end` is what Yahoo is asked for: a caller never
     compensates for the source.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     code = source.upper()
 
     if code == "YA":
@@ -1211,7 +1221,7 @@ def scrape_funds(funds, data_dir=None, now=None):
     """
     if data_dir is None:
         data_dir = DATA_DIR
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
 
     results = ScrapeResults()
     start = (now.date() - datetime.timedelta(days=SNAP_WINDOW_DAYS)).isoformat()
@@ -1405,7 +1415,7 @@ def write_history_files(rows, data_dir, latest=None, now=None):
         writer.writerow(HISTORY_HEADER)
         writer.writerows(latest[fund] for fund in sorted(latest))
 
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     reference_date = max((row[1] for row in latest.values()), default="")
     # A carried row is a stored row, and a stored date that does not parse
     # is tolerated per row below; tolerate it here too rather than lose the
@@ -1576,7 +1586,7 @@ def new_york_fx_closes(bars, now=None):
     Returns:
         list of (ISO date, close), oldest first
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     hour = datetime.timedelta(hours=1)
     best = {}
     for start, close in bars:
@@ -1617,7 +1627,7 @@ def fetch_fx_quotes(pair, start, end=None, now=None):
         list[Quote], oldest first, whose `currency` carries the pair name
     """
     symbol = f"{pair}=X"
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     today = now.date()
     hourly_from = (today - datetime.timedelta(days=FX_HOURLY_HISTORY_DAYS)).isoformat()
     quotes = []
@@ -1651,7 +1661,7 @@ def snap_fx_rates(pairs, data_dir=None, now=None):
     """
     if data_dir is None:
         data_dir = DATA_DIR
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
 
     os.makedirs(data_dir, exist_ok=True)
     results = ScrapeResults()
@@ -3716,7 +3726,7 @@ def build_dividend_upcoming(run, distributions, history, stored, declared):
 
 def stored_currencies(data_dir):
     """Return identifier -> the currency of its newest stored price."""
-    return {fund: row[3] for fund, row in newest_stored_rows(data_dir).items()}
+    return {fund: row.currency for fund, row in newest_stored_rows(data_dir).items()}
 
 
 def first_currency(identifiers, currencies):
@@ -4773,7 +4783,7 @@ def validate_start_date(value, flag="--from", now=None):
     if error:
         return error
 
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
     if datetime.date.fromisoformat(value) > now.date():
         return f"{flag} date is in the future"
 
@@ -4966,7 +4976,7 @@ def fetch_historical_data(symbol, start_date, end_date=None, data_dir=None, now=
     """
     if data_dir is None:
         data_dir = DATA_DIR
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
 
     end_text = end_date or now.date().isoformat()
     path = os.path.join(data_dir, f"history_{symbol}_{start_date}_{end_text}.csv")
@@ -5028,7 +5038,7 @@ def main(argv=None, now=None):
     so a run judges sessions, windows and its own date by one instant.
     """
     args = parse_arguments(argv)
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = utc_now(now)
 
     error = validate_one_mode(args)
     if error:
