@@ -3086,6 +3086,37 @@ class TestBackfillRebuild(BackfillCase):
             ["USDGBP"], "2026-09-01", self.test_dir, report=report
         )
 
+    @patch("scrape_fund_price.backfill_fx")
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_pairs_from_the_caller_are_rebuilt_without_reading_the_file(
+        self, _, mock_fx
+    ):
+        """Test backfill_history(pairs=...) rebuilds the caller's pairs.
+
+        None keeps today's behaviour, reading fx_pairs.txt, until main()
+        passes read_fx_pairs() itself (#97, step 3.Z); a list is used as
+        given, so a test needs no stub to keep the live pairs out.
+        """
+        with patch(
+            "scrape_fund_price.read_fx_pairs",
+            side_effect=AssertionError("fx_pairs.txt was read"),
+        ):
+            report = backfill_history([], "2026-09-01", self.test_dir, pairs=["USDGBP"])
+        mock_fx.assert_called_once_with(
+            ["USDGBP"], "2026-09-01", self.test_dir, report=report
+        )
+
+    @patch("scrape_fund_price.backfill_fx")
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_an_empty_pairs_list_skips_the_fx_rebuild(self, _, mock_fx):
+        """Test an explicit empty list means no FX rebuild, not the file."""
+        with patch(
+            "scrape_fund_price.read_fx_pairs",
+            side_effect=AssertionError("fx_pairs.txt was read"),
+        ):
+            backfill_history([], "2026-09-01", self.test_dir, pairs=[])
+        mock_fx.assert_not_called()
+
 
 class TestBackfillReporting(BackfillCase):
     """Test the reconciliation report and sanity warnings."""
