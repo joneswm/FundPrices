@@ -3464,6 +3464,85 @@ class TestRebuildLeavesClosedHoldingsAlone(DataDirCase):
         self.assertFalse(os.path.exists(self.path("latest_BN4MYX3.price")))
 
 
+class TestRebuildSteps(DataDirCase):
+    """Test the two rebuilds compute apart from writing (#120).
+
+    rebuild_price_rows and rebuild_fx_rows take the stored rows and return
+    the rows to store with the report; backfill_history and backfill_fx only
+    read, call them and write.
+    """
+
+    STORED = {
+        ("QQQ", "2026-09-19"): ["QQQ", "2026-09-19", "721.45", ""],
+        ("OLD", "2022-01-04"): ["OLD", "2022-01-04", "1.00", "GBP"],
+    }
+
+    @patch("scrape_fund_price.scrape_fund_quotes")
+    def test_the_price_rebuild_returns_its_rows_and_writes_nothing(self, mock_quotes):
+        """Test the rebuilt rows and the report come back; no file is touched."""
+        mock_quotes.return_value = [Quote("2026-09-18", "721.45", "USD")]
+        stored = dict(self.STORED)
+        rows, report = scrape_fund_price.rebuild_price_rows(
+            [FundSpec("YA", "QQQ")], "2026-09-01", stored, now=RUN_NOW
+        )
+        self.assertEqual(
+            sorted(map(list, rows)),
+            [
+                ["OLD", "2022-01-04", "1.00", "GBP"],
+                ["QQQ", "2026-09-18", "721.45", "USD"],
+            ],
+        )
+        self.assertEqual(
+            [(e.identifier, e.deleted, e.inserted) for e in report.entries],
+            [("QQQ", 1, 1)],
+        )
+        self.assertEqual(stored, self.STORED)
+        self.assertEqual(os.listdir(self.test_dir), [])
+
+    @patch("scrape_fund_price.fetch_fx_quotes")
+    def test_the_fx_rebuild_returns_its_rows_and_writes_nothing(self, mock_quotes):
+        """Test the same for the rates: a failed pair keeps its rows."""
+
+        def quotes(pair, start, now):
+            if pair == "HKDGBP":
+                raise Exception("Network error")
+            return [Quote("2026-09-18", "0.746700", pair)]
+
+        mock_quotes.side_effect = quotes
+        stored = {
+            ("USDGBP", "2026-09-19"): ["USDGBP", "2026-09-19", "0.999999"],
+            ("HKDGBP", "2026-09-18"): ["HKDGBP", "2026-09-18", "0.095100"],
+        }
+        before = dict(stored)
+        rows, report = scrape_fund_price.rebuild_fx_rows(
+            ["USDGBP", "HKDGBP"], "2026-09-01", stored, now=RUN_NOW
+        )
+        self.assertEqual(
+            sorted(map(list, rows)),
+            [
+                ["HKDGBP", "2026-09-18", "0.095100"],
+                ["USDGBP", "2026-09-18", "0.746700"],
+            ],
+        )
+        self.assertEqual(report.failures, ["HKDGBP: Network error"])
+        self.assertEqual(stored, before)
+        self.assertEqual(os.listdir(self.test_dir), [])
+
+    @patch("scrape_fund_price.scrape_fund_quotes", return_value=[])
+    def test_the_price_rebuild_leaves_the_rates_alone(self, _quotes):
+        """Test backfill_history rebuilds prices only: main() runs the FX step."""
+        with ExitStack() as stack:
+            for name in ("read_fx_pairs", "backfill_fx", "rebuild_fx_rows"):
+                stack.enter_context(
+                    patch(
+                        f"scrape_fund_price.{name}",
+                        side_effect=AssertionError(f"{name} was called"),
+                    )
+                )
+            backfill_history([], "2026-09-01", self.test_dir, now=RUN_NOW)
+        self.assertFalse(os.path.exists(self.path("fx_history.csv")))
+
+
 class TestBackfillMainMode(DataDirCase):
     """Test the --backfill entry point."""
 
@@ -3495,6 +3574,45 @@ class TestBackfillMainMode(DataDirCase):
 
         self.assertEqual(error.exception.code, 2)
         self.assertEqual(mock_print.call_args.args[0][:7], "Error: ")
+
+    def test_the_fx_rebuild_runs_beside_the_price_rebuild(self):
+        """Test main() rebuilds the rates after the prices, into one report.
+
+        A pair that failed fails the run like an instrument, after the whole
+        report is out.
+        """
+        rates = BackfillReport()
+        rates.entries.append(
+            scrape_fund_price.BackfillEntry.failed("USDGBP", [("USDGBP", "2023-01-03")])
+        )
+        rates.failures.append("USDGBP: Error: Timeout")
+        outcomes = {"backfill_history": self.report_with_qqq(), "backfill_fx": rates}
+        specs = [FundSpec("YA", "QQQ")]
+        with daily_run_stubs(specs=specs, pairs=["USDGBP"], **outcomes) as stubs:
+            with self.assertRaises(SystemExit) as error:
+                main(["--backfill", "--from", "2023-01-01"], now=RUN_NOW)
+        self.assertEqual(error.exception.code, 1)
+        stubs["backfill_history"].assert_called_once_with(
+            specs, "2023-01-01", now=RUN_NOW
+        )
+        stubs["backfill_fx"].assert_called_once_with(
+            ["USDGBP"], "2023-01-01", now=RUN_NOW
+        )
+        printed = stubs["print"].call_args.args[0].splitlines()
+        self.assertIn(self.QQQ_ROW, printed)
+        self.assertIn(
+            "| USDGBP | 1 | 0 | 1 | 0 | 2023-01-03 | 2023-01-03 | - "
+            "| failed, kept existing |",
+            printed,
+        )
+        self.assertIn("- USDGBP: Error: Timeout", printed)
+
+    def test_no_pairs_means_no_fx_rebuild(self):
+        """Test an empty fx_pairs.txt skips the FX step."""
+        outcomes = {"backfill_history": BackfillReport(), "backfill_fx": {}}
+        with daily_run_stubs(specs=[FundSpec("YA", "QQQ")], **outcomes) as stubs:
+            main(["--backfill", "--from", "2023-01-01"], now=RUN_NOW)
+        stubs["backfill_fx"].assert_not_called()
 
     @patch("builtins.print")
     @patch("scrape_fund_price.read_fx_pairs", new=lambda filename=None: ["USDGBP"])
