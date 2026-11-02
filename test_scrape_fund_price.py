@@ -1068,6 +1068,53 @@ class TestConfiguredIdentifiers(DataDirCase):
         self.assertEqual(known, {"GB00B1FXTF86"})
 
 
+class TestUniverse(unittest.TestCase):
+    """Test the instrument map built once per run from funds.txt (#121)."""
+
+    SPECS = [
+        FundSpec("YA", "0P00000YAN", ("JFM0003373",)),
+        FundSpec("FT", "GB00B1FXTF86"),
+    ]
+
+    def test_maps_each_identifier_to_its_lookup_id_and_back(self):
+        """Test both directions and the set of every identifier."""
+        universe = scrape_fund_price.Universe.from_specs(self.SPECS)
+        self.assertEqual(universe.specs, tuple(self.SPECS))
+        self.assertEqual(
+            universe.lookup_of,
+            {
+                "0P00000YAN": "0P00000YAN",
+                "JFM0003373": "0P00000YAN",
+                "GB00B1FXTF86": "GB00B1FXTF86",
+            },
+        )
+        self.assertEqual(
+            universe.publish_ids_of,
+            {
+                "0P00000YAN": ("0P00000YAN", "JFM0003373"),
+                "GB00B1FXTF86": ("GB00B1FXTF86",),
+            },
+        )
+        self.assertEqual(
+            universe.all_identifiers,
+            frozenset({"0P00000YAN", "JFM0003373", "GB00B1FXTF86"}),
+        )
+
+    def test_the_source_is_canonical(self):
+        """Test a spec built in code with the deprecated GF reads as YA."""
+        universe = scrape_fund_price.Universe.from_specs([FundSpec("GF", "QQQ")])
+        self.assertEqual(universe.specs, (FundSpec("YA", "QQQ"),))
+
+    def test_published_names_every_identifier_of_the_instrument(self):
+        """Test an alias or the lookup id; anything else stands alone."""
+        universe = scrape_fund_price.Universe.from_specs(self.SPECS)
+        for identifier in ("0P00000YAN", "JFM0003373"):
+            self.assertEqual(
+                universe.published(identifier), ("0P00000YAN", "JFM0003373")
+            )
+        self.assertEqual(universe.published("BKCH"), ("BKCH",))
+
+
 # ===========================================================================
 # Yahoo prices
 # ===========================================================================
@@ -8042,6 +8089,61 @@ class TestPayDateSourcesInTheRun(IssuerRunCase):
         )
         self.assertEqual(history[("QQQ", "2026-09-21")][5], "IV")
         self.assertEqual(history[("QQQ", "2026-09-21")][2], "2026-10-08")
+
+
+class TestOneUniversePerRun(IssuerRunCase):
+    """Test the instrument map is built once per dividend run (#121).
+
+    Every step used to rebuild the lookup-to-publish map from the specs; now
+    the run builds a Universe once, so the specs are canonicalised once each.
+    """
+
+    SPECS = [
+        FundSpec("YA", "IGLS.L"),
+        FundSpec("FT", "IE00B0M63516", ("IDBZ",)),
+    ]
+    SOURCES = [
+        IssuerRunCase.IGLS,
+        scrape_fund_price.DividendSource("IDBZ", "IS", "123456"),
+    ]
+
+    def _count_builds(self, runner=None):
+        universe = scrape_fund_price.Universe
+        tables = {
+            "251804": issuer_table(IssuerRunCase.PAST, IssuerRunCase.NEXT),
+            "123456": issuer_table(("2026-03-02", "", "2026-03-20", "1.5")),
+        }
+        events = {"IGLS.L": [self.EVENT("2026-07-16", "2.4146", "GBP")]}
+        dists = self._dists("IDBZ,annual,03-02,18,1.5,2026-06-01")
+        with patch.object(
+            universe, "from_specs", wraps=universe.from_specs
+        ) as built, patch.object(
+            scrape_fund_price, "as_fund_spec", wraps=scrape_fund_price.as_fund_spec
+        ) as canonical:
+            self._issuer_run(
+                self.SPECS,
+                self.SOURCES,
+                tables,
+                events,
+                runner=runner,
+                distributions=dists,
+            )
+        built.assert_called_once_with(self.SPECS)
+        self.assertEqual(canonical.call_count, len(self.SPECS))
+
+    def test_the_daily_update_builds_the_map_once(self):
+        """Test update_dividends."""
+        self._count_builds()
+
+    def test_the_rebuild_builds_the_map_once(self):
+        """Test backfill_dividends."""
+
+        def runner(specs, dists, data_dir, today):
+            return scrape_fund_price.backfill_dividends(
+                specs, dists, None, data_dir, today, sources=self.SOURCES
+            )
+
+        self._count_builds(runner)
 
 
 class TestIssuerSourcesInMain(DataDirCase):
