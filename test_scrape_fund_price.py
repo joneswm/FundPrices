@@ -8022,56 +8022,44 @@ class TestIssuerDatesInTheRebuild(IssuerRunCase):
         )
 
 
-class TestIssuerSourcesInMain(unittest.TestCase):
+class TestIssuerSourcesInMain(DataDirCase):
     """Test main() reads and passes dividend_sources.txt (SPEC-011, #87)."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.sources_file = os.path.join(self.test_dir, "dividend_sources.txt")
-        self.distributions_file = os.path.join(self.test_dir, "distributions.txt")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
     def _write(self, text):
-        with open(self.sources_file, "w") as f:
-            f.write(text)
+        self.write_text("dividend_sources.txt", text)
 
     def _argv(self, backfill):
         return ["--backfill-dividends", "--from", "2024-01-01"] if backfill else []
 
     def _main(self, backfill=False):
+        """Run main() on the test directory's files, the run's steps stubbed.
+
+        distributions.txt is pointed at a file that does not exist, so the
+        committed schedules are not validated against the one stubbed fund.
+        """
         with ExitStack() as stack:
             enter = stack.enter_context
-            enter(patch("scrape_fund_price.DIVIDEND_SOURCES_FILE", self.sources_file))
-            enter(
-                patch("scrape_fund_price.DISTRIBUTIONS_FILE", self.distributions_file)
-            )
             enter(
                 patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "IGLS.L")],
+                    "scrape_fund_price.DIVIDEND_SOURCES_FILE",
+                    self.path("dividend_sources.txt"),
                 )
             )
-            self.scrape = enter(
-                patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults())
-            )
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            enter(patch("scrape_fund_price.write_summary"))
-            enter(patch("builtins.print"))
-            self.update = enter(
+            enter(
                 patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
+                    "scrape_fund_price.DISTRIBUTIONS_FILE",
+                    self.path("distributions.txt"),
                 )
             )
-            self.rebuild = enter(
-                patch(
-                    "scrape_fund_price.backfill_dividends",
-                    return_value=BackfillReport(),
+            stubs = enter(
+                daily_run_stubs(
+                    specs=[FundSpec("YA", "IGLS.L")],
+                    backfill_dividends=BackfillReport(),
                 )
             )
+            self.scrape = stubs["scrape_funds"]
+            self.update = stubs["update_dividends"]
+            self.rebuild = stubs["backfill_dividends"]
             main(self._argv(backfill))
 
     def test_the_daily_run_passes_the_validated_sources(self):
@@ -9280,28 +9268,15 @@ class TestUkCpiInMain(unittest.TestCase):
     """Test the daily run publishes the index beside the prices (#91)."""
 
     def _main(self, outcome):
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
-            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            self.write = enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            enter(patch("builtins.print"))
-            self.update = enter(patch("scrape_fund_price.update_uk_cpi", **outcome))
+        """Run the daily mode with update_uk_cpi patched as `outcome` says."""
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            read_distributions=[],
+            update_uk_cpi=outcome,
+        ) as stubs:
+            self.write = stubs["write_results"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_uk_cpi"]
             main([])
 
     def test_the_daily_run_updates_the_index_once(self):
@@ -9325,18 +9300,11 @@ class TestUkCpiInMain(unittest.TestCase):
 
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the ONS."""
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
-            enter(
-                patch(
-                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
-                )
-            )
-            enter(patch("builtins.print"))
-            update = enter(patch("scrape_fund_price.update_uk_cpi"))
+        with daily_run_stubs(
+            backfill_history=BackfillReport(), update_uk_cpi={}
+        ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
-        update.assert_not_called()
+        stubs["update_uk_cpi"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -9725,30 +9693,15 @@ class TestUkBankRateInMain(unittest.TestCase):
     """Test the daily run publishes the rate beside the prices (#93)."""
 
     def _main(self, outcome):
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.read_distributions", return_value=[]))
-            enter(patch("scrape_fund_price.read_dividend_sources", return_value=[]))
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            self.write = enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=[]))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            enter(patch("builtins.print"))
-            self.update = enter(
-                patch("scrape_fund_price.update_uk_bank_rate", **outcome)
-            )
+        """Run the daily mode with update_uk_bank_rate patched as `outcome` says."""
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")],
+            read_distributions=[],
+            update_uk_bank_rate=outcome,
+        ) as stubs:
+            self.write = stubs["write_results"]
+            self.summary = stubs["write_summary"]
+            self.update = stubs["update_uk_bank_rate"]
             main([])
 
     def test_the_daily_run_updates_the_rate_once(self):
@@ -9772,18 +9725,11 @@ class TestUkBankRateInMain(unittest.TestCase):
 
     def test_the_other_modes_do_not_fetch_it(self):
         """Test --backfill and the rest never touch the Bank's page."""
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.read_fund_specs", return_value=[]))
-            enter(
-                patch(
-                    "scrape_fund_price.backfill_history", return_value=BackfillReport()
-                )
-            )
-            enter(patch("builtins.print"))
-            update = enter(patch("scrape_fund_price.update_uk_bank_rate"))
+        with daily_run_stubs(
+            backfill_history=BackfillReport(), update_uk_bank_rate={}
+        ) as stubs:
             main(["--backfill", "--from", "2024-01-01"])
-        update.assert_not_called()
+        stubs["update_uk_bank_rate"].assert_not_called()
 
 
 if __name__ == "__main__":
