@@ -4800,13 +4800,30 @@ def validate_start_date(value, flag="--from", now=None):
     return None
 
 
+MODE_FLAGS = (
+    ("--backfill", "backfill"),
+    ("--import-closed", "import_closed"),
+    ("--backfill-dividends", "backfill_dividends"),
+    ("--history", "history"),
+)
+
+
+def validate_one_mode(args):
+    """Return an error message when more than one mode is asked for, else None.
+
+    Checked first, before any mode's own arguments, so no combination runs
+    whichever mode main() happens to dispatch first.
+    """
+    chosen = [flag for flag, name in MODE_FLAGS if getattr(args, name)]
+    if len(chosen) > 1:
+        return f"{' and '.join(chosen)} cannot be combined: one mode at a time"
+    return None
+
+
 def validate_backfill_args(args, now=None):
     """Return an error message for an invalid backfill invocation, else None."""
     if not args.backfill:
         return None
-
-    if args.history:
-        return "--backfill cannot be combined with --history"
 
     if not args.start:
         return "--from is required when using --backfill"
@@ -4816,14 +4833,8 @@ def validate_backfill_args(args, now=None):
 
 def validate_dividend_backfill_args(args, now=None):
     """Return an error message for an invalid dividend rebuild, else None."""
-    if not getattr(args, "backfill_dividends", False):
+    if not args.backfill_dividends:
         return None
-
-    if args.backfill or args.history or args.import_closed:
-        return (
-            "--backfill-dividends cannot be combined with --backfill, "
-            "--history or --import-closed"
-        )
 
     return validate_start_date(args.start, now=now) if args.start else None
 
@@ -4836,12 +4847,6 @@ def validate_history_args(args, now=None):
     """
     if not args.history:
         return None
-
-    if args.backfill or args.import_closed or args.backfill_dividends:
-        return (
-            "--history cannot be combined with --backfill, --import-closed "
-            "or --backfill-dividends"
-        )
 
     if not args.start:
         return "--start is required when using --history"
@@ -5044,6 +5049,11 @@ def main(argv=None, now=None):
     """
     args = parse_arguments(argv)
     now = now or datetime.datetime.now(datetime.timezone.utc)
+
+    error = validate_one_mode(args)
+    if error:
+        print(f"Error: {error}")
+        raise SystemExit(2)
 
     if args.backfill:
         error = validate_backfill_args(args, now=now)

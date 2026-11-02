@@ -3094,7 +3094,8 @@ class TestBackfillArguments(unittest.TestCase):
         args = parse_arguments(
             ["--backfill", "--from", "2023-01-01", "--history", "AAPL"]
         )
-        self.assertIn("--history", validate_backfill_args(args))
+        self.assertIn("cannot be combined", scrape_fund_price.validate_one_mode(args))
+        self.assertIsNone(validate_backfill_args(args))
 
     def test_validate_accepts_a_good_start(self):
         """Test a valid invocation produces no error."""
@@ -6751,7 +6752,7 @@ class TestDividendBackfillArguments(unittest.TestCase):
 
     def test_other_modes_cannot_be_combined(self):
         """Test one mode at a time."""
-        validate = scrape_fund_price.validate_dividend_backfill_args
+        validate = scrape_fund_price.validate_one_mode
         for combined in (
             {"backfill": True},
             {"history": "AAPL"},
@@ -9999,9 +10000,10 @@ class TestHistoryArguments(unittest.TestCase):
         """Test one mode at a time."""
         for flags in (["--backfill"], ["--import-closed"], ["--backfill-dividends"]):
             with self.subTest(flags=flags):
-                error = self._validate(
-                    "--history", "AAPL", "--start", "2024-01-01", *flags
+                args = parse_arguments(
+                    ["--history", "AAPL", "--start", "2024-01-01", *flags]
                 )
+                error = scrape_fund_price.validate_one_mode(args)
                 self.assertIn("cannot be combined", error)
 
     def test_a_good_invocation_has_no_error(self):

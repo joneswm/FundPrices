@@ -303,9 +303,15 @@ Actions job summary, like `BackfillReport`.
 ### `validate_history_args(args, now=None)`
 
 Returns an error message for an invalid `--history` invocation, else `None`; `None` too when
-`--history` was not given. Rejects a combination with `--backfill`, `--import-closed` or
-`--backfill-dividends`, a missing, malformed or future `--start`, a malformed `--end` and an
-`--end` before `--start`. `main()` exits 2 on an error, before any network call.
+`--history` was not given. Rejects a missing, malformed or future `--start`, a malformed
+`--end` and an `--end` before `--start`. `main()` exits 2 on an error, before any network call.
+
+### `validate_one_mode(args)` and `MODE_FLAGS`
+
+An error message when more than one of `--backfill`, `--import-closed`,
+`--backfill-dividends` and `--history` is given, naming them, else `None`. `main()` checks it
+first and exits 2, so no combination runs whichever mode it would dispatch first. The
+per-mode validators below no longer check combinations.
 
 ### `validate_iso_date(value, flag)` and `validate_start_date(value, flag="--from", now=None)`
 
@@ -647,10 +653,10 @@ same amount removed. Returns the merged history as a new dict; `history` is not 
 alias of its instrument and returns `(history, declared)`: the merged history and lookup
 id to `DeclaredDividend`.
 
-### `validate_dividend_backfill_args(args)`
+### `validate_dividend_backfill_args(args, now=None)`
 
-An error message for `--backfill-dividends` combined with another mode or given a bad
-`--from`, else `None`. `--from` is optional.
+An error message for `--backfill-dividends` given a bad or future `--from`, else `None`.
+`--from` is optional.
 
 ### `build_dividend_summary(previous, upcoming, universe)`, `DividendSummaryRow`
 
@@ -664,8 +670,8 @@ Manual only: locally, or through the **Rebuild Price History** workflow.
 
 ### `validate_backfill_args(args, now=None)`
 
-Returns an error message for an invalid invocation, else `None`. Rejects `--backfill`
-combined with `--history`, a missing or malformed `--from`, and a date after `now`'s.
+Returns an error message for an invalid invocation, else `None`. Rejects a missing or
+malformed `--from` and a date after `now`'s.
 
 ### `rebuild_price_rows(specs, start, stored, now=None)`
 
