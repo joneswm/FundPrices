@@ -257,6 +257,7 @@ class FakeCalendarTicker:
 
 
 DAILY_RUN_STUBS = (
+    "read_distributions",
     "scrape_funds",
     "write_results",
     "snap_fx_rates",
@@ -273,9 +274,11 @@ def daily_run_stubs(test_dir=None, specs=(), pairs=(), **outcomes):
     Yields the stubs by name (plus "print"). Each name in DAILY_RUN_STUBS is
     stubbed with an empty result unless `outcomes` gives it a return value, an
     exception to raise, or a dict of patch keyword arguments; any other module
-    name in `outcomes` is patched the same way.
+    name in `outcomes` is patched the same way. read_distributions is among
+    them, so no main() test reads the repository's distributions.txt.
     """
     defaults = {
+        "read_distributions": [],
         "scrape_funds": ScrapeResults(),
         "write_results": None,
         "snap_fx_rates": ScrapeResults(),
@@ -6319,13 +6322,14 @@ class TestDividendsInTheDailyRun(DataDirCase):
         )
 
     def _run(self, update=None):
-        """Run main() with prices faked, keeping the stubs that matter."""
+        """Run main() with prices faked, reading this test's distributions.txt."""
         if update is None:
             update = scrape_fund_price.DividendResults()
         with daily_run_stubs(
             specs=[FundSpec("YA", "QQQ")],
             update_dividends=update,
             DISTRIBUTIONS_FILE={"new": self.distributions_file},
+            read_distributions={"wraps": scrape_fund_price.read_distributions},
         ) as stubs:
             self.scrape = stubs["scrape_funds"]
             self.summary = stubs["write_summary"]
