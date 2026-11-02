@@ -23,8 +23,6 @@ from zoneinfo import ZoneInfo
 
 # Default configuration - can be overridden for testing
 DATA_DIR = "data"
-LATEST_CSV = os.path.join(DATA_DIR, "latest_prices.csv")
-HISTORY_CSV = os.path.join(DATA_DIR, "prices_history.csv")
 FUNDS_FILE = "funds.txt"
 CLOSED_HOLDINGS_FILE = "closed_holdings.txt"
 MAX_PRICE_ATTEMPTS = 3
@@ -4944,7 +4942,9 @@ def main():
         # Built from what was just written, so it reflects a partial run too;
         # a day with failures is exactly when the summary is most useful.
         run_date = datetime.date.today().isoformat()
-        history = list(read_history_rows(HISTORY_CSV).values())
+        history = list(
+            read_history_rows(os.path.join(DATA_DIR, "prices_history.csv")).values()
+        )
         price_summary = build_price_summary(history, funds, results.failures, run_date)
         fx_summary = build_fx_summary(
             list(read_fx_rows(os.path.join(DATA_DIR, "fx_history.csv")).values()),
