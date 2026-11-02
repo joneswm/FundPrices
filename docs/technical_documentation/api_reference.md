@@ -421,7 +421,26 @@ or (when `known_identifiers` is given) an identifier in neither `funds.txt` nor
 ### `configured_identifiers(specs, closed_file=None)`
 
 Every identifier `distributions.txt` may name: the identifiers `funds.txt` publishes under
-and those of `closed_holdings.txt`.
+(`Universe.all_identifiers`) and those of `closed_holdings.txt`.
+
+### `Universe(specs, lookup_of, publish_ids_of, all_identifiers)`
+
+The configured instruments, mapped once per run: `Universe.from_specs(specs)` canonicalises
+each spec (`as_fund_spec()`) and builds `lookup_of` (published identifier to lookup id),
+`publish_ids_of` (lookup id to its published identifiers, lookup id first) and
+`all_identifiers` (a frozenset). `universe.published(identifier)` is every identifier the
+instrument behind `identifier` is published under, or `(identifier,)` for one `funds.txt`
+does not publish (a closed holding). The dividend steps take it, through a `DividendRun`,
+in place of the specs.
+
+### `DividendRun(today, universe, currencies, data_dir)`
+
+What every step of one dividend run shares: the run date, the `Universe`, identifier to the
+currency of its newest stored price (`stored_currencies()`, read once per run) and the data
+folder. `DividendRun.prepare(specs, data_dir=None, today=None)` settles one (defaults
+`DATA_DIR` and today); `run.price_currency(identifier)` is the first stored currency among
+the instrument's identifiers, `""` when none has one. `update_dividends()` and
+`backfill_dividends()` prepare one and pass it as the first argument of each step.
 
 ### `DividendEvent(ex_date, amount, currency)` and `DeclaredDividend(ex_date, pay_date, amount="", currency="")`
 
@@ -446,10 +465,10 @@ The next announced dividend, or `None`. Reads `Ticker.calendar` and falls back t
 `today` on. Neither carries the declared amount. A failing calendar is not an error; a
 failing `info` propagates.
 
-### `collect_dividends(specs, today, start=None)`
+### `collect_dividends(run, start=None)`
 
 For each `YA` instrument, one retried fetch of the events (published under every alias,
-`Source` `YA`, `PayDate` empty, events after `today` ignored) and one of the declared
+`Source` `YA`, `PayDate` empty, events after `run.today` ignored) and one of the declared
 dividend. Returns `DividendResults`, a list of history rows with `.failures`
 (`"<id>: dividends: <error>"`), `.declared` (lookup id to `DeclaredDividend`), `.fetched`
 and `.summary`. A failed declared lookup prints a warning and is not a failure.
@@ -486,20 +505,22 @@ From a `Distribution`: the next occurrence of one of its ex-dates on or after `t
 slot's amount; and the `config` history rows a line asserts, which exist only when it has
 amounts and an `as-of` date (the latest occurrence on or before `as-of` and `today`).
 
-### `upcoming_rows_for(identifier, stored, history_dates, last_paid, declared, estimate, today)`
+### `upcoming_rows_for(run, identifier, stored, history_dates, last_paid, *, declared=None, estimate=None)`
 
 One instrument's upcoming rows. A stored estimate with an ex-date still to come is
 recomputed; a stored declaration is kept until Yahoo names another; a declared ex-date not
 yet in the history replaces the estimate for that period; a row leaves 7 days after its
-ex-date once it is in the history, and after 30 days regardless. `AsOf` is `today` for
-rows produced or confirmed this run.
+ex-date once it is in the history, and after 30 days regardless. `AsOf` is `run.today`
+for rows produced or confirmed this run.
 
-### `build_dividend_upcoming(specs, distributions, history, stored, declared, today, currencies)`
+### `build_dividend_upcoming(run, distributions, history, stored, declared)`
 
 The whole upcoming file for the instruments in `funds.txt`: the pattern estimate, or the
-`distributions.txt` estimate for an instrument that has a line (currency from
-`currencies`, identifier to the currency of its newest stored price). Closed holdings and
-removed funds get no rows. Returns rows sorted by ex-date then fund.
+`distributions.txt` estimate for an instrument that has a line (currency
+`run.price_currency()`). Closed holdings and removed funds get no rows. Returns rows sorted
+by ex-date then fund. `publish_upcoming(run, distributions, history, declared)` reads the
+previous file, builds and writes the new one, and returns `(previous, upcoming)`;
+`config_history_rows(run, distributions)` is the `config` rows of every line.
 
 ### `update_dividends(specs, distributions, data_dir=None, today=None, sources=())`
 
@@ -568,7 +589,7 @@ workbook with the standard library. Invesco: URLs `INVESCO_DISTRIBUTION_URL`; SS
 `SSGA_WORKBOOK_URL`; Q4: `Q4_DIVIDEND_URL`; etnet: `ETNET_DIVIDEND_URL`, cash-dividend rows
 only.
 
-### `collect_issuer_tables(sources, specs)`
+### `collect_issuer_tables(run, sources)`
 
 Fetches each configured page once, retried, `ISSUER_PAUSE_SECONDS` apart. Returns
 `IssuerResults`: `.tables` (lookup id to `IssuerTable`), `.requested` (every configured
@@ -581,27 +602,28 @@ tolerance)`: equal currencies unchanged, `GBP` into `GBp` times 100, a page that
 currency taken in the row's, zero or incomparable currencies `None`. The tolerance is half
 a unit of the issuer's last decimal place; `amounts_agree` is true within it.
 
-### `apply_issuer_table(history, identifier, table, price_currency, today, start=None)`
+### `apply_issuer_table(run, history, identifier, table, start=None)`
 
-Merges the table's distributions dated today or earlier (and on or after `start`) into one
-identifier's history rows: pay date added, `Source` the table's code, a missing distribution inserted,
-Yahoo's amount kept when it agrees and the issuer's when it differs, and a `YA` twin
-within `ISSUER_TWIN_DAYS` with the same amount removed. Returns the number of rows added,
-changed or removed.
+Merges the table's distributions dated `run.today` or earlier (and on or after `start`)
+into one identifier's history rows: pay date added, `Source` the table's code, a missing
+distribution inserted (in `run.price_currency(identifier)`), Yahoo's amount kept when it
+agrees and the issuer's when it differs, and a `YA` twin within `ISSUER_TWIN_DAYS` with the
+same amount removed. Returns the merged history as a new dict; `history` is not changed.
 
-### `issuer_declared(table, price_currency, today)` and `merge_issuer_tables(history, specs, tables, currencies, today, start=None)`
+### `issuer_declared(table, price_currency, today)` and `merge_issuer_tables(run, history, tables, start=None)`
 
 `issuer_declared` returns the earliest distribution with an ex-date after `today` as a
 `DeclaredDividend` (amount in the price currency, empty if not statable), or `None`.
-`merge_issuer_tables` applies each fetched table under every alias of its instrument and
-returns lookup id to `DeclaredDividend`.
+`merge_issuer_tables` applies each fetched table (lookup id to `IssuerTable`) under every
+alias of its instrument and returns `(history, declared)`: the merged history and lookup
+id to `DeclaredDividend`.
 
 ### `validate_dividend_backfill_args(args)`
 
 An error message for `--backfill-dividends` combined with another mode or given a bad
 `--from`, else `None`. `--from` is optional.
 
-### `build_dividend_summary(previous, upcoming, specs)`, `DividendSummaryRow`
+### `build_dividend_summary(previous, upcoming, universe)`, `DividendSummaryRow`
 
 The upcoming rows that are new or whose pay date or status changed since the previous
 file, once per instrument under its lookup identifier, in `funds.txt` order.
