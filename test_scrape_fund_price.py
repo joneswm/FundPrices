@@ -1044,6 +1044,18 @@ class TestMainEntryPoint(unittest.TestCase):
     """Test the main() command-line entry point."""
 
     @patch("builtins.print")
+    def test_main_takes_the_argument_list(self, mock_print):
+        """Test main(argv) parses argv, as parse_arguments(args) does.
+
+        A test can then drive a mode with the real flags instead of patching
+        parse_arguments with a namespace whose unset attributes are truthy.
+        """
+        main(["--history", "AAPL"])
+        mock_print.assert_called_once_with(
+            "Error: --start date is required when using --history"
+        )
+
+    @patch("builtins.print")
     @patch("scrape_fund_price.parse_arguments")
     def test_main_history_without_start_date_errors(self, mock_args, mock_print):
         """Test --history without --start reports an error and stops."""
