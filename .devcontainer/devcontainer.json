@@ -2,10 +2,10 @@
 	"name": "FundPrices - Python",
 	// Use Python-specific image for faster startup and smaller size
 	"image": "mcr.microsoft.com/devcontainers/python:3.12",
-	
+
 	// Install Python dependencies on container creation
 	"postCreateCommand": "pip install -r requirements.txt && playwright install --with-deps chromium",
-	
+
 	// VS Code extensions for Python development
 	"customizations": {
 		"vscode": {
@@ -30,10 +30,10 @@
 			}
 		}
 	},
-	
+
 	// Forward ports for any future web interfaces
 	"forwardPorts": [],
-	
+
 	// Set environment variables
 	"remoteEnv": {
 		"PYTHONUNBUFFERED": "1"

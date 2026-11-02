@@ -38,7 +38,7 @@ check_python() {
     if command -v python3 &> /dev/null; then
         PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
         print_status "Python $PYTHON_VERSION found"
-        
+
         # Check if version is 3.10 or higher
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
             print_status "Python version is compatible (3.10+)"
@@ -106,34 +106,34 @@ install_dev_tools() {
 # Verify IDE configuration
 verify_ide_config() {
     print_info "Verifying IDE configuration..."
-    
+
     if [ -d ".vscode" ]; then
         print_status "VS Code configuration found"
-        
+
         # Check for key configuration files
         if [ -f ".vscode/settings.json" ]; then
             print_status "VS Code settings configured"
         fi
-        
+
         if [ -f ".vscode/launch.json" ]; then
             print_status "VS Code debug configuration found"
         fi
-        
+
         if [ -f ".vscode/keybindings.json" ]; then
             print_status "VS Code keyboard shortcuts configured"
         fi
-        
+
         if [ -f ".vscode/tasks.json" ]; then
             print_status "VS Code tasks configured"
         fi
-        
+
         if [ -f ".vscode/extensions.json" ]; then
             print_status "VS Code extensions recommendations found"
         fi
     else
         print_warning "VS Code configuration not found"
     fi
-    
+
     if [ -d ".cursor" ]; then
         print_status "Cursor configuration found"
     else
@@ -155,28 +155,28 @@ run_tests() {
 # Check code quality tools
 check_code_quality() {
     print_info "Checking code quality tools..."
-    
+
     # Check Black formatter
     if command -v black &> /dev/null; then
         print_status "Black formatter available"
     else
         print_warning "Black formatter not found"
     fi
-    
+
     # Check Flake8 linter
     if command -v flake8 &> /dev/null; then
         print_status "Flake8 linter available"
     else
         print_warning "Flake8 linter not found"
     fi
-    
+
     # Check isort
     if command -v isort &> /dev/null; then
         print_status "isort import sorter available"
     else
         print_warning "isort not found"
     fi
-    
+
     # Check coverage
     if command -v coverage &> /dev/null; then
         print_status "Coverage tool available"
@@ -228,12 +228,12 @@ main() {
     verify_ide_config
     check_code_quality
     run_tests
-    
+
     echo ""
     print_status "Development environment setup complete!"
     echo ""
     show_dev_workflow
-    
+
     echo ""
     print_info "Next steps:"
     echo "1. Open the project in VS Code or Cursor"
