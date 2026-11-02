@@ -1420,24 +1420,17 @@ class TestHistoryUpsert(DataDirCase):
         )
 
 
-class TestWindowedScraping(unittest.TestCase):
+class TestWindowedScraping(DataDirCase):
     """Test scrape_funds over dated windows, and lazy browser startup."""
 
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_emits_a_row_per_quote_with_currency(self, mock_quotes, mock_pw):
+    def test_emits_a_row_per_quote_with_currency(self, mock_quotes):
         """Test every quote in the window becomes a dated result row."""
         mock_quotes.return_value = [
             Quote("2026-09-17", "1.50", "GBp"),
             Quote("2026-09-18", "1.60", "GBp"),
         ]
-        results = scrape_funds([("GF", "SGLN.L")], self.test_dir)
+        results = scrape_funds([("YA", "SGLN.L")], self.test_dir)
         self.assertEqual(
             list(results),
             [
@@ -1453,35 +1446,31 @@ class TestWindowedScraping(unittest.TestCase):
         """Test Playwright is not launched when no fund needs scraping."""
         mock_y.return_value = [Quote("2026-09-18", "1.60", "USD")]
         mock_ft.return_value = [Quote("2026-09-18", "7.15", "GBP")]
-        scrape_funds([("GF", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
+        scrape_funds([("YA", "QQQ"), ("FT", "GB00B1FXTF86")], self.test_dir)
         mock_pw.assert_not_called()
 
     def test_ft_and_api_sources_do_not_require_a_browser(self):
         """Test source_requires_browser reflects the HTTP-only routes."""
         self.assertFalse(source_requires_browser("FT", "GB00B1FXTF86"))
-        self.assertFalse(source_requires_browser("GF", "QQQ"))
+        self.assertFalse(source_requires_browser("YA", "QQQ"))
         self.assertTrue(source_requires_browser("YH", "IDTG.L"))
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_total_failure_writes_no_history_row(self, mock_quotes, mock_pw):
+    def test_total_failure_writes_no_history_row(self, mock_quotes):
         """Test a fund that cannot be fetched contributes no dated row."""
         mock_quotes.side_effect = Exception("Network error")
-        results = scrape_funds([("GF", "QQQ")], self.test_dir)
+        results = scrape_funds([("YA", "QQQ")], self.test_dir)
         self.assertEqual(list(results), [])
         self.assertEqual(len(results.failures), 1)
         self.assertIn("QQQ", results.failures[0])
 
-    @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.fetch_yahoo_quotes")
-    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes, mock_pw):
+    def test_failed_fund_keeps_its_last_known_price_file(self, mock_quotes):
         """Test the per-fund price file is not overwritten with an error."""
-        with open(os.path.join(self.test_dir, "latest_QQQ.price"), "w") as f:
-            f.write("700.00\n")
+        self.write_text("latest_QQQ.price", "700.00\n")
         mock_quotes.side_effect = Exception("Network error")
-        scrape_funds([("GF", "QQQ")], self.test_dir)
-        with open(os.path.join(self.test_dir, "latest_QQQ.price")) as f:
-            self.assertEqual(f.read().strip(), "700.00")
+        scrape_funds([("YA", "QQQ")], self.test_dir)
+        self.assertEqual(self.read_text("latest_QQQ.price"), "700.00\n")
 
     @patch("scrape_fund_price.sync_playwright")
     @patch("scrape_fund_price.scrape_price_with_common_settings")
@@ -1499,105 +1488,48 @@ class TestWindowedScraping(unittest.TestCase):
 class TestFailureDoesNotSuppressOutput(unittest.TestCase):
     """Test a partially failed run still publishes everything it obtained."""
 
-    @patch(
-        "scrape_fund_price.update_dividends",
-        return_value=scrape_fund_price.DividendResults(),
-    )
-    @patch("scrape_fund_price.write_summary")
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.write_results")
-    @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_results_are_written_before_failure_is_signalled(
-        self,
-        mock_read,
-        mock_scrape,
-        mock_write,
-        mock_pairs,
-        mock_summary,
-        mock_update,
-    ):
-        """Test output is written even when some funds failed."""
-        mock_read.return_value = [("GF", "QQQ"), ("GF", "GRAB")]
+    SPECS = [FundSpec("YA", "QQQ"), FundSpec("YA", "GRAB")]
+
+    def test_results_are_written_before_failure_is_signalled(self):
+        """Test output is written even when some funds failed, then the job fails."""
         results = ScrapeResults(
             [["QQQ", "2026-09-18", "721.45", "USD"]],
             failures=["GRAB: Error: Timeout"],
         )
-        mock_scrape.return_value = results
-
-        with self.assertRaises(SystemExit):
-            main([])
+        with daily_run_stubs(specs=self.SPECS, scrape_funds=results) as stubs:
+            with self.assertRaises(SystemExit) as error:
+                main([])
 
         # The write must happen, otherwise a single failing fund would
         # discard a whole day of good prices.
-        mock_write.assert_called_once_with(results)
+        stubs["write_results"].assert_called_once_with(results)
+        self.assertEqual(error.exception.code, 1)
 
-    @patch(
-        "scrape_fund_price.update_dividends",
-        return_value=scrape_fund_price.DividendResults(),
-    )
-    @patch("scrape_fund_price.write_summary")
-    @patch("scrape_fund_price.read_fx_pairs", return_value=[])
-    @patch("scrape_fund_price.write_results")
-    @patch("scrape_fund_price.scrape_funds")
-    @patch("scrape_fund_price.read_fund_specs")
-    def test_clean_run_does_not_exit_non_zero(
-        self,
-        mock_read,
-        mock_scrape,
-        mock_write,
-        mock_pairs,
-        mock_summary,
-        mock_update,
-    ):
+    def test_clean_run_does_not_exit_non_zero(self):
         """Test a run with no failures completes normally."""
-        mock_read.return_value = [("GF", "QQQ")]
-        mock_scrape.return_value = ScrapeResults(
-            [["QQQ", "2026-09-18", "721.45", "USD"]]
-        )
-
-        main([])
-
-        mock_write.assert_called_once()
+        results = ScrapeResults([["QQQ", "2026-09-18", "721.45", "USD"]])
+        with daily_run_stubs(specs=self.SPECS[:1], scrape_funds=results) as stubs:
+            main([])
+        stubs["write_results"].assert_called_once_with(results)
 
     def _crashing_run(self, crash):
-        """Run the daily mode with every step stubbed and one of them raising.
+        """Run the daily mode with every step stubbed and `crash` raising.
 
-        `crash` names the stub that raises. Returns the stubs by name together
-        with what was printed, so a test can assert which steps still ran.
+        Returns the stubs by name together with the exit code and what was
+        printed, so a test can assert which steps still ran.
         """
-        stubs = {}
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=["USDGBP"]))
-            returns = {
-                "scrape_funds": ScrapeResults(),
-                "write_results": None,
-                "snap_fx_rates": ScrapeResults(),
-                "write_fx_results": None,
-                "update_dividends": scrape_fund_price.DividendResults(),
-                "update_uk_cpi": scrape_fund_price.UkCpiResults(),
-                "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
-                "write_summary": None,
-            }
-            for name, value in returns.items():
-                outcome = (
-                    {"side_effect": RuntimeError(f"{name} exploded")}
-                    if name == crash
-                    else {"return_value": value}
-                )
-                stubs[name] = enter(patch(f"scrape_fund_price.{name}", **outcome))
-            printed = enter(patch("builtins.print"))
+        outcomes = {
+            "update_uk_cpi": scrape_fund_price.UkCpiResults(),
+            "update_uk_bank_rate": scrape_fund_price.UkBankRateResults(),
+            crash: RuntimeError(f"{crash} exploded"),
+        }
+        with daily_run_stubs(
+            specs=[FundSpec("YA", "QQQ")], pairs=["USDGBP"], **outcomes
+        ) as stubs:
             with self.assertRaises(SystemExit) as error:
                 main([])
         stubs["exit_code"] = error.exception.code
-        stubs["printed"] = [str(call.args[0]) for call in printed.call_args_list]
+        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
         return stubs
 
     def test_a_crash_in_the_price_step_does_not_cost_the_other_files(self):
@@ -1635,7 +1567,7 @@ class TestFailureDoesNotSuppressOutput(unittest.TestCase):
         self.assertIn("Error: fx: snap_fx_rates exploded", ran["printed"])
 
 
-class TestFxInTheDailyRun(unittest.TestCase):
+class TestFxInTheDailyRun(DataDirCase):
     """Test main() snaps and writes the configured pairs beside the prices.
 
     Every other main() test stubs the pairs to [], so the FX branch of the
@@ -1645,64 +1577,57 @@ class TestFxInTheDailyRun(unittest.TestCase):
     PAIRS = ["USDGBP", "HKDGBP"]
 
     def setUp(self):
+        super().setUp()
         # A stored rate for one pair only, so the FX summary can tell a pair
         # that failed from one that simply has no history.
-        self.test_dir = tempfile.mkdtemp()
-        with open(os.path.join(self.test_dir, "fx_history.csv"), "w") as f:
-            f.write("Pair,Date,Rate\nUSDGBP,2026-10-29,0.750000\n")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        self.write_csv(
+            "fx_history.csv",
+            ["Pair", "Date", "Rate"],
+            [["USDGBP", "2026-10-29", "0.750000"]],
+        )
 
     def _run(self, fx_results):
-        with ExitStack() as stack:
-            enter = stack.enter_context
-            enter(patch("scrape_fund_price.DATA_DIR", self.test_dir))
-            enter(
-                patch(
-                    "scrape_fund_price.read_fund_specs",
-                    return_value=[FundSpec("YA", "QQQ")],
-                )
-            )
-            enter(patch("scrape_fund_price.scrape_funds", return_value=ScrapeResults()))
-            enter(patch("scrape_fund_price.write_results"))
-            enter(patch("scrape_fund_price.read_fx_pairs", return_value=self.PAIRS))
-            self.snap = enter(
-                patch("scrape_fund_price.snap_fx_rates", return_value=fx_results)
-            )
-            self.write_fx = enter(patch("scrape_fund_price.write_fx_results"))
-            self.summary = enter(patch("scrape_fund_price.write_summary"))
-            enter(
-                patch(
-                    "scrape_fund_price.update_dividends",
-                    return_value=scrape_fund_price.DividendResults(),
-                )
-            )
-            self.printed = enter(patch("builtins.print"))
-            main([])
+        """Run the daily mode with `fx_results` snapped.
+
+        Returns the stubs by name together with the exit code (None for a
+        clean run) and what was printed.
+        """
+        with daily_run_stubs(
+            self.test_dir,
+            specs=[FundSpec("YA", "QQQ")],
+            pairs=self.PAIRS,
+            snap_fx_rates=fx_results,
+        ) as stubs:
+            try:
+                main([])
+            except SystemExit as error:
+                stubs["exit_code"] = error.code
+            else:
+                stubs["exit_code"] = None
+        stubs["printed"] = [str(c.args[0]) for c in stubs["print"].call_args_list]
+        return stubs
 
     def test_the_configured_pairs_are_snapped_and_written(self):
         """Test the snap gets the pairs and the write gets its rows."""
         rates = ScrapeResults([["USDGBP", "2026-10-30", "0.751234"]])
-        self._run(rates)
-        self.snap.assert_called_once_with(self.PAIRS)
-        self.write_fx.assert_called_once_with(rates)
-        self.summary.assert_called_once()
+        ran = self._run(rates)
+        ran["snap_fx_rates"].assert_called_once_with(self.PAIRS)
+        ran["write_fx_results"].assert_called_once_with(rates)
+        ran["write_summary"].assert_called_once()
+        self.assertIsNone(ran["exit_code"])
 
     def test_a_pairs_failure_reaches_the_exit_code_after_the_summary(self):
         """Test a dead pair fails the run, marked in the FX summary."""
         rates = ScrapeResults(failures=["HKDGBP: Error: Timeout"])
-        with self.assertRaises(SystemExit) as error:
-            self._run(rates)
-        self.assertEqual(error.exception.code, 1)
-        self.write_fx.assert_called_once_with(rates)
-        fx_rows = self.summary.call_args.args[1]
+        ran = self._run(rates)
+        self.assertEqual(ran["exit_code"], 1)
+        ran["write_fx_results"].assert_called_once_with(rates)
+        fx_rows = ran["write_summary"].call_args.args[1]
         self.assertEqual(
             [(row.name, row.failed) for row in fx_rows],
             [("USDGBP", False), ("HKDGBP", True)],
         )
-        printed = [str(call.args[0]) for call in self.printed.call_args_list]
-        self.assertIn("Error: HKDGBP: Error: Timeout", printed)
+        self.assertIn("Error: HKDGBP: Error: Timeout", ran["printed"])
 
 
 class TestFundSpecParsing(unittest.TestCase):
