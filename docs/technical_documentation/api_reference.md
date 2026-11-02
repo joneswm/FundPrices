@@ -250,30 +250,55 @@ Writes scraping results to CSV files.
 first three positions are unaffected. Rows written before SPEC-003 have no currency
 and load with an empty value.
 
-### `fetch_historical_data(symbol, start_date, end_date, data_dir=DATA_DIR)`
+### `fetch_historical_data(symbol, start_date, end_date=None, data_dir=None)`
 
-Fetches historical OHLCV data for a symbol via yfinance and writes it to CSV.
+The `--history` export: one symbol's dated closes from Yahoo, written as a CSV of its own
+on the daily run's path. The bars come from `fetch_yahoo_quotes()` through
+`fetch_with_retries()`, so each row is dated as Yahoo dates it, carries the currency and is
+formatted by `format_yahoo_price()`, exactly as `prices_history.csv` would store it.
+Nothing else is touched: not `prices_history.csv`, not `latest_prices.csv`, no `.price` file.
 
 **Parameters:**
-- `symbol` (str): Ticker symbol
-- `start_date` (str): Start date, `YYYY-MM-DD`
-- `end_date` (str or None): End date, `YYYY-MM-DD`; `None` means up to today
-- `data_dir` (str, optional): Output directory (defaults to `DATA_DIR`)
+- `symbol` (str): Yahoo ticker; it need not be in `funds.txt`
+- `start_date` (str): Inclusive start date, `YYYY-MM-DD`
+- `end_date` (str or None): Inclusive end date; `None` means up to the latest bar. Yahoo
+  treats the end as exclusive, so the fetch asks for the day after, as the closed-holding
+  import does
+- `data_dir` (str, optional): Output directory; `DATA_DIR` at call time when `None`
 
-**Returns:**
-- `str`: Path to the written CSV, or `"Error: <message>"` on failure
+**Returns:** `HistoryReport`. A symbol that fails after the retries, or returns no bars at
+all (Yahoo answers an unknown ticker with an empty frame), is on `failures` as
+`<symbol>: <error>` and no file is written.
 
-**Validation:** rejects malformed dates (`"Error: Invalid start date format. Use YYYY-MM-DD"`),
-rejects `start_date > end_date`, and reports `"Error: No data found for symbol <symbol>"`
-when the range returns nothing.
-
-**Output:** `data/history_<symbol>_<start>_<end>.csv`, with columns
-`Date, Open, High, Low, Close, Volume, Dividends, Stock Splits`.
+**Output:** `data/history_<symbol>_<start>_<end>.csv` with the history header
+`Fund,Date,Price,Currency`; `<end>` is today's date when `end_date` is `None`.
 
 **Example:**
 ```python
-path = fetch_historical_data("AAPL", "2024-01-01", "2024-12-31")
+report = fetch_historical_data("AAPL", "2024-01-01", "2024-12-31")
+print(report.path, len(report.rows), report.failures)
 ```
+
+### `HistoryReport`
+
+What an export wrote: `symbol`, `path`, `rows` (the `[symbol, date, price, currency]` rows
+written, oldest first) and `failures`. `to_markdown()` renders one table row
+(`Symbol | Rows | First | Last | Ccy | File`) and a **Failures** list, for stdout and the
+Actions job summary, like `BackfillReport`.
+
+### `validate_history_args(args)`
+
+Returns an error message for an invalid `--history` invocation, else `None`; `None` too when
+`--history` was not given. Rejects a combination with `--backfill`, `--import-closed` or
+`--backfill-dividends`, a missing, malformed or future `--start`, a malformed `--end` and an
+`--end` before `--start`. `main()` exits 2 on an error, before any network call.
+
+### `validate_iso_date(value, flag)` and `validate_start_date(value, flag="--from")`
+
+`validate_iso_date` returns `Invalid <flag> date format. Use YYYY-MM-DD` for anything but a
+real `YYYY-MM-DD` date, else `None`. `validate_start_date` adds `<flag> date is in the
+future`; the rebuilds call it for `--from`, the export for `--start` (one argument, two
+spellings).
 
 ### `parse_arguments(args=None)`
 
@@ -286,7 +311,8 @@ Parses the command line:
 
 With none of these, the daily run executes. `args=None` reads `sys.argv`; pass a list
 in tests. Parsing does not reject combinations: `main()` checks a rebuild with
-`validate_backfill_args()` or `validate_dividend_backfill_args()`.
+`validate_backfill_args()` or `validate_dividend_backfill_args()` and an export with
+`validate_history_args()`.
 
 ## Resilience: Retries and Last Known Price
 
@@ -817,8 +843,18 @@ then `uk_cpi.csv`, then `uk_bank_rate.csv`, then the summary. Each step is isola
 exception in one is recorded on the failure list under its name (`prices: <error>`,
 `fx: <error>`, `dividends: <error>`, `uk_cpi: <error>` or `uk_bank_rate: <error>`) and
 costs the later files and the summary nothing, so the run exits non-zero only after
-everything obtainable has been written. The rebuilds and the import exit non-zero when
-their report has failures.
+everything obtainable has been written. The rebuilds, the import and the `--history` export
+publish their report through `publish_report()`; a bad invocation exits 2 before any
+network call.
+
+### `publish_report(report, heading)`
+
+Prints `report.to_markdown()`, appends it under `## <heading>` to the file
+`GITHUB_STEP_SUMMARY` names when that variable is set (the Actions run page), and raises
+`SystemExit(1)` when `report.failures` is non-empty, in that order, so a failed rebuild still
+shows what it wrote. `report` is a `BackfillReport` (the rebuilds and the import) or a
+`HistoryReport`: anything with `to_markdown()` and `failures`. The daily summary's own
+append to the run page is `write_summary()`'s.
 
 ## Daily Summary
 
