@@ -1,5 +1,5 @@
 playwright>=1.64.1
-coverage>=7.17.0; python_version >= "3.11"
+coverage>=7.17.2; python_version >= "3.11"
 # coverage 7.17+ needs Python 3.11; keep the 3.10 CI floor (constitution) installable
 coverage>=7.16.2; python_version < "3.11"
 yfinance>=1.7.0
