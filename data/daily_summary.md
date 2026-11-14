@@ -34,7 +34,7 @@
 | WLDS.L | GBP | 2026-11-13 | 7.694 | 7.769 | -0.075 | -0.97 |
 | EMIM.L | GBp | 2026-11-13 | 3785 | 3822 | -37 | -0.97 |
 | EQGB.L | GBp | 2026-11-13 | 52680 | 53990 | -1310 | -2.43 |
-| AGBP.L | GBP | 2026-11-13 | 4.523 | 4.535 | -0.012 | -0.26 |
+| AGBP.L | GBP | 2026-11-13 | 4.5225 | 4.535 | -0.0125 | -0.28 |
 | GLTL.L | GBP | 2026-11-13 | 32.81 | 33.16 | -0.35 | -1.06 |
 
 ## FX (GBP per 1 unit of foreign currency)
@@ -48,7 +48,9 @@
 
 ## Dividends
 
-None
+| Name | Ex-date | Pay date | Amount | Ccy | Status |
+|---|---|---|---|---|---|
+| KNSL | 2026-11-30 | - | 0.25 | USD | declared |
 
 ## Attention
 
