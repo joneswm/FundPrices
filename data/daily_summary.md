@@ -50,7 +50,7 @@
 
 | Name | Ex-date | Pay date | Amount | Ccy | Status |
 |---|---|---|---|---|---|
-| KNSL | 2026-11-30 | 2026-12-14 | 0.25 | USD | declared |
+| KNSL | 2026-11-30 | - | 0.25 | USD | declared |
 
 ## Attention
 
