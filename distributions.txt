@@ -28,3 +28,22 @@
 # projected forward, not noticed. Example (not a real fund):
 #
 # XX0000000000,semiannual,03-01;09-01,30,0.0821;0.0794,2026-10-01
+#
+# The six instruments funds.txt prices from the FT (checked 2026-11-18, #126):
+# none needs a line here. Five are accumulation share classes, which pay no
+# distribution, and the sixth already has its issuer's table.
+#
+#   IE0008368742  FSSA China Growth Fund Class I (USD - Acc): accumulates
+#                 (First Sentier factsheet, 31 October 2026)
+#   IE00B0M63516  iShares MSCI Brazil UCITS ETF USD (Dist): pays quarterly,
+#                 sourced from iShares in dividend_sources.txt (IS 251853)
+#   GB00B1FXTF86  Stewart Investors Indian Subcontinent All Cap Fund Class A
+#                 (Acc) GBP: accumulates (KIID, 12 February 2026)
+#   LU0196696453  HSBC GIF Brazil Equity AC (USD): accumulates (HSBC
+#                 factsheet, 31 October 2026)
+#   MU0129U00005  JPMorgan India Fund (acc) - USD: accumulates (JPMorgan
+#                 factsheet, 30 September 2026)
+#   LU0164881194  HSBC GIF Indian Equity AC (USD): accumulates (HSBC
+#                 factsheet, 31 October 2026)
+#
+# A line belongs here only if one of them is switched to a distributing class.
