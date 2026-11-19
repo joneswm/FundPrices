@@ -48,12 +48,7 @@
 
 ## Dividends
 
-| Name | Ex-date | Pay date | Amount | Ccy | Status |
-|---|---|---|---|---|---|
-| DPYG.L | 2027-02-19 | 2027-03-02 | 0.0353 | GBP | estimated |
-| IUAG.L | 2027-05-19 | 2027-05-30 | 1.8423 | USD | estimated |
-| FLOS.L | 2027-05-19 | 2027-05-30 | 10.26 | GBp | estimated |
-| INXG.L | 2027-05-19 | 2027-05-30 | 0.385 | GBP | estimated |
+None
 
 ## Attention
 
