@@ -236,3 +236,29 @@ Two things the fixtures showed that the parsers handle: etnet lists rights issue
 dividend can share an ex-date (2018-05-31), which the history, keyed on `(Fund, ExDate)`, holds
 as one row. Not observed: how early before the ex-date each source shows a declared row (none
 had a future row on the day). The design is `specs/012-pay-date-sources/spec.md`.
+
+## Follow-up 2026-11-20: UBS, for WRDG.L
+
+WRDG.L (UBS Core MSCI World UCITS ETF hGBP dis, IE000KLSD4Y8) was added on 2026-11-20 and
+pays twice a year. Yahoo gives its ex-dates and amounts; nothing gives its pay dates. No
+source was found that is both reachable over plain HTTP and permitted by its terms:
+
+| Candidate | Result |
+|-----------|--------|
+| UBS, `ubs.com/uk/en/assetmanagement/funds/etf/ie000klsd4y8-...html` | Akamai answers 403 "Access Denied" to a plain client for every URL, `robots.txt` included, and for the endpoints the page itself calls (`/bin/ubs/caas/v1/documents?id=<ISIN>`, `..._jcr_content.caconf.xjson`). In a browser the fund data sits behind an investor-type disclaimer. Not usable without a bot-protection bypass |
+| RNS, the LSE (`londonstockexchange.com/stock/WRDG/...`) | 200, but the Price Explorer shell; its data API answers 403 (as in (b) above) |
+| RNS, London South East (`lse.co.uk/rns/WRDG/`) | Cloudflare challenge on every URL, `robots.txt` included |
+| RNS, ADVFN | Cloudflare challenge |
+| RNS, Investegate | Plain HTTP works and `robots.txt` blocks only search and login paths, but its terms admit personal use only: a Private Investor "does not distribute, republish or otherwise provide any information or derived works to any third party". Rejected, as stockanalysis.com was |
+| SIX Swiss Exchange reference data | No listing for the ISIN |
+
+The data does exist. UBS (Irl) ETF plc issues one "Dividend Declaration" RNS per half-year
+covering every distributing share class, with ex, record and pay dates: for example 28 July
+2025 ex, 29 July record, 31 July paid, and a January 2026 notice paying on 12 February 2026.
+The ex-dates agree with Yahoo's WRDG rows (2025-07-28, 2026-02-09). Ways to close the gap, for
+the owner to choose:
+
+1. Ask UBS for access to its fund data, or ask Investegate for a licence.
+2. Add the pay dates by hand after each declaration. `distributions.txt` does not fit: its
+   ex-dates are fixed month-days, and WRDG's move (06 Feb, 28 Jul, 09 Feb, 13 Aug).
+3. Leave WRDG on Yahoo, with no pay dates, which is where it stands.

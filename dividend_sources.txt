@@ -47,3 +47,6 @@ QQQ,IV,46090E103          # Invesco QQQ Trust
 GLTL.L,SS,IE00B6YX5L24    # State Street SPDR Bloomberg 15+ Year Gilt UCITS ETF (Dist)
 KNSL,Q4,ir.kinsalecapitalgroup.com/XNYS  # Kinsale Capital Group
 0639.HK,ET,639            # Shougang Fushan Resources Group
+# WRDG.L (UBS Core MSCI World hGBP dis) pays but has no line: no UBS or RNS source
+# is reachable over plain HTTP and permitted by its terms. See the follow-up of
+# 2026-11-20 in docs/research/dividend_pay_date_sources.md.
