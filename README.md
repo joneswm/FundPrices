@@ -371,7 +371,7 @@ rate rather than its close.
 
 | Source | Code | Method | Example | Status |
 |--------|------|--------|---------|--------|
-| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 26 funds + 5 closed holdings |
+| Yahoo Finance API | YA | API (yfinance) | `yf.Ticker("AAPL").history(...)` daily bars | 28 funds + 5 closed holdings |
 | Financial Times | FT | HTTP endpoint, scraping fallback | `https://markets.ft.com/data/funds/tearsheet/historical?s=GB00B1FXTF86` | 6 funds + 1 closed holding |
 | investing.com | IV | HTTP endpoint (undocumented) | `https://api.investing.com/api/financialdata/historical/1182866` | 2 closed holdings |
 

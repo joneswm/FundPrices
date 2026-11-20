@@ -10245,7 +10245,7 @@ class TestCommittedConfiguration(unittest.TestCase):
         """Test the repository's own configuration has been migrated."""
         specs = read_fund_specs(os.path.join(REPO, "funds.txt"))
         self.assertEqual({s.source for s in specs}, {"YA", "FT"})
-        self.assertEqual(len(specs), 32)
+        self.assertEqual(len(specs), 34)
 
     def test_committed_windows_are_fully_present_in_history(self):
         """Test the committed history actually covers every configured window.
