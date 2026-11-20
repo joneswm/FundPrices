@@ -1224,6 +1224,66 @@ class TestYahooQuoteFetching(unittest.TestCase):
         self.assertEqual([q.date for q in quotes], ["2025-10-23", "2025-10-27"])
 
     @patch("scrape_fund_price.yf.Ticker")
+    def test_scales_pound_quoted_bars_of_a_pence_line_to_pence(self, mock_ticker):
+        """Test bars Yahoo quoted in pounds on a GBp line are stored in pence.
+
+        WDGA.L's first sessions came back in pounds (30.2275 for 3022.75p, as
+        the FT has it), traded or not, in runs at the start of the series as
+        well as between pence bars, so neighbouring bars cannot judge them.
+        """
+        fake_ticker(
+            mock_ticker,
+            [
+                ("2025-08-08", 30.227500915527344),
+                ("2025-08-11", 30.257499694824219),
+                ("2025-08-18", 3058.0),
+                ("2025-08-19", 3050.25),
+                ("2025-09-10", 30.975000381469727),
+                ("2025-09-15", 3121.5),
+                ("2025-09-16", 3130.0),
+            ],
+            currency="GBp",
+            volumes=[0, 0, 0, 120, 545, 0, 30],
+        )
+        quotes = fetch_yahoo_quotes("WDGA.L", "2025-08-01")
+        self.assertEqual(
+            [(q.date, q.price) for q in quotes],
+            [
+                ("2025-08-08", "3022.75"),
+                ("2025-08-11", "3025.75"),
+                ("2025-08-18", "3058"),
+                ("2025-08-19", "3050.25"),
+                ("2025-09-10", "3097.5"),
+                ("2025-09-15", "3121.5"),
+                ("2025-09-16", "3130"),
+            ],
+        )
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_scales_an_isolated_pound_bar_rather_than_dropping_it(self, mock_ticker):
+        """Test the unit is fixed before the spike guard judges the bar."""
+        fake_ticker(
+            mock_ticker,
+            [("2025-10-20", 3190.0), ("2025-10-21", 32.03), ("2025-10-22", 3186.0)],
+            currency="GBp",
+            volumes=[10, 0, 10],
+        )
+        quotes = fetch_yahoo_quotes("WDGA.L", "2025-10-20")
+        self.assertEqual([q.price for q in quotes], ["3190", "3203", "3186"])
+
+    @patch("scrape_fund_price.yf.Ticker")
+    def test_leaves_lines_quoted_in_pounds_alone(self, mock_ticker):
+        """Test only a GBp line is rescaled: other currencies have no pence."""
+        fake_ticker(
+            mock_ticker,
+            [("2026-09-16", 450.0), ("2026-09-17", 4.5), ("2026-09-18", 451.0)],
+            currency="GBP",
+            volumes=[10, 10, 10],
+        )
+        quotes = fetch_yahoo_quotes("XXXX.L", "2026-09-10")
+        self.assertEqual([q.price for q in quotes], ["450", "4.5", "451"])
+
+    @patch("scrape_fund_price.yf.Ticker")
     def test_keeps_traded_bar_however_far_it_moves(self, mock_ticker):
         """Test a bar with volume is trusted: real trades can spike."""
         fake_ticker(
