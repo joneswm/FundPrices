@@ -195,9 +195,9 @@ Then wire it in, test-first at each step:
 
 Before trusting a new source, validate it against a series you can verify another way.
 Sources found wanting so far: Yahoo repeating one close with zero volume across a
-ticker change, FT resolving an ISIN to a different listing and currency, FT pricing
-LSE-listed ETFs on UK bank holidays, and justETF serving a converted series 1.6% away
-from real closes.
+ticker change, Yahoo quoting a pence line in pounds for weeks, FT resolving an ISIN to
+a different listing and currency, FT pricing LSE-listed ETFs on UK bank holidays, and
+justETF serving a converted series 1.6% away from real closes.
 
 ### 2. New Data Fields
 

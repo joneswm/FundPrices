@@ -104,6 +104,8 @@ warning naming the symbol and date when they drop a bar:
   newest bar is filled this way; any other null-close bar is dropped.
 - **Open session.** A priced newest bar is dropped while `session_still_open()` says its
   regular session has not ended, so a run during market hours stores no intraday price.
+- **Pounds on a pence line.** On a `GBp` line, `pence_from_pound_quoted_bars()` rescales
+  any bar Yahoo quoted in pounds, before the spike check judges it.
 - **Untraded spike.** An interior bar (never the first or last) that
   `is_untraded_spike()` flags is dropped.
 
@@ -114,6 +116,17 @@ outlier (#83): the bar's `volume` is exactly `0` and its `close` is more than 20
 both neighbouring closes, or more than 20% below both. A real move either traded or
 persists into the next bar. A volume of `None` or any non-zero number is never a spike
 (funds report no volume, so zero volume alone proves nothing). Used by
+`fetch_yahoo_quotes()`.
+
+### `pence_from_pound_quoted_bars(symbol, priced)`
+
+Returns `priced`, a list of `(timestamp, close, volume)` bars of a `GBp` line, with every
+bar quoted in pounds rescaled to pence. A bar is in pounds when it sits more than
+`QUOTING_UNIT_FACTOR` (50) below the median close of the fetched bars. Yahoo served
+WDGA.L's first 32 sessions this way (30.2275 for 3022.75p), in runs of up to eleven,
+some traded, so neighbouring bars cannot judge them. The published digits are shifted,
+so 30.2275 becomes exactly 3022.75, and each rescaled bar logs a warning. A window
+fetched entirely in pounds has a median in pounds and is left alone. Used by
 `fetch_yahoo_quotes()`.
 
 ### `session_still_open(ticker, bar_date, now=None)`
@@ -1058,7 +1071,8 @@ returning the `BackfillReport`. `main()` calls it after `backfill_prices()` on
 - `SNAP_WINDOW_DAYS`: Days of dated quotes each daily run requests (10), so a late or
   corrected price is picked up by the upsert
 - `STALE_AFTER_DAYS`: Age beyond which the summary marks an instrument `~` (4)
-- `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning (50)
+- `QUOTING_UNIT_FACTOR`: Price ratio that triggers a quoting-unit warning, and below a
+  `GBp` line's median marks a Yahoo bar as quoted in pounds (50)
 - `FT_BACKFILL_PAUSE_SECONDS`: Pause between FT requests during a rebuild (1)
 - `FX_RATE_DECIMALS`: Decimal places stored for FX rates (6)
 - `FX_CLOSE_ZONE`, `FX_CLOSE_HOUR`: The clock a day's FX rate is read at, 17:00 in

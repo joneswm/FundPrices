@@ -74,7 +74,9 @@ warning that names the offending line.
   session times, so `fetch_ft_quotes()` stores a row only once `ft_row_settled()` says
   16:00 New York (`FT_SETTLED_HOUR`) on its date has passed; the 21:05 UTC run is after
   that all year round. A zero-volume bar more than `UNTRADED_SPIKE_RATIO` (1.2) from both
-  neighbours is dropped as another listing's price (`is_untraded_spike()`). The undated
+  neighbours is dropped as another listing's price (`is_untraded_spike()`), and on a `GBp`
+  line a bar more than `QUOTING_UNIT_FACTOR` (50) below the median is in pounds and is
+  rescaled to pence first (`pence_from_pound_quoted_bars()`). The undated
   scraping fallback is not covered by these.
 
 ### 2. Configuration

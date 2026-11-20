@@ -822,6 +822,9 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
             continue
         priced.append((timestamp, close, volumes[index]))
 
+    if currency == "GBp":
+        priced = pence_from_pound_quoted_bars(symbol, priced)
+
     quotes = []
     for index, (timestamp, close, volume) in enumerate(priced):
         if 0 < index < len(priced) - 1 and is_untraded_spike(
@@ -836,6 +839,32 @@ def fetch_yahoo_quotes(symbol, start, end=None, now=None):
             Quote(timestamp.date().isoformat(), format_yahoo_price(close), currency)
         )
     return quotes
+
+
+def pence_from_pound_quoted_bars(symbol, priced):
+    """Return a GBp line's bars with any quoted in pounds rescaled to pence.
+
+    Yahoo served WDGA.L's first months partly in pounds: 30.2275 for the
+    3022.75p the FT reports, in runs of up to eleven sessions, some traded.
+    Neighbouring bars cannot judge a run, so each bar is compared with the
+    median of the fetched bars instead; a bar more than QUOTING_UNIT_FACTOR
+    below it is in pounds. Its published digits are shifted, not multiplied
+    as a float, so 30.2275 becomes exactly 3022.75.
+    """
+    if not priced:
+        return priced
+    median = statistics.median(close for _, close, _ in priced)
+    rescaled = []
+    for timestamp, close, volume in priced:
+        if close > 0 and median / close > QUOTING_UNIT_FACTOR:
+            pence = float(decimal.Decimal(format_yahoo_price(close)).scaleb(2))
+            log.warning(
+                f"{symbol} {timestamp.date()}: close {format_yahoo_price(close)} "
+                f"quoted in pounds, stored as {format_yahoo_price(pence)}p"
+            )
+            close = pence
+        rescaled.append((timestamp, close, volume))
+    return rescaled
 
 
 def is_untraded_spike(close, volume, previous, following):
